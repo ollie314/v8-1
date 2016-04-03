@@ -24,15 +24,16 @@ utils.Import(function(from) {
 // ES6 21.2.5.15.
 function RegExpGetUnicode() {
   if (!IS_REGEXP(this)) {
+    // TODO(littledan): Remove this RegExp compat workaround
     if (this === GlobalRegExpPrototype) {
       %IncrementUseCounter(kRegExpPrototypeUnicodeGetter);
+      return UNDEFINED;
     }
     throw MakeTypeError(kRegExpNonRegExp, "RegExp.prototype.unicode");
   }
-  return !!REGEXP_UNICODE(this);
+  return TO_BOOLEAN(REGEXP_UNICODE(this));
 }
-%FunctionSetName(RegExpGetUnicode, "RegExp.prototype.unicode");
-%SetNativeFlag(RegExpGetUnicode);
+%SetForceInlineFlag(RegExpGetUnicode);
 
 utils.InstallGetter(GlobalRegExp.prototype, 'unicode', RegExpGetUnicode);
 

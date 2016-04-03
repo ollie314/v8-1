@@ -32,6 +32,7 @@
 #include "src/v8.h"
 
 #include "include/v8-profiler.h"
+#include "src/collector.h"
 #include "src/debug/debug.h"
 #include "src/hashmap.h"
 #include "src/profiler/allocation-tracker.h"
@@ -366,7 +367,9 @@ TEST(HeapSnapshotCodeObjects) {
     }
   }
   CHECK(compiled_references_x);
-  CHECK(!lazy_references_x);
+  if (i::FLAG_lazy && !(i::FLAG_ignition && i::FLAG_ignition_eager)) {
+    CHECK(!lazy_references_x);
+  }
 }
 
 
@@ -2872,7 +2875,6 @@ static const v8::AllocationProfile::Node* FindAllocationProfileNode(
   return node;
 }
 
-
 TEST(SamplingHeapProfiler) {
   v8::HandleScope scope(v8::Isolate::GetCurrent());
   LocalContext env;
@@ -2901,9 +2903,9 @@ TEST(SamplingHeapProfiler) {
     CHECK(profile == nullptr);
   }
 
-  int count_512kb = 0;
+  int count_1024 = 0;
   {
-    heap_profiler->StartSamplingHeapProfiler(512 * 1024);
+    heap_profiler->StartSamplingHeapProfiler(1024);
     CompileRun(script_source);
 
     v8::base::SmartPointer<v8::AllocationProfile> profile(
@@ -2917,7 +2919,7 @@ TEST(SamplingHeapProfiler) {
 
     // Count the number of allocations we sampled from bar.
     for (auto allocation : node_bar->allocations) {
-      count_512kb += allocation.count;
+      count_1024 += allocation.count;
     }
 
     heap_profiler->StopSamplingHeapProfiler();
@@ -2929,9 +2931,9 @@ TEST(SamplingHeapProfiler) {
     CHECK(profile == nullptr);
   }
 
-  // Sampling at a higher rate should give us more sampled objects.
+  // Sampling at a higher rate should give us similar numbers of objects.
   {
-    heap_profiler->StartSamplingHeapProfiler(32 * 1024);
+    heap_profiler->StartSamplingHeapProfiler(128);
     CompileRun(script_source);
 
     v8::base::SmartPointer<v8::AllocationProfile> profile(
@@ -2944,15 +2946,21 @@ TEST(SamplingHeapProfiler) {
     CHECK(node_bar);
 
     // Count the number of allocations we sampled from bar.
-    int count_32kb = 0;
+    int count_128 = 0;
     for (auto allocation : node_bar->allocations) {
-      count_32kb += allocation.count;
+      count_128 += allocation.count;
     }
 
-    // We should have roughly 16x as many sampled allocations. However,
-    // alignment and boundaries might tweak the numbers slightly. We use a
-    // slightly weaker test to account for this.
-    CHECK_GT(count_32kb, 8 * count_512kb);
+    // We should have similar unsampled counts of allocations. Though
+    // we will sample different numbers of objects at different rates,
+    // the unsampling process should produce similar final estimates
+    // at the true number of allocations. However, the process to
+    // determine these unsampled counts is probabilisitic so we need to
+    // account for error.
+    double max_count = std::max(count_128, count_1024);
+    double min_count = std::min(count_128, count_1024);
+    double percent_difference = (max_count - min_count) / min_count;
+    CHECK_LT(percent_difference, 0.15);
 
     heap_profiler->StopSamplingHeapProfiler();
   }
@@ -2976,6 +2984,23 @@ TEST(SamplingHeapProfiler) {
     auto node2 = FindAllocationProfileNode(
         *profile, Vector<const char*>(names2, arraysize(names2)));
     CHECK(node2);
+
+    heap_profiler->StopSamplingHeapProfiler();
+  }
+
+  // A test case with scripts unloaded before profile gathered
+  {
+    heap_profiler->StartSamplingHeapProfiler(64);
+    CompileRun(
+        "for (var i = 0; i < 1024; i++) {\n"
+        "  eval(\"new Array(100)\");\n"
+        "}\n");
+
+    CcTest::heap()->CollectAllGarbage();
+
+    v8::base::SmartPointer<v8::AllocationProfile> profile(
+        heap_profiler->GetAllocationProfile());
+    CHECK(!profile.is_empty());
 
     heap_profiler->StopSamplingHeapProfiler();
   }

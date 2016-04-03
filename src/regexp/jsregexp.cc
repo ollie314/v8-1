@@ -41,6 +41,8 @@
 #include "src/regexp/arm/regexp-macro-assembler-arm.h"
 #elif V8_TARGET_ARCH_PPC
 #include "src/regexp/ppc/regexp-macro-assembler-ppc.h"
+#elif V8_TARGET_ARCH_S390
+#include "src/regexp/s390/regexp-macro-assembler-s390.h"
 #elif V8_TARGET_ARCH_MIPS
 #include "src/regexp/mips/regexp-macro-assembler-mips.h"
 #elif V8_TARGET_ARCH_MIPS64
@@ -133,7 +135,7 @@ MaybeHandle<Object> RegExpImpl::Compile(Handle<JSRegExp> re,
                                         Handle<String> pattern,
                                         JSRegExp::Flags flags) {
   Isolate* isolate = re->GetIsolate();
-  Zone zone;
+  Zone zone(isolate->allocator());
   CompilationCache* compilation_cache = isolate->compilation_cache();
   MaybeHandle<FixedArray> maybe_cached =
       compilation_cache->LookupRegExp(pattern, flags);
@@ -344,7 +346,7 @@ bool RegExpImpl::CompileIrregexp(Handle<JSRegExp> re,
                                  bool is_one_byte) {
   // Compile the RegExp.
   Isolate* isolate = re->GetIsolate();
-  Zone zone;
+  Zone zone(isolate->allocator());
   PostponeInterruptsScope postpone(isolate);
   // If we had a compilation error the last time this is saved at the
   // saved code index.
@@ -1974,15 +1976,13 @@ static void SplitSearchSpace(ZoneList<int>* ranges,
 // know that the character is in the range of min_char to max_char inclusive.
 // Either label can be NULL indicating backtracking.  Either label can also be
 // equal to the fall_through label.
-static void GenerateBranches(RegExpMacroAssembler* masm,
-                             ZoneList<int>* ranges,
-                             int start_index,
-                             int end_index,
-                             uc16 min_char,
-                             uc16 max_char,
-                             Label* fall_through,
-                             Label* even_label,
-                             Label* odd_label) {
+static void GenerateBranches(RegExpMacroAssembler* masm, ZoneList<int>* ranges,
+                             int start_index, int end_index, uc32 min_char,
+                             uc32 max_char, Label* fall_through,
+                             Label* even_label, Label* odd_label) {
+  DCHECK_LE(min_char, String::kMaxUtf16CodeUnit);
+  DCHECK_LE(max_char, String::kMaxUtf16CodeUnit);
+
   int first = ranges->at(start_index);
   int last = ranges->at(end_index) - 1;
 
@@ -2492,12 +2492,14 @@ bool RegExpNode::EmitQuickCheck(RegExpCompiler* compiler,
   } else {
     // For 2-character preloads in one-byte mode or 1-character preloads in
     // two-byte mode we also use a 16 bit load with zero extend.
+    static const uint32_t kTwoByteMask = 0xffff;
+    static const uint32_t kFourByteMask = 0xffffffff;
     if (details->characters() == 2 && compiler->one_byte()) {
-      if ((mask & 0xffff) == 0xffff) need_mask = false;
+      if ((mask & kTwoByteMask) == kTwoByteMask) need_mask = false;
     } else if (details->characters() == 1 && !compiler->one_byte()) {
-      if ((mask & 0xffff) == 0xffff) need_mask = false;
+      if ((mask & kTwoByteMask) == kTwoByteMask) need_mask = false;
     } else {
-      if (mask == 0xffffffff) need_mask = false;
+      if (mask == kFourByteMask) need_mask = false;
     }
   }
 
@@ -4810,7 +4812,7 @@ static bool CompareInverseRanges(ZoneList<CharacterRange>* ranges,
       return false;
     }
   }
-  if (range.to() != 0xffff) {
+  if (range.to() != String::kMaxCodePoint) {
     return false;
   }
   return true;
@@ -4899,16 +4901,18 @@ UnicodeRangeSplitter::UnicodeRangeSplitter(Zone* zone,
     table_.AddRange(base->at(i), kBase, zone_);
   }
   // Add overlay ranges.
-  table_.AddRange(CharacterRange(0, kLeadSurrogateStart - 1), kBmpCodePoints,
-                  zone_);
-  table_.AddRange(CharacterRange(kLeadSurrogateStart, kLeadSurrogateEnd),
-                  kLeadSurrogates, zone_);
-  table_.AddRange(CharacterRange(kTrailSurrogateStart, kTrailSurrogateEnd),
-                  kTrailSurrogates, zone_);
-  table_.AddRange(CharacterRange(kTrailSurrogateEnd + 1, kNonBmpStart - 1),
+  table_.AddRange(CharacterRange::Range(0, kLeadSurrogateStart - 1),
                   kBmpCodePoints, zone_);
-  table_.AddRange(CharacterRange(kNonBmpStart, kNonBmpEnd), kNonBmpCodePoints,
-                  zone_);
+  table_.AddRange(CharacterRange::Range(kLeadSurrogateStart, kLeadSurrogateEnd),
+                  kLeadSurrogates, zone_);
+  table_.AddRange(
+      CharacterRange::Range(kTrailSurrogateStart, kTrailSurrogateEnd),
+      kTrailSurrogates, zone_);
+  table_.AddRange(
+      CharacterRange::Range(kTrailSurrogateEnd + 1, kNonBmpStart - 1),
+      kBmpCodePoints, zone_);
+  table_.AddRange(CharacterRange::Range(kNonBmpStart, kNonBmpEnd),
+                  kNonBmpCodePoints, zone_);
   table_.ForEach(this);
 }
 
@@ -5795,7 +5799,7 @@ static void AddClass(const int* elmv,
   DCHECK(elmv[elmc] == kRangeEndMarker);
   for (int i = 0; i < elmc; i += 2) {
     DCHECK(elmv[i] < elmv[i + 1]);
-    ranges->Add(CharacterRange(elmv[i], elmv[i + 1] - 1), zone);
+    ranges->Add(CharacterRange::Range(elmv[i], elmv[i + 1] - 1), zone);
   }
 }
 
@@ -5812,10 +5816,10 @@ static void AddClassNegated(const int *elmv,
   for (int i = 0; i < elmc; i += 2) {
     DCHECK(last <= elmv[i] - 1);
     DCHECK(elmv[i] < elmv[i + 1]);
-    ranges->Add(CharacterRange(last, elmv[i] - 1), zone);
+    ranges->Add(CharacterRange::Range(last, elmv[i] - 1), zone);
     last = elmv[i + 1];
   }
-  ranges->Add(CharacterRange(last, String::kMaxCodePoint), zone);
+  ranges->Add(CharacterRange::Range(last, String::kMaxCodePoint), zone);
 }
 
 
@@ -5879,7 +5883,8 @@ void CharacterRange::AddCaseEquivalents(Isolate* isolate, Zone* zone,
   for (int i = 0; i < range_count; i++) {
     CharacterRange range = ranges->at(i);
     uc32 bottom = range.from();
-    uc32 top = range.to();
+    if (bottom > String::kMaxUtf16CodeUnit) return;
+    uc32 top = Min(range.to(), String::kMaxUtf16CodeUnit);
     // Nothing to be done for surrogates.
     if (bottom >= kLeadSurrogateStart && top <= kTrailSurrogateEnd) return;
     if (is_one_byte && !RangeContainsLatin1Equivalents(range)) {
@@ -5933,7 +5938,7 @@ void CharacterRange::AddCaseEquivalents(Isolate* isolate, Zone* zone,
           uc32 range_from = c - (block_end - pos);
           uc32 range_to = c - (block_end - end);
           if (!(bottom <= range_from && range_to <= top)) {
-            ranges->Add(CharacterRange(range_from, range_to), zone);
+            ranges->Add(CharacterRange::Range(range_from, range_to), zone);
           }
         }
         pos = end + 1;
@@ -6027,7 +6032,7 @@ static int InsertRangeInCanonicalList(ZoneList<CharacterRange>* list,
     CharacterRange to_replace = list->at(start_pos);
     int new_from = Min(to_replace.from(), from);
     int new_to = Max(to_replace.to(), to);
-    list->at(start_pos) = CharacterRange(new_from, new_to);
+    list->at(start_pos) = CharacterRange::Range(new_from, new_to);
     return count;
   }
   // Replace a number of existing ranges from start_pos to end_pos - 1.
@@ -6038,7 +6043,7 @@ static int InsertRangeInCanonicalList(ZoneList<CharacterRange>* list,
   if (end_pos < count) {
     MoveRanges(list, end_pos, start_pos + 1, count - end_pos);
   }
-  list->at(start_pos) = CharacterRange(new_from, new_to);
+  list->at(start_pos) = CharacterRange::Range(new_from, new_to);
   return count - (end_pos - start_pos) + 1;
 }
 
@@ -6097,17 +6102,18 @@ void CharacterRange::Negate(ZoneList<CharacterRange>* ranges,
   uc32 from = 0;
   int i = 0;
   if (range_count > 0 && ranges->at(0).from() == 0) {
-    from = ranges->at(0).to();
+    from = ranges->at(0).to() + 1;
     i = 1;
   }
   while (i < range_count) {
     CharacterRange range = ranges->at(i);
-    negated_ranges->Add(CharacterRange(from + 1, range.from() - 1), zone);
-    from = range.to();
+    negated_ranges->Add(CharacterRange::Range(from, range.from() - 1), zone);
+    from = range.to() + 1;
     i++;
   }
   if (from < String::kMaxCodePoint) {
-    negated_ranges->Add(CharacterRange(from + 1, String::kMaxCodePoint), zone);
+    negated_ranges->Add(CharacterRange::Range(from, String::kMaxCodePoint),
+                        zone);
   }
 }
 
@@ -6186,8 +6192,9 @@ void DispatchTable::AddRange(CharacterRange full_range, int value,
     if (entry->from() < current.from() && entry->to() >= current.from()) {
       // Snap the overlapping range in half around the start point of
       // the range we're adding.
-      CharacterRange left(entry->from(), current.from() - 1);
-      CharacterRange right(current.from(), entry->to());
+      CharacterRange left =
+          CharacterRange::Range(entry->from(), current.from() - 1);
+      CharacterRange right = CharacterRange::Range(current.from(), entry->to());
       // The left part of the overlapping range doesn't overlap.
       // Truncate the whole entry to be just the left part.
       entry->set_to(left.to());
@@ -6239,10 +6246,6 @@ void DispatchTable::AddRange(CharacterRange full_range, int value,
       // we're adding so we can just update it and move the start point
       // of the range we're adding just past it.
       entry->AddValue(value, zone);
-      // Bail out if the last interval ended at 0xFFFF since otherwise
-      // adding 1 will wrap around to 0.
-      if (entry->to() == String::kMaxUtf16CodeUnit)
-        break;
       DCHECK(entry->to() + 1 > current.from());
       current.set_from(entry->to() + 1);
     } else {
@@ -6493,8 +6496,7 @@ class AddDispatchRange {
 
 
 void AddDispatchRange::Call(uc32 from, DispatchTable::Entry entry) {
-  CharacterRange range(from, entry.to());
-  constructor_->AddRange(range);
+  constructor_->AddRange(CharacterRange::Range(from, entry.to()));
 }
 
 
@@ -6532,16 +6534,16 @@ void DispatchTableConstructor::AddInverse(ZoneList<CharacterRange>* ranges) {
   for (int i = 0; i < ranges->length(); i++) {
     CharacterRange range = ranges->at(i);
     if (last < range.from())
-      AddRange(CharacterRange(last, range.from() - 1));
+      AddRange(CharacterRange::Range(last, range.from() - 1));
     if (range.to() >= last) {
-      if (range.to() == String::kMaxUtf16CodeUnit) {
+      if (range.to() == String::kMaxCodePoint) {
         return;
       } else {
         last = range.to() + 1;
       }
     }
   }
-  AddRange(CharacterRange(last, String::kMaxUtf16CodeUnit));
+  AddRange(CharacterRange::Range(last, String::kMaxCodePoint));
 }
 
 
@@ -6550,7 +6552,7 @@ void DispatchTableConstructor::VisitText(TextNode* that) {
   switch (elm.text_type()) {
     case TextElement::ATOM: {
       uc16 c = elm.atom()->data()[0];
-      AddRange(CharacterRange(c, c));
+      AddRange(CharacterRange::Range(c, c));
       break;
     }
     case TextElement::CHAR_CLASS: {
@@ -6703,6 +6705,9 @@ RegExpEngine::CompilationResult RegExpEngine::Compile(
 #elif V8_TARGET_ARCH_ARM64
   RegExpMacroAssemblerARM64 macro_assembler(isolate, zone, mode,
                                             (data->capture_count + 1) * 2);
+#elif V8_TARGET_ARCH_S390
+  RegExpMacroAssemblerS390 macro_assembler(isolate, zone, mode,
+                                           (data->capture_count + 1) * 2);
 #elif V8_TARGET_ARCH_PPC
   RegExpMacroAssemblerPPC macro_assembler(isolate, zone, mode,
                                           (data->capture_count + 1) * 2);

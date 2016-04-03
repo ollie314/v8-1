@@ -175,7 +175,7 @@ class FunctionTester : public InitializedHandleScope {
   uint32_t flags_;
 
   Handle<JSFunction> Compile(Handle<JSFunction> function) {
-    Zone zone;
+    Zone zone(function->GetIsolate()->allocator());
     ParseInfo parse_info(&zone, function);
     CompilationInfo info(&parse_info);
     info.MarkAsDeoptimizationEnabled();
@@ -206,11 +206,10 @@ class FunctionTester : public InitializedHandleScope {
   std::string BuildFunction(int param_count) {
     std::string function_string = "(function(";
     if (param_count > 0) {
-      char next = 'a';
-      function_string += next;
-      while (param_count-- > 0) {
+      function_string += 'a';
+      for (int i = 1; i < param_count; i++) {
         function_string += ',';
-        function_string += ++next;
+        function_string += static_cast<char>('a' + i);
       }
     }
     function_string += "){})";
@@ -225,7 +224,7 @@ class FunctionTester : public InitializedHandleScope {
   // Compile the given machine graph instead of the source of the function
   // and replace the JSFunction's code with the result.
   Handle<JSFunction> CompileGraph(Graph* graph) {
-    Zone zone;
+    Zone zone(function->GetIsolate()->allocator());
     ParseInfo parse_info(&zone, function);
     CompilationInfo info(&parse_info);
 

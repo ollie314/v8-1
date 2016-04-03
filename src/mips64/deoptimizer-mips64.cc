@@ -80,27 +80,6 @@ void Deoptimizer::PatchCodeForDeoptimization(Isolate* isolate, Code* code) {
 }
 
 
-void Deoptimizer::FillInputFrame(Address tos, JavaScriptFrame* frame) {
-  // Set the register values. The values are not important as there are no
-  // callee saved registers in JavaScript frames, so all registers are
-  // spilled. Registers fp and sp are set to the correct values though.
-
-  for (int i = 0; i < Register::kNumRegisters; i++) {
-    input_->SetRegister(i, i * 4);
-  }
-  input_->SetRegister(sp.code(), reinterpret_cast<intptr_t>(frame->sp()));
-  input_->SetRegister(fp.code(), reinterpret_cast<intptr_t>(frame->fp()));
-  for (int i = 0; i < DoubleRegister::kMaxNumRegisters; i++) {
-    input_->SetDoubleRegister(i, 0.0);
-  }
-
-  // Fill the frame content from the actual data on the frame.
-  for (unsigned i = 0; i < input_->GetFrameSize(); i += kPointerSize) {
-    input_->SetFrameSlot(i, Memory::uint64_at(tos + i));
-  }
-}
-
-
 void Deoptimizer::SetPlatformCompiledStubRegisters(
     FrameDescription* output_frame, CodeStubDescriptor* descriptor) {
   ApiFunction function(descriptor->deoptimization_handler());
@@ -118,12 +97,6 @@ void Deoptimizer::CopyDoubleRegisters(FrameDescription* output_frame) {
     output_frame->SetDoubleRegister(i, double_value);
   }
 }
-
-bool Deoptimizer::HasAlignmentPadding(SharedFunctionInfo* shared) {
-  // There is no dynamic alignment padding on MIPS in the input frame.
-  return false;
-}
-
 
 #define __ masm()->
 
@@ -182,9 +155,14 @@ void Deoptimizer::TableEntryGenerator::Generate() {
 
   // Allocate a new deoptimizer object.
   __ PrepareCallCFunction(6, a5);
-  // Pass six arguments, according to O32 or n64 ABI. a0..a3 are same for both.
-  __ li(a1, Operand(type()));  // bailout type,
+  // Pass six arguments, according to n64 ABI.
+  __ mov(a0, zero_reg);
+  Label context_check;
+  __ ld(a1, MemOperand(fp, CommonFrameConstants::kContextOrFrameTypeOffset));
+  __ JumpIfSmi(a1, &context_check);
   __ ld(a0, MemOperand(fp, JavaScriptFrameConstants::kFunctionOffset));
+  __ bind(&context_check);
+  __ li(a1, Operand(type()));  // Bailout type.
   // a2: bailout id already loaded.
   // a3: code address or 0 already loaded.
   // a4: already has fp-to-sp delta.
@@ -258,6 +236,8 @@ void Deoptimizer::TableEntryGenerator::Generate() {
         ExternalReference::compute_output_frames_function(isolate()), 1);
   }
   __ pop(a0);  // Restore deoptimizer object (class Deoptimizer).
+
+  __ ld(sp, MemOperand(a0, Deoptimizer::caller_frame_top_offset()));
 
   // Replace the current (input) frame with the output frames.
   Label outer_push_loop, inner_push_loop,

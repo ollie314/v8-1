@@ -1620,7 +1620,7 @@ TEST(min_max) {
 
     float inputse[kTableLength] = {2.0,  3.0,  fnan, 3.0,   -0.0, 0.0, finf,
                                    fnan, 42.0, finf, fminf, finf, fnan};
-    float inputsf[kTableLength] = {3.0,  2.0,  3.0,  fnan, -0.0,  0.0, fnan,
+    float inputsf[kTableLength] = {3.0,  2.0,  3.0,  fnan, 0.0,   -0.0, fnan,
                                    finf, finf, 42.0, finf, fminf, fnan};
     float outputsfmin[kTableLength] = {2.0,   2.0,   3.0,  3.0,  -0.0,
                                        -0.0,  finf,  finf, 42.0, 42.0,
@@ -1648,25 +1648,18 @@ TEST(min_max) {
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
     F3 f = FUNCTION_CAST<F3>(code->entry());
-    for (int i = 0; i < kTableLength; i++) {
+    for (int i = 4; i < kTableLength; i++) {
       test.a = inputsa[i];
       test.b = inputsb[i];
       test.e = inputse[i];
       test.f = inputsf[i];
 
-      (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+      CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0);
 
-      if (i < kTableLength - 1) {
-        CHECK_EQ(test.c, outputsdmin[i]);
-        CHECK_EQ(test.d, outputsdmax[i]);
-        CHECK_EQ(test.g, outputsfmin[i]);
-        CHECK_EQ(test.h, outputsfmax[i]);
-      } else {
-        CHECK(std::isnan(test.c));
-        CHECK(std::isnan(test.d));
-        CHECK(std::isnan(test.g));
-        CHECK(std::isnan(test.h));
-      }
+      CHECK_EQ(0, memcmp(&test.c, &outputsdmin[i], sizeof(test.c)));
+      CHECK_EQ(0, memcmp(&test.d, &outputsdmax[i], sizeof(test.d)));
+      CHECK_EQ(0, memcmp(&test.g, &outputsfmin[i], sizeof(test.g)));
+      CHECK_EQ(0, memcmp(&test.h, &outputsfmax[i], sizeof(test.h)));
     }
   }
 }
@@ -5003,6 +4996,55 @@ TEST(r6_aui_family) {
     for (size_t i = 0; i < nr_test_cases; ++i) {
       uint64_t res = run_dahi(dahi_tc[i].rs, dahi_tc[i].offset);
       CHECK_EQ(dahi_tc[i].ref_res, res);
+    }
+  }
+}
+
+
+uint64_t run_li_macro(uint64_t rs, LiFlags mode) {
+  Isolate* isolate = CcTest::i_isolate();
+  HandleScope scope(isolate);
+  MacroAssembler assm(isolate, NULL, 0, v8::internal::CodeObjectRequired::kYes);
+
+  __ li(a0, rs, mode);
+  __ mov(v0, a0);
+  __ jr(ra);
+  __ nop();
+
+  CodeDesc desc;
+  assm.GetCode(&desc);
+  Handle<Code> code = isolate->factory()->NewCode(
+      desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
+
+  F2 f = FUNCTION_CAST<F2>(code->entry());
+
+  uint64_t res = reinterpret_cast<uint64_t>(
+      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+
+  return res;
+}
+
+
+TEST(li_macro) {
+  CcTest::InitializeVM();
+
+  uint64_t inputs[] = {
+      0x0000000000000000, 0x000000000000ffff, 0x00000000ffffffff,
+      0x0000ffffffffffff, 0xffffffffffffffff, 0xffff000000000000,
+      0xffffffff00000000, 0xffffffffffff0000, 0xffff0000ffff0000,
+      0x0000ffffffff0000, 0x0000ffff0000ffff, 0x00007fffffffffff,
+      0x7fffffffffffffff, 0x000000007fffffff, 0x00007fff7fffffff,
+  };
+
+  size_t nr_test_cases = sizeof(inputs) / sizeof(inputs[0]);
+  for (size_t i = 0; i < nr_test_cases; ++i) {
+    uint64_t res = run_li_macro(inputs[i], OPTIMIZE_SIZE);
+    CHECK_EQ(inputs[i], res);
+    res = run_li_macro(inputs[i], CONSTANT_SIZE);
+    CHECK_EQ(inputs[i], res);
+    if (is_int48(inputs[i])) {
+      res = run_li_macro(inputs[i], ADDRESS_LOAD);
+      CHECK_EQ(inputs[i], res);
     }
   }
 }

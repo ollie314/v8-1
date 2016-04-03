@@ -186,6 +186,9 @@ const DoubleRegister no_double_reg = {DoubleRegister::kCode_no_reg};
 
 typedef DoubleRegister X87Register;
 
+// TODO(x87) Define SIMD registers.
+typedef DoubleRegister Simd128Register;
+
 enum Condition {
   // any value < 0 is considered no_condition
   no_condition  = -1,
@@ -269,6 +272,7 @@ class Immediate BASE_EMBEDDED {
   inline explicit Immediate(Handle<Object> handle);
   inline explicit Immediate(Smi* value);
   inline explicit Immediate(Address addr);
+  inline explicit Immediate(Address x, RelocInfo::Mode rmode);
 
   static Immediate CodeRelativeOffset(Label* label) {
     return Immediate(label);
@@ -277,6 +281,9 @@ class Immediate BASE_EMBEDDED {
   bool is_zero() const { return x_ == 0 && RelocInfo::IsNone(rmode_); }
   bool is_int8() const {
     return -128 <= x_ && x_ < 128 && RelocInfo::IsNone(rmode_);
+  }
+  bool is_uint8() const {
+    return v8::internal::is_uint8(x_) && RelocInfo::IsNone(rmode_);
   }
   bool is_int16() const {
     return -32768 <= x_ && x_ < 32768 && RelocInfo::IsNone(rmode_);
@@ -656,18 +663,24 @@ class Assembler : public AssemblerBase {
   void and_(const Operand& dst, Register src);
   void and_(const Operand& dst, const Immediate& x);
 
-  void cmpb(Register reg, int8_t imm8) { cmpb(Operand(reg), imm8); }
-  void cmpb(const Operand& op, int8_t imm8);
+  void cmpb(Register reg, Immediate imm8) { cmpb(Operand(reg), imm8); }
+  void cmpb(const Operand& op, Immediate imm8);
   void cmpb(Register reg, const Operand& op);
   void cmpb(const Operand& op, Register reg);
+  void cmpb(Register dst, Register src) { cmpb(Operand(dst), src); }
   void cmpb_al(const Operand& op);
   void cmpw_ax(const Operand& op);
-  void cmpw(const Operand& op, Immediate imm16);
+  void cmpw(const Operand& dst, Immediate src);
+  void cmpw(Register dst, Immediate src) { cmpw(Operand(dst), src); }
+  void cmpw(Register dst, const Operand& src);
+  void cmpw(Register dst, Register src) { cmpw(Operand(dst), src); }
+  void cmpw(const Operand& dst, Register src);
   void cmp(Register reg, int32_t imm32);
   void cmp(Register reg, Handle<Object> handle);
   void cmp(Register reg0, Register reg1) { cmp(reg0, Operand(reg1)); }
   void cmp(Register reg, const Operand& op);
   void cmp(Register reg, const Immediate& imm) { cmp(Operand(reg), imm); }
+  void cmp(const Operand& op, Register reg);
   void cmp(const Operand& op, const Immediate& imm);
   void cmp(const Operand& op, Handle<Object> handle);
 
@@ -727,21 +740,20 @@ class Assembler : public AssemblerBase {
 
   void sbb(Register dst, const Operand& src);
 
-  void shld(Register dst, Register src) { shld(dst, Operand(src)); }
-  void shld(Register dst, const Operand& src);
-
   void shl(Register dst, uint8_t imm8) { shl(Operand(dst), imm8); }
   void shl(const Operand& dst, uint8_t imm8);
   void shl_cl(Register dst) { shl_cl(Operand(dst)); }
   void shl_cl(const Operand& dst);
-
-  void shrd(Register dst, Register src) { shrd(dst, Operand(src)); }
-  void shrd(Register dst, const Operand& src);
+  void shld(Register dst, Register src, uint8_t shift);
+  void shld_cl(Register dst, Register src);
 
   void shr(Register dst, uint8_t imm8) { shr(Operand(dst), imm8); }
   void shr(const Operand& dst, uint8_t imm8);
   void shr_cl(Register dst) { shr_cl(Operand(dst)); }
   void shr_cl(const Operand& dst);
+  void shrd(Register dst, Register src, uint8_t shift);
+  void shrd_cl(Register dst, Register src) { shrd_cl(Operand(dst), src); }
+  void shrd_cl(const Operand& dst, Register src);
 
   void sub(Register dst, const Immediate& imm) { sub(Operand(dst), imm); }
   void sub(const Operand& dst, const Immediate& x);
@@ -754,8 +766,8 @@ class Assembler : public AssemblerBase {
   void test(Register reg, const Operand& op);
   void test_b(Register reg, const Operand& op);
   void test(const Operand& op, const Immediate& imm);
-  void test_b(Register reg, uint8_t imm8);
-  void test_b(const Operand& op, uint8_t imm8);
+  void test_b(Register reg, Immediate imm8);
+  void test_b(const Operand& op, Immediate imm8);
 
   void xor_(Register dst, int32_t imm32);
   void xor_(Register dst, Register src) { xor_(dst, Operand(src)); }
@@ -957,7 +969,9 @@ class Assembler : public AssemblerBase {
 
   static bool IsNop(Address addr);
 
-  PositionsRecorder* positions_recorder() { return &positions_recorder_; }
+  AssemblerPositionsRecorder* positions_recorder() {
+    return &positions_recorder_;
+  }
 
   int relocation_writer_size() {
     return (buffer_ + buffer_size_) - reloc_info_writer.pos();
@@ -999,6 +1013,7 @@ class Assembler : public AssemblerBase {
                    RelocInfo::Mode rmode,
                    TypeFeedbackId id = TypeFeedbackId::None());
   inline void emit(const Immediate& x);
+  inline void emit_b(Immediate x);
   inline void emit_w(const Immediate& x);
   inline void emit_q(uint64_t x);
 
@@ -1044,8 +1059,8 @@ class Assembler : public AssemblerBase {
   // code generation
   RelocInfoWriter reloc_info_writer;
 
-  PositionsRecorder positions_recorder_;
-  friend class PositionsRecorder;
+  AssemblerPositionsRecorder positions_recorder_;
+  friend class AssemblerPositionsRecorder;
 };
 
 

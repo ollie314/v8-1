@@ -33,6 +33,7 @@
 #include "src/deoptimizer.h"
 #include "src/execution.h"
 #include "src/factory.h"
+#include "src/field-type.h"
 #include "src/global-handles.h"
 #include "src/heap/gc-tracer.h"
 #include "src/heap/memory-reducer.h"
@@ -1163,7 +1164,7 @@ TEST(Iteration) {
   // Allocate a JS array to OLD_SPACE and NEW_SPACE
   objs[next_objs_index++] = factory->NewJSArray(10);
   objs[next_objs_index++] =
-      factory->NewJSArray(10, FAST_HOLEY_ELEMENTS, Strength::WEAK, TENURED);
+      factory->NewJSArray(10, FAST_HOLEY_ELEMENTS, TENURED);
 
   // Allocate a small string to OLD_DATA_SPACE and NEW_SPACE
   objs[next_objs_index++] = factory->NewStringFromStaticChars("abcdefghij");
@@ -1571,8 +1572,7 @@ TEST(CompilationCacheCachingBehavior) {
   Factory* factory = isolate->factory();
   Heap* heap = isolate->heap();
   CompilationCache* compilation_cache = isolate->compilation_cache();
-  LanguageMode language_mode =
-      construct_language_mode(FLAG_use_strict, FLAG_use_strong);
+  LanguageMode language_mode = construct_language_mode(FLAG_use_strict);
 
   v8::HandleScope scope(CcTest::isolate());
   const char* raw_source =
@@ -2067,7 +2067,7 @@ static HeapObject* NewSpaceAllocateAligned(int size,
       heap->new_space()->AllocateRawAligned(size, alignment);
   HeapObject* obj = NULL;
   allocation.To(&obj);
-  heap->CreateFillerObjectAt(obj->address(), size);
+  heap->CreateFillerObjectAt(obj->address(), size, ClearRecordedSlots::kNo);
   return obj;
 }
 
@@ -2170,7 +2170,7 @@ static HeapObject* OldSpaceAllocateAligned(int size,
       heap->old_space()->AllocateRawAligned(size, alignment);
   HeapObject* obj = NULL;
   allocation.To(&obj);
-  heap->CreateFillerObjectAt(obj->address(), size);
+  heap->CreateFillerObjectAt(obj->address(), size, ClearRecordedSlots::kNo);
   return obj;
 }
 
@@ -4284,8 +4284,9 @@ TEST(Regress169928) {
           AllocationMemento::kSize + kPointerSize);
   CHECK(allocation.To(&obj));
   Address addr_obj = obj->address();
-  CcTest::heap()->CreateFillerObjectAt(
-      addr_obj, AllocationMemento::kSize + kPointerSize);
+  CcTest::heap()->CreateFillerObjectAt(addr_obj,
+                                       AllocationMemento::kSize + kPointerSize,
+                                       ClearRecordedSlots::kNo);
 
   // Give the array a name, making sure not to allocate strings.
   v8::Local<v8::Object> array_obj = v8::Utils::ToLocal(array);
@@ -4936,7 +4937,8 @@ TEST(NoWeakHashTableLeakWithIncrementalMarking) {
                i, i, i, i, i, i, i, i);
       CompileRun(source.start());
     }
-    heap->CollectAllGarbage();
+    // We have to abort incremental marking here to abandon black pages.
+    heap->CollectAllGarbage(Heap::kAbortIncrementalMarkingMask);
   }
   int elements = 0;
   if (heap->weak_object_to_code_table()->IsHashTable()) {
@@ -5456,6 +5458,9 @@ TEST(WeakCellsWithIncrementalMarking) {
     CHECK(weak_cell->value()->IsFixedArray());
     weak_cells[i] = inner_scope.CloseAndEscape(weak_cell);
   }
+  // Call collect all twice to make sure that we also cleared
+  // weak cells that were allocated on black pages.
+  heap->CollectAllGarbage();
   heap->CollectAllGarbage();
   CHECK_EQ(*survivor, weak_cells[0]->value());
   for (int i = 1; i < N; i++) {
@@ -5702,9 +5707,10 @@ TEST(Regress388880) {
   Heap* heap = isolate->heap();
 
   Handle<Map> map1 = Map::Create(isolate, 1);
+  Handle<String> name = factory->NewStringFromStaticChars("foo");
+  name = factory->InternalizeString(name);
   Handle<Map> map2 =
-      Map::CopyWithField(map1, factory->NewStringFromStaticChars("foo"),
-                         FieldType::Any(isolate), NONE,
+      Map::CopyWithField(map1, name, FieldType::Any(isolate), NONE,
                          Representation::Tagged(), OMIT_TRANSITION)
           .ToHandleChecked();
 
@@ -6001,7 +6007,7 @@ TEST(PreprocessStackTrace) {
   Handle<Object> exception = v8::Utils::OpenHandle(*try_catch.Exception());
   Handle<Name> key = isolate->factory()->stack_trace_symbol();
   Handle<Object> stack_trace =
-      JSObject::GetProperty(exception, key).ToHandleChecked();
+      Object::GetProperty(exception, key).ToHandleChecked();
   Handle<Object> code =
       Object::GetElement(isolate, stack_trace, 3).ToHandleChecked();
   CHECK(code->IsCode());
@@ -6275,6 +6281,7 @@ static void RemoveCodeAndGC(const v8::FunctionCallbackInfo<v8::Value>& args) {
   Handle<JSFunction> fun = Handle<JSFunction>::cast(obj);
   fun->ReplaceCode(*isolate->builtins()->CompileLazy());
   fun->shared()->ReplaceCode(*isolate->builtins()->CompileLazy());
+  fun->shared()->ClearBytecodeArray();  // Bytecode is code too.
   isolate->heap()->CollectAllAvailableGarbage("remove code and gc");
 }
 
@@ -6318,14 +6325,14 @@ TEST(OldGenerationAllocationThroughput) {
   int time2 = 200;
   size_t counter2 = 2000;
   tracer->SampleAllocation(time2, 0, counter2);
-  size_t throughput =
-      tracer->OldGenerationAllocationThroughputInBytesPerMillisecond(100);
+  size_t throughput = static_cast<size_t>(
+      tracer->OldGenerationAllocationThroughputInBytesPerMillisecond(100));
   CHECK_EQ((counter2 - counter1) / (time2 - time1), throughput);
   int time3 = 1000;
   size_t counter3 = 30000;
   tracer->SampleAllocation(time3, 0, counter3);
-  throughput =
-      tracer->OldGenerationAllocationThroughputInBytesPerMillisecond(100);
+  throughput = static_cast<size_t>(
+      tracer->OldGenerationAllocationThroughputInBytesPerMillisecond(100));
   CHECK_EQ((counter3 - counter1) / (time3 - time1), throughput);
 }
 
@@ -6342,7 +6349,8 @@ TEST(AllocationThroughput) {
   int time2 = 200;
   size_t counter2 = 2000;
   tracer->SampleAllocation(time2, counter2, counter2);
-  size_t throughput = tracer->AllocationThroughputInBytesPerMillisecond(100);
+  size_t throughput = static_cast<size_t>(
+      tracer->AllocationThroughputInBytesPerMillisecond(100));
   CHECK_EQ(2 * (counter2 - counter1) / (time2 - time1), throughput);
   int time3 = 1000;
   size_t counter3 = 30000;
@@ -6491,6 +6499,118 @@ HEAP_TEST(TestMemoryReducerSampleJsCalls) {
   CheckDoubleEquals(2, calls_per_ms);
 }
 
+HEAP_TEST(Regress587004) {
+  FLAG_concurrent_sweeping = false;
+#ifdef VERIFY_HEAP
+  FLAG_verify_heap = false;
+#endif
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
+  Heap* heap = CcTest::heap();
+  Isolate* isolate = CcTest::i_isolate();
+  Factory* factory = isolate->factory();
+  const int N = (Page::kMaxRegularHeapObjectSize - FixedArray::kHeaderSize) /
+                kPointerSize;
+  Handle<FixedArray> array = factory->NewFixedArray(N, TENURED);
+  CHECK(heap->old_space()->Contains(*array));
+  Handle<Object> number = factory->NewHeapNumber(1.0);
+  CHECK(heap->InNewSpace(*number));
+  for (int i = 0; i < N; i++) {
+    array->set(i, *number);
+  }
+  heap->CollectGarbage(OLD_SPACE);
+  SimulateFullSpace(heap->old_space());
+  heap->RightTrimFixedArray<Heap::CONCURRENT_TO_SWEEPER>(*array, N - 1);
+  heap->mark_compact_collector()->EnsureSweepingCompleted();
+  ByteArray* byte_array;
+  const int M = 256;
+  // Don't allow old space expansion. The test works without this flag too,
+  // but becomes very slow.
+  heap->set_force_oom(true);
+  while (heap->AllocateByteArray(M, TENURED).To(&byte_array)) {
+    for (int j = 0; j < M; j++) {
+      byte_array->set(j, 0x31);
+    }
+  }
+  // Re-enable old space expansion to avoid OOM crash.
+  heap->set_force_oom(false);
+  heap->CollectGarbage(NEW_SPACE);
+}
+
+HEAP_TEST(Regress589413) {
+  FLAG_stress_compaction = true;
+  FLAG_manual_evacuation_candidates_selection = true;
+  FLAG_parallel_compaction = false;
+  FLAG_concurrent_sweeping = false;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
+  Heap* heap = CcTest::heap();
+  // Get the heap in clean state.
+  heap->CollectGarbage(OLD_SPACE);
+  heap->CollectGarbage(OLD_SPACE);
+  Isolate* isolate = CcTest::i_isolate();
+  Factory* factory = isolate->factory();
+  // Fill the new space with byte arrays with elements looking like pointers.
+  const int M = 256;
+  ByteArray* byte_array;
+  while (heap->AllocateByteArray(M).To(&byte_array)) {
+    for (int j = 0; j < M; j++) {
+      byte_array->set(j, 0x31);
+    }
+    // Add the array in root set.
+    handle(byte_array);
+  }
+  // Make sure the byte arrays will be promoted on the next GC.
+  heap->CollectGarbage(NEW_SPACE);
+  // This number is close to large free list category threshold.
+  const int N = 0x3eee;
+  {
+    std::vector<FixedArray*> arrays;
+    std::set<Page*> pages;
+    FixedArray* array;
+    // Fill all pages with fixed arrays.
+    heap->set_force_oom(true);
+    while (heap->AllocateFixedArray(N, TENURED).To(&array)) {
+      arrays.push_back(array);
+      pages.insert(Page::FromAddress(array->address()));
+      // Add the array in root set.
+      handle(array);
+    }
+    // Expand and full one complete page with fixed arrays.
+    heap->set_force_oom(false);
+    while (heap->AllocateFixedArray(N, TENURED).To(&array)) {
+      arrays.push_back(array);
+      pages.insert(Page::FromAddress(array->address()));
+      // Add the array in root set.
+      handle(array);
+      // Do not expand anymore.
+      heap->set_force_oom(true);
+    }
+    // Expand and mark the new page as evacuation candidate.
+    heap->set_force_oom(false);
+    {
+      AlwaysAllocateScope always_allocate(isolate);
+      Handle<HeapObject> ec_obj = factory->NewFixedArray(5000, TENURED);
+      Page* ec_page = Page::FromAddress(ec_obj->address());
+      ec_page->SetFlag(MemoryChunk::FORCE_EVACUATION_CANDIDATE_FOR_TESTING);
+      // Make all arrays point to evacuation candidate so that
+      // slots are recorded for them.
+      for (size_t j = 0; j < arrays.size(); j++) {
+        array = arrays[j];
+        for (int i = 0; i < N; i++) {
+          array->set(i, *ec_obj);
+        }
+      }
+    }
+    SimulateIncrementalMarking(heap);
+    for (size_t j = 0; j < arrays.size(); j++) {
+      heap->RightTrimFixedArray<Heap::CONCURRENT_TO_SWEEPER>(arrays[j], N - 1);
+    }
+  }
+  // Force allocation from the free list.
+  heap->set_force_oom(true);
+  heap->CollectGarbage(OLD_SPACE);
+}
 
 }  // namespace internal
 }  // namespace v8

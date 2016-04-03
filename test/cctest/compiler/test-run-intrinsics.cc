@@ -34,31 +34,6 @@ TEST(ClassOf) {
 }
 
 
-#define COUNTER_NAME "hurz"
-
-static int* LookupCounter(const char* name) {
-  static int counter = 1234;
-  return strcmp(name, COUNTER_NAME) == 0 ? &counter : nullptr;
-}
-
-
-TEST(IncrementStatsCounter) {
-  FLAG_native_code_counters = true;
-  reinterpret_cast<v8::Isolate*>(CcTest::InitIsolateOnce())
-      ->SetCounterFunction(LookupCounter);
-  FunctionTester T(
-      "(function() { %_IncrementStatsCounter('" COUNTER_NAME "'); })", flags);
-  StatsCounter counter(T.main_isolate(), COUNTER_NAME);
-  if (!counter.Enabled()) return;
-
-  int old_value = *counter.GetInternalPointer();
-  T.CheckCall(T.undefined());
-  CHECK_EQ(old_value + 1, *counter.GetInternalPointer());
-}
-
-#undef COUNTER_NAME
-
-
 TEST(IsArray) {
   FunctionTester T("(function(a) { return %_IsArray(a); })", flags);
 
@@ -164,15 +139,6 @@ TEST(OneByteSeqStringSetChar) {
   CHECK_EQ('b', string->SeqOneByteStringGet(0));
   CHECK_EQ('X', string->SeqOneByteStringGet(1));
   CHECK_EQ('r', string->SeqOneByteStringGet(2));
-}
-
-
-TEST(SetValueOf) {
-  FunctionTester T("(function(a,b) { return %_SetValueOf(a,b); })", flags);
-
-  T.CheckCall(T.Val("a"), T.NewObject("(new String)"), T.Val("a"));
-  T.CheckCall(T.Val(123), T.NewObject("(new Number)"), T.Val(123));
-  T.CheckCall(T.Val("x"), T.undefined(), T.Val("x"));
 }
 
 

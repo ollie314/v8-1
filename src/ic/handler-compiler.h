@@ -231,7 +231,6 @@ class NamedStoreHandlerCompiler : public PropertyHandlerCompiler {
   Handle<Code> CompileStoreViaSetter(Handle<JSObject> object, Handle<Name> name,
                                      int accessor_index,
                                      int expected_arguments);
-  Handle<Code> CompileStoreInterceptor(Handle<Name> name);
 
   static void GenerateStoreViaSetter(MacroAssembler* masm, Handle<Map> map,
                                      Register receiver, Register holder,
@@ -295,8 +294,7 @@ class ElementHandlerCompiler : public PropertyHandlerCompiler {
   virtual ~ElementHandlerCompiler() {}
 
   void CompileElementHandlers(MapHandleList* receiver_maps,
-                              CodeHandleList* handlers,
-                              LanguageMode language_mode);
+                              CodeHandleList* handlers);
 
   static void GenerateStoreSlow(MacroAssembler* masm);
 };

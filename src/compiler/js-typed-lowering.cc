@@ -137,17 +137,6 @@ class JSBinopReduction final {
     return ChangeToPureOperator(op, false, type);
   }
 
-  // TODO(turbofan): Strong mode should be killed soonish!
-  bool IsStrong() const {
-    if (node_->opcode() == IrOpcode::kJSLessThan ||
-        node_->opcode() == IrOpcode::kJSLessThanOrEqual ||
-        node_->opcode() == IrOpcode::kJSGreaterThan ||
-        node_->opcode() == IrOpcode::kJSGreaterThanOrEqual) {
-      return is_strong(OpParameter<LanguageMode>(node_));
-    }
-    return is_strong(BinaryOperationParametersOf(node_->op()).language_mode());
-  }
-
   bool LeftInputIs(Type* t) { return left_type()->Is(t); }
 
   bool RightInputIs(Type* t) { return right_type()->Is(t); }
@@ -376,7 +365,7 @@ Reduction JSTypedLowering::ReduceJSAdd(Node* node) {
     // JSAdd(x:number, y:number) => NumberAdd(x, y)
     return r.ChangeToPureOperator(simplified()->NumberAdd(), Type::Number());
   }
-  if (r.NeitherInputCanBe(Type::StringOrReceiver()) && !r.IsStrong()) {
+  if (r.NeitherInputCanBe(Type::StringOrReceiver())) {
     // JSAdd(x:-string, y:-string) => NumberAdd(ToNumber(x), ToNumber(y))
     Node* frame_state = NodeProperties::GetFrameStateInput(node, 1);
     r.ConvertInputsToNumber(frame_state);
@@ -418,7 +407,7 @@ Reduction JSTypedLowering::ReduceNumberBinop(Node* node,
   if (flags() & kDisableBinaryOpReduction) return NoChange();
 
   JSBinopReduction r(this, node);
-  if (r.IsStrong() || numberOp == simplified()->NumberModulus()) {
+  if (numberOp == simplified()->NumberModulus()) {
     if (r.BothInputsAre(Type::Number())) {
       return r.ChangeToPureOperator(numberOp, Type::Number());
     }
@@ -434,13 +423,6 @@ Reduction JSTypedLowering::ReduceInt32Binop(Node* node, const Operator* intOp) {
   if (flags() & kDisableBinaryOpReduction) return NoChange();
 
   JSBinopReduction r(this, node);
-  if (r.IsStrong()) {
-    if (r.BothInputsAre(Type::Number())) {
-      r.ConvertInputsToUI32(kSigned, kSigned);
-      return r.ChangeToPureOperator(intOp, Type::Integral32());
-    }
-    return NoChange();
-  }
   Node* frame_state = NodeProperties::GetFrameStateInput(node, 1);
   r.ConvertInputsToNumber(frame_state);
   r.ConvertInputsToUI32(kSigned, kSigned);
@@ -454,13 +436,6 @@ Reduction JSTypedLowering::ReduceUI32Shift(Node* node,
   if (flags() & kDisableBinaryOpReduction) return NoChange();
 
   JSBinopReduction r(this, node);
-  if (r.IsStrong()) {
-    if (r.BothInputsAre(Type::Number())) {
-      r.ConvertInputsToUI32(left_signedness, kUnsigned);
-      return r.ChangeToPureOperator(shift_op);
-    }
-    return NoChange();
-  }
   Node* frame_state = NodeProperties::GetFrameStateInput(node, 1);
   r.ConvertInputsToNumber(frame_state);
   r.ConvertInputsToUI32(left_signedness, kUnsigned);
@@ -507,9 +482,6 @@ Reduction JSTypedLowering::ReduceJSComparison(Node* node) {
       less_than_or_equal = machine()->Int32LessThanOrEqual();
     } else {
       // TODO(turbofan): mixed signed/unsigned int32 comparisons.
-      if (r.IsStrong() && !r.BothInputsAre(Type::Number())) {
-        return NoChange();
-      }
       Node* frame_state = NodeProperties::GetFrameStateInput(node, 1);
       r.ConvertInputsToNumber(frame_state);
       less_than = simplified()->NumberLessThan();
@@ -561,15 +533,11 @@ Reduction JSTypedLowering::ReduceJSEqual(Node* node, bool invert) {
     return r.ChangeToPureOperator(
         simplified()->ReferenceEqual(Type::Receiver()), invert);
   }
-  if (r.OneInputIs(Type::NullOrUndefined())) {
-    Callable const callable = CodeFactory::CompareNilIC(isolate(), kNullValue);
-    CallDescriptor const* const desc = Linkage::GetStubCallDescriptor(
-        isolate(), graph()->zone(), callable.descriptor(), 0,
-        CallDescriptor::kNeedsFrameState, node->op()->properties());
-    node->RemoveInput(r.LeftInputIs(Type::NullOrUndefined()) ? 0 : 1);
-    node->InsertInput(graph()->zone(), 0,
-                      jsgraph()->HeapConstant(callable.code()));
-    NodeProperties::ChangeOp(node, common()->Call(desc));
+  if (r.OneInputIs(Type::Undetectable())) {
+    RelaxEffectsAndControls(node);
+    node->RemoveInput(r.LeftInputIs(Type::Undetectable()) ? 0 : 1);
+    node->TrimInputCount(1);
+    NodeProperties::ChangeOp(node, simplified()->ObjectIsUndetectable());
     if (invert) {
       // Insert an boolean not to invert the value.
       Node* value = graph()->NewNode(simplified()->BooleanNot(), node);
@@ -676,6 +644,51 @@ Reduction JSTypedLowering::ReduceJSToBoolean(Node* node) {
   return NoChange();
 }
 
+Reduction JSTypedLowering::ReduceJSToInteger(Node* node) {
+  Node* const input = NodeProperties::GetValueInput(node, 0);
+  Type* const input_type = NodeProperties::GetType(input);
+  if (input_type->Is(type_cache_.kIntegerOrMinusZero)) {
+    // JSToInteger(x:integer) => x
+    ReplaceWithValue(node, input);
+    return Replace(input);
+  }
+  return NoChange();
+}
+
+Reduction JSTypedLowering::ReduceJSToLength(Node* node) {
+  Node* input = NodeProperties::GetValueInput(node, 0);
+  Type* input_type = NodeProperties::GetType(input);
+  if (input_type->Is(type_cache_.kIntegerOrMinusZero)) {
+    if (input_type->Max() <= 0.0) {
+      input = jsgraph()->ZeroConstant();
+    } else if (input_type->Min() >= kMaxSafeInteger) {
+      input = jsgraph()->Constant(kMaxSafeInteger);
+    } else {
+      if (input_type->Min() <= 0.0) {
+        input = graph()->NewNode(
+            common()->Select(MachineRepresentation::kTagged),
+            graph()->NewNode(simplified()->NumberLessThanOrEqual(), input,
+                             jsgraph()->ZeroConstant()),
+            jsgraph()->ZeroConstant(), input);
+        input_type = Type::Range(0.0, input_type->Max(), graph()->zone());
+        NodeProperties::SetType(input, input_type);
+      }
+      if (input_type->Max() > kMaxSafeInteger) {
+        input = graph()->NewNode(
+            common()->Select(MachineRepresentation::kTagged),
+            graph()->NewNode(simplified()->NumberLessThanOrEqual(),
+                             jsgraph()->Constant(kMaxSafeInteger), input),
+            jsgraph()->Constant(kMaxSafeInteger), input);
+        input_type =
+            Type::Range(input_type->Min(), kMaxSafeInteger, graph()->zone());
+        NodeProperties::SetType(input, input_type);
+      }
+    }
+    ReplaceWithValue(node, input);
+    return Replace(input);
+  }
+  return NoChange();
+}
 
 Reduction JSTypedLowering::ReduceJSToNumberInput(Node* input) {
   if (input->opcode() == IrOpcode::kJSToNumber) {
@@ -727,7 +740,10 @@ Reduction JSTypedLowering::ReduceJSToNumberInput(Node* input) {
     // JSToNumber(x:boolean) => BooleanToNumber(x)
     return Replace(graph()->NewNode(simplified()->BooleanToNumber(), input));
   }
-  // TODO(turbofan): js-typed-lowering of ToNumber(x:string)
+  if (input_type->Is(Type::String())) {
+    // JSToNumber(x:string) => StringToNumber(x)
+    return Replace(graph()->NewNode(simplified()->StringToNumber(), input));
+  }
   return NoChange();
 }
 
@@ -1524,9 +1540,8 @@ Reduction JSTypedLowering::ReduceJSCallFunction(Node* node) {
   // Maybe we did at least learn something about the {receiver}.
   if (p.convert_mode() != convert_mode) {
     NodeProperties::ChangeOp(
-        node,
-        javascript()->CallFunction(p.arity(), p.language_mode(), p.feedback(),
-                                   convert_mode, p.tail_call_mode()));
+        node, javascript()->CallFunction(p.arity(), p.feedback(), convert_mode,
+                                         p.tail_call_mode()));
     return Changed(node);
   }
 
@@ -1713,6 +1728,10 @@ Reduction JSTypedLowering::Reduce(Node* node) {
       return ReduceJSModulus(node);
     case IrOpcode::kJSToBoolean:
       return ReduceJSToBoolean(node);
+    case IrOpcode::kJSToInteger:
+      return ReduceJSToInteger(node);
+    case IrOpcode::kJSToLength:
+      return ReduceJSToLength(node);
     case IrOpcode::kJSToNumber:
       return ReduceJSToNumber(node);
     case IrOpcode::kJSToString:

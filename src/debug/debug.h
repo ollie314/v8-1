@@ -70,10 +70,6 @@ class BreakLocation {
   static BreakLocation FromFrame(Handle<DebugInfo> debug_info,
                                  JavaScriptFrame* frame);
 
-  static void FromCodeOffsetSameStatement(Handle<DebugInfo> debug_info,
-                                          int offset,
-                                          List<BreakLocation>* result_out);
-
   static void AllForStatementPosition(Handle<DebugInfo> debug_info,
                                       int statement_position,
                                       List<BreakLocation>* result_out);
@@ -142,6 +138,7 @@ class BreakLocation {
 
    protected:
     explicit Iterator(Handle<DebugInfo> debug_info);
+    int ReturnPosition();
 
     Handle<DebugInfo> debug_info_;
     int break_index_;
@@ -430,7 +427,7 @@ class Debug {
 
   // Internal logic
   bool Load();
-  void Break(Arguments args, JavaScriptFrame*);
+  void Break(JavaScriptFrame* frame);
   void SetAfterBreakTarget(JavaScriptFrame* frame);
 
   // Scripts handling.
@@ -458,9 +455,6 @@ class Debug {
   void ClearStepping();
   void ClearStepOut();
   void EnableStepIn();
-
-  void GetStepinPositions(JavaScriptFrame* frame, StackFrame::Id frame_id,
-                          List<int>* results_out);
 
   bool PrepareFunctionForBreakPoints(Handle<SharedFunctionInfo> shared);
 
@@ -529,6 +523,11 @@ class Debug {
 
   StackFrame::Id break_frame_id() { return thread_local_.break_frame_id_; }
   int break_id() { return thread_local_.break_id_; }
+
+  Handle<Object> return_value() { return thread_local_.return_value_; }
+  void set_return_value(Handle<Object> value) {
+    thread_local_.return_value_ = value;
+  }
 
   // Support for embedding into generated code.
   Address is_active_address() {
@@ -617,6 +616,8 @@ class Debug {
 
   void ThreadInit();
 
+  void PrintBreakLocation();
+
   // Global handles.
   Handle<Context> debug_context_;
   Handle<Object> event_listener_;
@@ -682,6 +683,10 @@ class Debug {
     // Stores the way how LiveEdit has patched the stack. It is used when
     // debugger returns control back to user script.
     LiveEdit::FrameDropMode frame_drop_mode_;
+
+    // Value of accumulator in interpreter frames. In non-interpreter frames
+    // this value will be the hole.
+    Handle<Object> return_value_;
   };
 
   // Storage location for registers when handling debug break calls
@@ -723,6 +728,7 @@ class DebugScope BASE_EMBEDDED {
   DebugScope* prev_;               // Previous scope if entered recursively.
   StackFrame::Id break_frame_id_;  // Previous break frame id.
   int break_id_;                   // Previous break id.
+  Handle<Object> return_value_;    // Previous result.
   bool failed_;                    // Did the debug context fail to load?
   SaveContext save_;               // Saves previous context.
   PostponeInterruptsScope no_termination_exceptons_;

@@ -57,7 +57,7 @@ using v8::internal::TickSample;
 
 
 static bool IsAddressWithinFuncCode(JSFunction* function, Address addr) {
-  i::Code* code = function->code();
+  i::AbstractCode* code = function->abstract_code();
   return code->contains(addr);
 }
 
@@ -180,7 +180,8 @@ TEST(CFromJSStackTrace) {
   //           TickSample::Trace
 
   CHECK(sample.has_external_callback);
-  CHECK_EQ(FUNCTION_ADDR(i::TraceExtension::Trace), sample.external_callback);
+  CHECK_EQ(FUNCTION_ADDR(i::TraceExtension::Trace),
+           sample.external_callback_entry);
 
   // Stack tracing will start from the first JS function, i.e. "JSFuncDoTrace"
   unsigned base = 0;
@@ -234,7 +235,8 @@ TEST(PureJSStackTrace) {
   //
 
   CHECK(sample.has_external_callback);
-  CHECK_EQ(FUNCTION_ADDR(i::TraceExtension::JSTrace), sample.external_callback);
+  CHECK_EQ(FUNCTION_ADDR(i::TraceExtension::JSTrace),
+           sample.external_callback_entry);
 
   // Stack sampling will start from the caller of JSFuncDoTrace, i.e. "JSTrace"
   unsigned base = 0;

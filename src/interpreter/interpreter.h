@@ -33,17 +33,29 @@ class Interpreter {
   // Initializes the interpreter dispatch table.
   void Initialize();
 
+  // Returns the interrupt budget which should be used for the profiler counter.
+  static int InterruptBudget();
+
   // Generate bytecode for |info|.
   static bool MakeBytecode(CompilationInfo* info);
+
+  // Return bytecode handler for |bytecode|.
+  Code* GetBytecodeHandler(Bytecode bytecode, OperandScale operand_scale);
 
   // GC support.
   void IterateDispatchTable(ObjectVisitor* v);
 
-  void TraceCodegen(Handle<Code> code, const char* name);
+  // Disassembler support (only useful with ENABLE_DISASSEMBLER defined).
+  void TraceCodegen(Handle<Code> code);
+  const char* LookupNameOfBytecodeHandler(Code* code);
 
   Address dispatch_table_address() {
     return reinterpret_cast<Address>(&dispatch_table_[0]);
   }
+
+  // Returns true if a handler is generated for a bytecode at a given
+  // operand scale.
+  static bool BytecodeHasHandler(Bytecode bytecode, OperandScale operand_scale);
 
  private:
 // Bytecode handler generator functions.
@@ -51,6 +63,9 @@ class Interpreter {
   void Do##Name(InterpreterAssembler* assembler);
   BYTECODE_LIST(DECLARE_BYTECODE_HANDLER_GENERATOR)
 #undef DECLARE_BYTECODE_HANDLER_GENERATOR
+
+  // Generates code to perform the binary operations via |callable|.
+  void DoBinaryOp(Callable callable, InterpreterAssembler* assembler);
 
   // Generates code to perform the binary operations via |function_id|.
   void DoBinaryOp(Runtime::FunctionId function_id,
@@ -86,7 +101,7 @@ class Interpreter {
   void DoKeyedStoreIC(Callable ic, InterpreterAssembler* assembler);
 
   // Generates code to perform a JS call.
-  void DoJSCall(InterpreterAssembler* assembler);
+  void DoJSCall(InterpreterAssembler* assembler, TailCallMode tail_call_mode);
 
   // Generates code to perform a runtime call.
   void DoCallRuntimeCommon(InterpreterAssembler* assembler);
@@ -97,8 +112,11 @@ class Interpreter {
   // Generates code to perform a JS runtime call.
   void DoCallJSRuntimeCommon(InterpreterAssembler* assembler);
 
-  // Generates code to perform a constructor call..
+  // Generates code to perform a constructor call.
   void DoCallConstruct(InterpreterAssembler* assembler);
+
+  // Generates code to perform a type conversion.
+  void DoTypeConversionOp(Callable callable, InterpreterAssembler* assembler);
 
   // Generates code ro create a literal via |function_id|.
   void DoCreateLiteral(Runtime::FunctionId function_id,
@@ -116,12 +134,17 @@ class Interpreter {
   void DoStoreLookupSlot(LanguageMode language_mode,
                          InterpreterAssembler* assembler);
 
+  // Get dispatch table index of bytecode.
+  static size_t GetDispatchTableIndex(Bytecode bytecode,
+                                      OperandScale operand_scale);
+
   bool IsDispatchTableInitialized();
 
-  static const int kDispatchTableSize = static_cast<int>(Bytecode::kLast) + 1;
+  static const int kNumberOfWideVariants = 3;
+  static const int kDispatchTableSize = kNumberOfWideVariants * (kMaxUInt8 + 1);
 
   Isolate* isolate_;
-  Object* dispatch_table_[kDispatchTableSize];
+  Code* dispatch_table_[kDispatchTableSize];
 
   DISALLOW_COPY_AND_ASSIGN(Interpreter);
 };

@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --harmony-species --harmony-proxies
+// Flags: --harmony-species
 
 // Test the ES2015 @@species feature
 
@@ -153,16 +153,14 @@ count = 0;
 params = undefined;
 assertEquals(MyObservedArray,
              new MyObservedArray().slice().constructor);
-// TODO(littledan): Should be 1
-assertEquals(2, count);
+assertEquals(1, count);
 assertArrayEquals([0], params);
 
 count = 0;
 params = undefined;
 assertEquals(MyObservedArray,
              new MyObservedArray().splice().constructor);
-// TODO(littledan): Should be 1
-assertEquals(2, count);
+assertEquals(1, count);
 assertArrayEquals([0], params);
 
 // @@species constructor can be a Proxy, and the realm access doesn't

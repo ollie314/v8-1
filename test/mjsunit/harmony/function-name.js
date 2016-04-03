@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 //
 // Flags: --harmony-function-name
-// Flags: --harmony-destructuring-bind --harmony-destructuring-assignment
 
 (function testVariableDeclarationsFunction() {
   'use strict';
@@ -356,4 +355,18 @@
 
   var obj = { ['foo']: factory() };
   assertEquals('', obj.foo.name);
+})();
+
+
+(function testNameNotReflectedInToString() {
+  var f = function() {};
+  var g = function*() {};
+  var obj = {
+    ['h']: function() {},
+    i: () => {}
+  };
+  assertEquals('function () {}', f.toString());
+  assertEquals('function* () {}', g.toString());
+  assertEquals('function () {}', obj.h.toString());
+  assertEquals('() => {}', obj.i.toString());
 })();

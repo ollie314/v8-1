@@ -248,6 +248,8 @@ const DoubleRegister no_double_reg = {DoubleRegister::kCode_no_reg};
 
 typedef DoubleRegister XMMRegister;
 
+typedef DoubleRegister Simd128Register;
+
 enum Condition {
   // any value < 0 is considered no_condition
   no_condition  = -1,
@@ -697,8 +699,10 @@ class Assembler : public AssemblerBase {
   void movp(Register dst, void* ptr, RelocInfo::Mode rmode);
 
   // Loads a 64-bit immediate into a register.
-  void movq(Register dst, int64_t value);
-  void movq(Register dst, uint64_t value);
+  void movq(Register dst, int64_t value,
+            RelocInfo::Mode rmode = RelocInfo::NONE64);
+  void movq(Register dst, uint64_t value,
+            RelocInfo::Mode rmode = RelocInfo::NONE64);
 
   void movsxbl(Register dst, Register src);
   void movsxbl(Register dst, const Operand& src);
@@ -768,6 +772,10 @@ class Assembler : public AssemblerBase {
   void cmpw(const Operand& dst, Register src) {
     arithmetic_op_16(0x39, src, dst);
   }
+
+  void testb(Register reg, const Operand& op) { testb(op, reg); }
+
+  void testw(Register reg, const Operand& op) { testw(op, reg); }
 
   void andb(Register dst, Immediate src) {
     immediate_arithmetic_op_8(0x4, dst, src);
@@ -843,6 +851,11 @@ class Assembler : public AssemblerBase {
   void testb(Register reg, Immediate mask);
   void testb(const Operand& op, Immediate mask);
   void testb(const Operand& op, Register reg);
+
+  void testw(Register dst, Register src);
+  void testw(Register reg, Immediate mask);
+  void testw(const Operand& op, Immediate mask);
+  void testw(const Operand& op, Register reg);
 
   // Bit operations.
   void bt(const Operand& dst, Register src);
@@ -1693,7 +1706,9 @@ class Assembler : public AssemblerBase {
   void dp(uintptr_t data) { dq(data); }
   void dq(Label* label);
 
-  PositionsRecorder* positions_recorder() { return &positions_recorder_; }
+  AssemblerPositionsRecorder* positions_recorder() {
+    return &positions_recorder_;
+  }
 
   // Check if there is less than kGap bytes available in the buffer.
   // If this is the case, we need to grow the buffer before emitting
@@ -2176,8 +2191,8 @@ class Assembler : public AssemblerBase {
 
   List< Handle<Code> > code_targets_;
 
-  PositionsRecorder positions_recorder_;
-  friend class PositionsRecorder;
+  AssemblerPositionsRecorder positions_recorder_;
+  friend class AssemblerPositionsRecorder;
 };
 
 

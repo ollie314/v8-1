@@ -15,6 +15,7 @@ FrameInspector::FrameInspector(JavaScriptFrame* frame,
   has_adapted_arguments_ = frame_->has_adapted_arguments();
   is_bottommost_ = inlined_jsframe_index == 0;
   is_optimized_ = frame_->is_optimized();
+  is_interpreted_ = frame_->is_interpreted();
   // Calculate the deoptimized frame.
   if (frame->is_optimized()) {
     // TODO(turbofan): Revisit once we support deoptimization.
@@ -69,6 +70,11 @@ Handle<Object> FrameInspector::GetExpression(int index) {
 int FrameInspector::GetSourcePosition() {
   if (is_optimized_) {
     return deoptimized_frame_->GetSourcePosition();
+  } else if (is_interpreted_) {
+    InterpretedFrame* frame = reinterpret_cast<InterpretedFrame*>(frame_);
+    BytecodeArray* bytecode_array =
+        frame->function()->shared()->bytecode_array();
+    return bytecode_array->SourcePosition(frame->GetBytecodeOffset());
   } else {
     Code* code = frame_->LookupCode();
     int offset = static_cast<int>(frame_->pc() - code->instruction_start());
@@ -95,6 +101,7 @@ void FrameInspector::SetArgumentsFrame(JavaScriptFrame* frame) {
   DCHECK(has_adapted_arguments_);
   frame_ = frame;
   is_optimized_ = frame_->is_optimized();
+  is_interpreted_ = frame_->is_interpreted();
   DCHECK(!is_optimized_);
 }
 
@@ -126,8 +133,10 @@ void FrameInspector::MaterializeStackLocals(Handle<JSObject> target,
     if (scope_info->LocalIsSynthetic(i)) continue;
     Handle<String> name(scope_info->StackLocalName(i));
     Handle<Object> value = GetExpression(scope_info->StackLocalIndex(i));
+    // TODO(yangguo): We convert optimized out values to {undefined} when they
+    // are passed to the debugger. Eventually we should handle them somehow.
     if (value->IsTheHole()) value = isolate_->factory()->undefined_value();
-
+    if (value->IsOptimizedOut()) value = isolate_->factory()->undefined_value();
     JSObject::SetOwnPropertyIgnoreAttributes(target, name, value, NONE).Check();
   }
 }

@@ -7,6 +7,7 @@
 #include "src/bootstrapper.h"
 #include "src/disasm.h"
 #include "src/disassembler.h"
+#include "src/field-type.h"
 #include "src/macro-assembler.h"
 #include "src/ostreams.h"
 #include "src/regexp/jsregexp.h"
@@ -98,6 +99,7 @@ void HeapObject::HeapObjectVerify() {
       Oddball::cast(this)->OddballVerify();
       break;
     case JS_OBJECT_TYPE:
+    case JS_SPECIAL_API_OBJECT_TYPE:
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
     case JS_PROMISE_TYPE:
       JSObject::cast(this)->JSObjectVerify();
@@ -207,7 +209,7 @@ void HeapObject::VerifyHeapPointer(Object* p) {
 void Symbol::SymbolVerify() {
   CHECK(IsSymbol());
   CHECK(HasHashCode());
-  CHECK_GT(Hash(), 0u);
+  CHECK(GetHeap()->hidden_properties_symbol() == this || Hash() > 0u);
   CHECK(name()->IsUndefined() || name()->IsString());
 }
 
@@ -227,6 +229,10 @@ void ByteArray::ByteArrayVerify() {
 
 void BytecodeArray::BytecodeArrayVerify() {
   // TODO(oth): Walk bytecodes and immediate values to validate sanity.
+  // - All bytecodes are known and well formed.
+  // - Jumps must go to new instructions starts.
+  // - No Illegal bytecodes.
+  // - No consecutive sequences of prefix Wide / ExtraWide.
   CHECK(IsBytecodeArray());
   CHECK(constant_pool()->IsFixedArray());
   VerifyHeapPointer(constant_pool());
@@ -617,7 +623,7 @@ void Oddball::OddballVerify() {
     CHECK(number->IsSmi());
     int value = Smi::cast(number)->value();
     // Hidden oddballs have negative smis.
-    const int kLeastHiddenOddballNumber = -5;
+    const int kLeastHiddenOddballNumber = -6;
     CHECK_LE(value, 1);
     CHECK(value >= kLeastHiddenOddballNumber);
   }
@@ -640,6 +646,8 @@ void Oddball::OddballVerify() {
     CHECK(this == heap->termination_exception());
   } else if (map() == heap->exception_map()) {
     CHECK(this == heap->exception());
+  } else if (map() == heap->optimized_out_map()) {
+    CHECK(this == heap->optimized_out());
   } else {
     UNREACHABLE();
   }

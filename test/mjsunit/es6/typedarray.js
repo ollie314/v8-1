@@ -25,8 +25,6 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --harmony-tostring
-
 // ArrayBuffer
 
 function TestByteLength(param, expectedByteLength) {
@@ -674,7 +672,6 @@ function TestDataViewConstructor() {
 
   // error cases
   assertThrows(function() { new DataView(ab, -1); }, RangeError);
-  assertThrows(function() { new DataView(ab, 1, -1); }, RangeError);
   assertThrows(function() { new DataView(); }, TypeError);
   assertThrows(function() { new DataView([]); }, TypeError);
   assertThrows(function() { new DataView(ab, 257); }, RangeError);

@@ -76,6 +76,12 @@ class LinkageLocation {
                               kPointerSize);
   }
 
+  static LinkageLocation ForSavedCallerFunction() {
+    return ForCalleeFrameSlot((StandardFrameConstants::kCallerPCOffset -
+                               StandardFrameConstants::kFunctionOffset) /
+                              kPointerSize);
+  }
+
   static LinkageLocation ConvertToTailCallerLocation(
       LinkageLocation caller_location, int stack_param_delta) {
     if (!caller_location.IsRegister()) {
@@ -140,8 +146,7 @@ class CallDescriptor final : public ZoneObject {
   enum Kind {
     kCallCodeObject,  // target is a Code object
     kCallJSFunction,  // target is a JSFunction object
-    kCallAddress,     // target is a machine pointer
-    kLazyBailout      // the call is no-op, only used for lazy bailout
+    kCallAddress      // target is a machine pointer
   };
 
   enum Flag {
@@ -155,10 +160,11 @@ class CallDescriptor final : public ZoneObject {
     kCanUseRoots = 1u << 6,
     // (arm64 only) native stack should be used for arguments.
     kUseNativeStack = 1u << 7,
-    // (arm64 only) call instruction has to restore JSSP.
+    // (arm64 only) call instruction has to restore JSSP or CSP.
     kRestoreJSSP = 1u << 8,
+    kRestoreCSP = 1u << 9,
     // Causes the code generator to initialize the root register.
-    kInitializeRootRegister = 1u << 9,
+    kInitializeRootRegister = 1u << 10,
     kPatchableCallSiteWithNop = kPatchableCallSite | kNeedsNopAfterCall
   };
   typedef base::Flags<Flag> Flags;
@@ -319,8 +325,6 @@ class Linkage : public ZoneObject {
       Zone* zone, Runtime::FunctionId function, int parameter_count,
       Operator::Properties properties, CallDescriptor::Flags flags);
 
-  static CallDescriptor* GetLazyBailoutDescriptor(Zone* zone);
-
   static CallDescriptor* GetStubCallDescriptor(
       Isolate* isolate, Zone* zone, const CallInterfaceDescriptor& descriptor,
       int stack_parameter_count, CallDescriptor::Flags flags,
@@ -363,6 +367,11 @@ class Linkage : public ZoneObject {
 
   // Get the location where an incoming OSR value is stored.
   LinkageLocation GetOsrValueLocation(int index) const;
+
+  // A special {Parameter} index for Stub Calls that represents context.
+  static int GetStubCallContextParamIndex(int parameter_count) {
+    return parameter_count + 0;  // Parameter (arity + 0) is special.
+  }
 
   // A special {Parameter} index for JSCalls that represents the new target.
   static int GetJSCallNewTargetParamIndex(int parameter_count) {

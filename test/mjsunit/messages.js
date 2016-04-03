@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --stack-size=100 --harmony --harmony-reflect --harmony-regexps
-// Flags: --harmony-simd --strong-mode
+// Flags: --stack-size=100 --harmony
+// Flags: --harmony-simd --harmony-instanceof
 
 function test(f, expected, type) {
   try {
@@ -150,7 +150,7 @@ TypeError);
 // kInstanceofFunctionExpected
 test(function() {
   1 instanceof 1;
-}, "Expecting a function in instanceof check, but got 1", TypeError);
+}, "Right-hand side of 'instanceof' is not an object", TypeError);
 
 // kInstanceofNonobjectProto
 test(function() {
@@ -305,12 +305,6 @@ test(function() {
   (1).a = 1;
 }, "Cannot create property 'a' on number '1'", TypeError);
 
-// kStrongImplicitCast
-test(function() {
-  "use strong";
-  "a" + 1;
-}, "In strong mode, implicit conversions are deprecated", TypeError);
-
 // kSymbolToString
 test(function() {
   "" + Symbol();
@@ -344,6 +338,11 @@ test(function() {
 test(function() {
   eval("/a/x.test(\"a\");");
 }, "Invalid regular expression flags", SyntaxError);
+
+// kInvalidOrUnexpectedToken
+test(function() {
+  eval("'\n'");
+}, "Invalid or unexpected token", SyntaxError);
 
 //kJsonParseUnexpectedEOS
 test(function() {

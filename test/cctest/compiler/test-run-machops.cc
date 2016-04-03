@@ -29,6 +29,25 @@ TEST(RunInt32Add) {
 }
 
 
+TEST(RunWord32ReverseBits) {
+  BufferedRawMachineAssemblerTester<uint32_t> m(MachineType::Uint32());
+  if (!m.machine()->Word32ReverseBits().IsSupported()) {
+    // We can only test the operator if it exists on the testing platform.
+    return;
+  }
+  m.Return(m.AddNode(m.machine()->Word32ReverseBits().op(), m.Parameter(0)));
+
+  CHECK_EQ(uint32_t(0x00000000), m.Call(uint32_t(0x00000000)));
+  CHECK_EQ(uint32_t(0x12345678), m.Call(uint32_t(0x1e6a2c48)));
+  CHECK_EQ(uint32_t(0xfedcba09), m.Call(uint32_t(0x905d3b7f)));
+  CHECK_EQ(uint32_t(0x01010101), m.Call(uint32_t(0x80808080)));
+  CHECK_EQ(uint32_t(0x01020408), m.Call(uint32_t(0x10204080)));
+  CHECK_EQ(uint32_t(0xf0703010), m.Call(uint32_t(0x080c0e0f)));
+  CHECK_EQ(uint32_t(0x1f8d0a3a), m.Call(uint32_t(0x5c50b1f8)));
+  CHECK_EQ(uint32_t(0xffffffff), m.Call(uint32_t(0xffffffff)));
+}
+
+
 TEST(RunWord32Ctz) {
   BufferedRawMachineAssemblerTester<int32_t> m(MachineType::Uint32());
   if (!m.machine()->Word32Ctz().IsSupported()) {
@@ -132,6 +151,25 @@ TEST(RunWord32Popcnt) {
 
 
 #if V8_TARGET_ARCH_64_BIT
+TEST(RunWord64ReverseBits) {
+  RawMachineAssemblerTester<uint64_t> m(MachineType::Uint64());
+  if (!m.machine()->Word64ReverseBits().IsSupported()) {
+    return;
+  }
+
+  m.Return(m.AddNode(m.machine()->Word64ReverseBits().op(), m.Parameter(0)));
+
+  CHECK_EQ(uint64_t(0x0000000000000000), m.Call(uint64_t(0x0000000000000000)));
+  CHECK_EQ(uint64_t(0x1234567890abcdef), m.Call(uint64_t(0xf7b3d5091e6a2c48)));
+  CHECK_EQ(uint64_t(0xfedcba0987654321), m.Call(uint64_t(0x84c2a6e1905d3b7f)));
+  CHECK_EQ(uint64_t(0x0101010101010101), m.Call(uint64_t(0x8080808080808080)));
+  CHECK_EQ(uint64_t(0x0102040803060c01), m.Call(uint64_t(0x803060c010204080)));
+  CHECK_EQ(uint64_t(0xf0703010e060200f), m.Call(uint64_t(0xf0040607080c0e0f)));
+  CHECK_EQ(uint64_t(0x2f8a6df01c21fa3b), m.Call(uint64_t(0xdc5f84380fb651f4)));
+  CHECK_EQ(uint64_t(0xffffffffffffffff), m.Call(uint64_t(0xffffffffffffffff)));
+}
+
+
 TEST(RunWord64Clz) {
   BufferedRawMachineAssemblerTester<int32_t> m(MachineType::Uint64());
   m.Return(m.Word64Clz(m.Parameter(0)));
@@ -1159,7 +1197,7 @@ TEST(RunLoadStoreFloat32Offset) {
       p1 = *j;
       p2 = *j - 5;
       CHECK_EQ(magic, m.Call());
-      CheckDoubleEq(p1, p2);
+      CHECK_DOUBLE_EQ(p1, p2);
     }
   }
 }
@@ -1186,7 +1224,7 @@ TEST(RunLoadStoreFloat64Offset) {
       p1 = *j;
       p2 = *j - 5;
       CHECK_EQ(magic, m.Call());
-      CheckDoubleEq(p1, p2);
+      CHECK_DOUBLE_EQ(p1, p2);
     }
   }
 }
@@ -3533,7 +3571,7 @@ static void RunLoadImmIndex(MachineType rep) {
   const int kNumElems = 3;
   Type buffer[kNumElems];
 
-  // initialize the buffer with raw data.
+  // initialize the buffer with some raw data.
   byte* raw = reinterpret_cast<byte*>(buffer);
   for (size_t i = 0; i < sizeof(buffer); i++) {
     raw[i] = static_cast<byte>((i + sizeof(buffer)) ^ 0xAA);
@@ -3542,14 +3580,14 @@ static void RunLoadImmIndex(MachineType rep) {
   // Test with various large and small offsets.
   for (int offset = -1; offset <= 200000; offset *= -5) {
     for (int i = 0; i < kNumElems; i++) {
-      RawMachineAssemblerTester<Type> m;
+      BufferedRawMachineAssemblerTester<Type> m;
       Node* base = m.PointerConstant(buffer - offset);
       Node* index = m.Int32Constant((offset + i) * sizeof(buffer[0]));
       m.Return(m.Load(rep, base, index));
 
-      Type expected = buffer[i];
-      Type actual = m.Call();
-      CHECK(expected == actual);
+      volatile Type expected = buffer[i];
+      volatile Type actual = m.Call();
+      CHECK_EQ(expected, actual);
     }
   }
 }
@@ -3563,9 +3601,11 @@ TEST(RunLoadImmIndex) {
   RunLoadImmIndex<int32_t>(MachineType::Int32());
   RunLoadImmIndex<uint32_t>(MachineType::Uint32());
   RunLoadImmIndex<int32_t*>(MachineType::AnyTagged());
-
-  // TODO(titzer): test kRepBit loads
-  // TODO(titzer): test MachineType::Float64() loads
+  RunLoadImmIndex<float>(MachineType::Float32());
+  RunLoadImmIndex<double>(MachineType::Float64());
+  if (kPointerSize == 8) {
+    RunLoadImmIndex<int64_t>(MachineType::Int64());
+  }
   // TODO(titzer): test various indexing modes.
 }
 
@@ -3618,10 +3658,7 @@ TEST(RunFloat32Add) {
   m.Return(m.Float32Add(m.Parameter(0), m.Parameter(1)));
 
   FOR_FLOAT32_INPUTS(i) {
-    FOR_FLOAT32_INPUTS(j) {
-      volatile float expected = *i + *j;
-      CheckFloatEq(expected, m.Call(*i, *j));
-    }
+    FOR_FLOAT32_INPUTS(j) { CHECK_FLOAT_EQ(*i + *j, m.Call(*i, *j)); }
   }
 }
 
@@ -3632,10 +3669,7 @@ TEST(RunFloat32Sub) {
   m.Return(m.Float32Sub(m.Parameter(0), m.Parameter(1)));
 
   FOR_FLOAT32_INPUTS(i) {
-    FOR_FLOAT32_INPUTS(j) {
-      volatile float expected = *i - *j;
-      CheckFloatEq(expected, m.Call(*i, *j));
-    }
+    FOR_FLOAT32_INPUTS(j) { CHECK_FLOAT_EQ(*i - *j, m.Call(*i, *j)); }
   }
 }
 
@@ -3646,10 +3680,7 @@ TEST(RunFloat32Mul) {
   m.Return(m.Float32Mul(m.Parameter(0), m.Parameter(1)));
 
   FOR_FLOAT32_INPUTS(i) {
-    FOR_FLOAT32_INPUTS(j) {
-      volatile float expected = *i * *j;
-      CheckFloatEq(expected, m.Call(*i, *j));
-    }
+    FOR_FLOAT32_INPUTS(j) { CHECK_FLOAT_EQ(*i * *j, m.Call(*i, *j)); }
   }
 }
 
@@ -3660,10 +3691,7 @@ TEST(RunFloat32Div) {
   m.Return(m.Float32Div(m.Parameter(0), m.Parameter(1)));
 
   FOR_FLOAT32_INPUTS(i) {
-    FOR_FLOAT32_INPUTS(j) {
-      volatile float expected = *i / *j;
-      CheckFloatEq(expected, m.Call(*i, *j));
-    }
+    FOR_FLOAT32_INPUTS(j) { CHECK_FLOAT_EQ(*i / *j, m.Call(*i, *j)); }
   }
 }
 
@@ -3674,10 +3702,7 @@ TEST(RunFloat64Add) {
   m.Return(m.Float64Add(m.Parameter(0), m.Parameter(1)));
 
   FOR_FLOAT64_INPUTS(i) {
-    FOR_FLOAT64_INPUTS(j) {
-      volatile double expected = *i + *j;
-      CheckDoubleEq(expected, m.Call(*i, *j));
-    }
+    FOR_FLOAT64_INPUTS(j) { CHECK_DOUBLE_EQ(*i + *j, m.Call(*i, *j)); }
   }
 }
 
@@ -3688,10 +3713,7 @@ TEST(RunFloat64Sub) {
   m.Return(m.Float64Sub(m.Parameter(0), m.Parameter(1)));
 
   FOR_FLOAT64_INPUTS(i) {
-    FOR_FLOAT64_INPUTS(j) {
-      volatile double expected = *i - *j;
-      CheckDoubleEq(expected, m.Call(*i, *j));
-    }
+    FOR_FLOAT64_INPUTS(j) { CHECK_DOUBLE_EQ(*i - *j, m.Call(*i, *j)); }
   }
 }
 
@@ -3702,10 +3724,7 @@ TEST(RunFloat64Mul) {
   m.Return(m.Float64Mul(m.Parameter(0), m.Parameter(1)));
 
   FOR_FLOAT64_INPUTS(i) {
-    FOR_FLOAT64_INPUTS(j) {
-      volatile double expected = *i * *j;
-      CheckDoubleEq(expected, m.Call(*i, *j));
-    }
+    FOR_FLOAT64_INPUTS(j) { CHECK_DOUBLE_EQ(*i * *j, m.Call(*i, *j)); }
   }
 }
 
@@ -3716,10 +3735,7 @@ TEST(RunFloat64Div) {
   m.Return(m.Float64Div(m.Parameter(0), m.Parameter(1)));
 
   FOR_FLOAT64_INPUTS(i) {
-    FOR_FLOAT64_INPUTS(j) {
-      volatile double expected = *i / *j;
-      CheckDoubleEq(expected, m.Call(*i, *j));
-    }
+    FOR_FLOAT64_INPUTS(j) { CHECK_DOUBLE_EQ(*i / *j, m.Call(*i, *j)); }
   }
 }
 
@@ -3730,7 +3746,7 @@ TEST(RunFloat64Mod) {
   m.Return(m.Float64Mod(m.Parameter(0), m.Parameter(1)));
 
   FOR_FLOAT64_INPUTS(i) {
-    FOR_FLOAT64_INPUTS(j) { CheckDoubleEq(modulo(*i, *j), m.Call(*i, *j)); }
+    FOR_FLOAT64_INPUTS(j) { CHECK_DOUBLE_EQ(modulo(*i, *j), m.Call(*i, *j)); }
   }
 }
 
@@ -3776,10 +3792,7 @@ TEST(RunFloat32AddP) {
   bt.AddReturn(m.Float32Add(bt.param0, bt.param1));
 
   FOR_FLOAT32_INPUTS(pl) {
-    FOR_FLOAT32_INPUTS(pr) {
-      float expected = *pl + *pr;
-      CheckFloatEq(expected, bt.call(*pl, *pr));
-    }
+    FOR_FLOAT32_INPUTS(pr) { CHECK_FLOAT_EQ(*pl + *pr, bt.call(*pl, *pr)); }
   }
 }
 
@@ -3791,10 +3804,7 @@ TEST(RunFloat64AddP) {
   bt.AddReturn(m.Float64Add(bt.param0, bt.param1));
 
   FOR_FLOAT64_INPUTS(pl) {
-    FOR_FLOAT64_INPUTS(pr) {
-      double expected = *pl + *pr;
-      CheckDoubleEq(expected, bt.call(*pl, *pr));
-    }
+    FOR_FLOAT64_INPUTS(pr) { CHECK_DOUBLE_EQ(*pl + *pr, bt.call(*pl, *pr)); }
   }
 }
 
@@ -3808,8 +3818,7 @@ TEST(RunFloa32MaxP) {
 
   FOR_FLOAT32_INPUTS(pl) {
     FOR_FLOAT32_INPUTS(pr) {
-      double expected = *pl > *pr ? *pl : *pr;
-      CheckDoubleEq(expected, bt.call(*pl, *pr));
+      CHECK_DOUBLE_EQ(*pl > *pr ? *pl : *pr, bt.call(*pl, *pr));
     }
   }
 }
@@ -3824,8 +3833,7 @@ TEST(RunFloat64MaxP) {
 
   FOR_FLOAT64_INPUTS(pl) {
     FOR_FLOAT64_INPUTS(pr) {
-      double expected = *pl > *pr ? *pl : *pr;
-      CheckDoubleEq(expected, bt.call(*pl, *pr));
+      CHECK_DOUBLE_EQ(*pl > *pr ? *pl : *pr, bt.call(*pl, *pr));
     }
   }
 }
@@ -3840,8 +3848,7 @@ TEST(RunFloat32MinP) {
 
   FOR_FLOAT32_INPUTS(pl) {
     FOR_FLOAT32_INPUTS(pr) {
-      double expected = *pl < *pr ? *pl : *pr;
-      CheckDoubleEq(expected, bt.call(*pl, *pr));
+      CHECK_DOUBLE_EQ(*pl < *pr ? *pl : *pr, bt.call(*pl, *pr));
     }
   }
 }
@@ -3856,8 +3863,7 @@ TEST(RunFloat64MinP) {
 
   FOR_FLOAT64_INPUTS(pl) {
     FOR_FLOAT64_INPUTS(pr) {
-      double expected = *pl < *pr ? *pl : *pr;
-      CheckDoubleEq(expected, bt.call(*pl, *pr));
+      CHECK_DOUBLE_EQ(*pl < *pr ? *pl : *pr, bt.call(*pl, *pr));
     }
   }
 }
@@ -3870,10 +3876,7 @@ TEST(RunFloat32SubP) {
   bt.AddReturn(m.Float32Sub(bt.param0, bt.param1));
 
   FOR_FLOAT32_INPUTS(pl) {
-    FOR_FLOAT32_INPUTS(pr) {
-      float expected = *pl - *pr;
-      CheckFloatEq(expected, bt.call(*pl, *pr));
-    }
+    FOR_FLOAT32_INPUTS(pr) { CHECK_FLOAT_EQ(*pl - *pr, bt.call(*pl, *pr)); }
   }
 }
 
@@ -3883,10 +3886,7 @@ TEST(RunFloat32SubImm1) {
     BufferedRawMachineAssemblerTester<float> m(MachineType::Float32());
     m.Return(m.Float32Sub(m.Float32Constant(*i), m.Parameter(0)));
 
-    FOR_FLOAT32_INPUTS(j) {
-      volatile float expected = *i - *j;
-      CheckFloatEq(expected, m.Call(*j));
-    }
+    FOR_FLOAT32_INPUTS(j) { CHECK_FLOAT_EQ(*i - *j, m.Call(*j)); }
   }
 }
 
@@ -3896,10 +3896,7 @@ TEST(RunFloat32SubImm2) {
     BufferedRawMachineAssemblerTester<float> m(MachineType::Float32());
     m.Return(m.Float32Sub(m.Parameter(0), m.Float32Constant(*i)));
 
-    FOR_FLOAT32_INPUTS(j) {
-      volatile float expected = *j - *i;
-      CheckFloatEq(expected, m.Call(*j));
-    }
+    FOR_FLOAT32_INPUTS(j) { CHECK_FLOAT_EQ(*j - *i, m.Call(*j)); }
   }
 }
 
@@ -3909,7 +3906,7 @@ TEST(RunFloat64SubImm1) {
     BufferedRawMachineAssemblerTester<double> m(MachineType::Float64());
     m.Return(m.Float64Sub(m.Float64Constant(*i), m.Parameter(0)));
 
-    FOR_FLOAT64_INPUTS(j) { CheckFloatEq(*i - *j, m.Call(*j)); }
+    FOR_FLOAT64_INPUTS(j) { CHECK_FLOAT_EQ(*i - *j, m.Call(*j)); }
   }
 }
 
@@ -3919,7 +3916,7 @@ TEST(RunFloat64SubImm2) {
     BufferedRawMachineAssemblerTester<double> m(MachineType::Float64());
     m.Return(m.Float64Sub(m.Parameter(0), m.Float64Constant(*i)));
 
-    FOR_FLOAT64_INPUTS(j) { CheckFloatEq(*j - *i, m.Call(*j)); }
+    FOR_FLOAT64_INPUTS(j) { CHECK_FLOAT_EQ(*j - *i, m.Call(*j)); }
   }
 }
 
@@ -3933,7 +3930,7 @@ TEST(RunFloat64SubP) {
   FOR_FLOAT64_INPUTS(pl) {
     FOR_FLOAT64_INPUTS(pr) {
       double expected = *pl - *pr;
-      CheckDoubleEq(expected, bt.call(*pl, *pr));
+      CHECK_DOUBLE_EQ(expected, bt.call(*pl, *pr));
     }
   }
 }
@@ -3946,10 +3943,7 @@ TEST(RunFloat32MulP) {
   bt.AddReturn(m.Float32Mul(bt.param0, bt.param1));
 
   FOR_FLOAT32_INPUTS(pl) {
-    FOR_FLOAT32_INPUTS(pr) {
-      float expected = *pl * *pr;
-      CheckFloatEq(expected, bt.call(*pl, *pr));
-    }
+    FOR_FLOAT32_INPUTS(pr) { CHECK_FLOAT_EQ(*pl * *pr, bt.call(*pl, *pr)); }
   }
 }
 
@@ -3963,7 +3957,7 @@ TEST(RunFloat64MulP) {
   FOR_FLOAT64_INPUTS(pl) {
     FOR_FLOAT64_INPUTS(pr) {
       double expected = *pl * *pr;
-      CheckDoubleEq(expected, bt.call(*pl, *pr));
+      CHECK_DOUBLE_EQ(expected, bt.call(*pl, *pr));
     }
   }
 }
@@ -3978,7 +3972,7 @@ TEST(RunFloat64MulAndFloat64Add1) {
   FOR_FLOAT64_INPUTS(i) {
     FOR_FLOAT64_INPUTS(j) {
       FOR_FLOAT64_INPUTS(k) {
-        CheckDoubleEq((*i * *j) + *k, m.Call(*i, *j, *k));
+        CHECK_DOUBLE_EQ((*i * *j) + *k, m.Call(*i, *j, *k));
       }
     }
   }
@@ -3994,7 +3988,7 @@ TEST(RunFloat64MulAndFloat64Add2) {
   FOR_FLOAT64_INPUTS(i) {
     FOR_FLOAT64_INPUTS(j) {
       FOR_FLOAT64_INPUTS(k) {
-        CheckDoubleEq(*i + (*j * *k), m.Call(*i, *j, *k));
+        CHECK_DOUBLE_EQ(*i + (*j * *k), m.Call(*i, *j, *k));
       }
     }
   }
@@ -4010,7 +4004,7 @@ TEST(RunFloat64MulAndFloat64Sub1) {
   FOR_FLOAT64_INPUTS(i) {
     FOR_FLOAT64_INPUTS(j) {
       FOR_FLOAT64_INPUTS(k) {
-        CheckDoubleEq((*i * *j) - *k, m.Call(*i, *j, *k));
+        CHECK_DOUBLE_EQ((*i * *j) - *k, m.Call(*i, *j, *k));
       }
     }
   }
@@ -4026,7 +4020,7 @@ TEST(RunFloat64MulAndFloat64Sub2) {
   FOR_FLOAT64_INPUTS(i) {
     FOR_FLOAT64_INPUTS(j) {
       FOR_FLOAT64_INPUTS(k) {
-        CheckDoubleEq(*i - (*j * *k), m.Call(*i, *j, *k));
+        CHECK_DOUBLE_EQ(*i - (*j * *k), m.Call(*i, *j, *k));
       }
     }
   }
@@ -4038,7 +4032,7 @@ TEST(RunFloat64MulImm1) {
     BufferedRawMachineAssemblerTester<double> m(MachineType::Float64());
     m.Return(m.Float64Mul(m.Float64Constant(*i), m.Parameter(0)));
 
-    FOR_FLOAT64_INPUTS(j) { CheckFloatEq(*i * *j, m.Call(*j)); }
+    FOR_FLOAT64_INPUTS(j) { CHECK_FLOAT_EQ(*i * *j, m.Call(*j)); }
   }
 }
 
@@ -4048,7 +4042,7 @@ TEST(RunFloat64MulImm2) {
     BufferedRawMachineAssemblerTester<double> m(MachineType::Float64());
     m.Return(m.Float64Mul(m.Parameter(0), m.Float64Constant(*i)));
 
-    FOR_FLOAT64_INPUTS(j) { CheckFloatEq(*j * *i, m.Call(*j)); }
+    FOR_FLOAT64_INPUTS(j) { CHECK_FLOAT_EQ(*j * *i, m.Call(*j)); }
   }
 }
 
@@ -4060,10 +4054,7 @@ TEST(RunFloat32DivP) {
   bt.AddReturn(m.Float32Div(bt.param0, bt.param1));
 
   FOR_FLOAT32_INPUTS(pl) {
-    FOR_FLOAT32_INPUTS(pr) {
-      float expected = *pl / *pr;
-      CheckFloatEq(expected, bt.call(*pl, *pr));
-    }
+    FOR_FLOAT32_INPUTS(pr) { CHECK_FLOAT_EQ(*pl / *pr, bt.call(*pl, *pr)); }
   }
 }
 
@@ -4075,10 +4066,7 @@ TEST(RunFloat64DivP) {
   bt.AddReturn(m.Float64Div(bt.param0, bt.param1));
 
   FOR_FLOAT64_INPUTS(pl) {
-    FOR_FLOAT64_INPUTS(pr) {
-      double expected = *pl / *pr;
-      CheckDoubleEq(expected, bt.call(*pl, *pr));
-    }
+    FOR_FLOAT64_INPUTS(pr) { CHECK_DOUBLE_EQ(*pl / *pr, bt.call(*pl, *pr)); }
   }
 }
 
@@ -4090,11 +4078,7 @@ TEST(RunFloat64ModP) {
   bt.AddReturn(m.Float64Mod(bt.param0, bt.param1));
 
   FOR_FLOAT64_INPUTS(i) {
-    FOR_FLOAT64_INPUTS(j) {
-      double expected = modulo(*i, *j);
-      double found = bt.call(*i, *j);
-      CheckDoubleEq(expected, found);
-    }
+    FOR_FLOAT64_INPUTS(j) { CHECK_DOUBLE_EQ(modulo(*i, *j), bt.call(*i, *j)); }
   }
 }
 
@@ -4103,7 +4087,7 @@ TEST(RunChangeInt32ToFloat64_A) {
   int32_t magic = 0x986234;
   BufferedRawMachineAssemblerTester<double> m;
   m.Return(m.ChangeInt32ToFloat64(m.Int32Constant(magic)));
-  CheckDoubleEq(static_cast<double>(magic), m.Call());
+  CHECK_DOUBLE_EQ(static_cast<double>(magic), m.Call());
 }
 
 
@@ -4111,7 +4095,7 @@ TEST(RunChangeInt32ToFloat64_B) {
   BufferedRawMachineAssemblerTester<double> m(MachineType::Int32());
   m.Return(m.ChangeInt32ToFloat64(m.Parameter(0)));
 
-  FOR_INT32_INPUTS(i) { CheckDoubleEq(static_cast<double>(*i), m.Call(*i)); }
+  FOR_INT32_INPUTS(i) { CHECK_DOUBLE_EQ(static_cast<double>(*i), m.Call(*i)); }
 }
 
 
@@ -4119,7 +4103,7 @@ TEST(RunChangeUint32ToFloat64) {
   BufferedRawMachineAssemblerTester<double> m(MachineType::Uint32());
   m.Return(m.ChangeUint32ToFloat64(m.Parameter(0)));
 
-  FOR_UINT32_INPUTS(i) { CheckDoubleEq(static_cast<double>(*i), m.Call(*i)); }
+  FOR_UINT32_INPUTS(i) { CHECK_DOUBLE_EQ(static_cast<double>(*i), m.Call(*i)); }
 }
 
 
@@ -4129,7 +4113,7 @@ TEST(RunTruncateFloat32ToInt32) {
   FOR_FLOAT32_INPUTS(i) {
     if (*i <= static_cast<float>(std::numeric_limits<int32_t>::max()) &&
         *i >= static_cast<float>(std::numeric_limits<int32_t>::min())) {
-      CheckFloatEq(static_cast<int32_t>(*i), m.Call(*i));
+      CHECK_FLOAT_EQ(static_cast<int32_t>(*i), m.Call(*i));
     }
   }
 }
@@ -4153,7 +4137,7 @@ TEST(RunTruncateFloat32ToUint32) {
     FOR_FLOAT32_INPUTS(i) {
       if (*i <= static_cast<float>(std::numeric_limits<uint32_t>::max()) &&
           *i >= static_cast<float>(std::numeric_limits<uint32_t>::min())) {
-        CheckFloatEq(static_cast<uint32_t>(*i), m.Call(*i));
+        CHECK_FLOAT_EQ(static_cast<uint32_t>(*i), m.Call(*i));
       }
     }
   }
@@ -4210,9 +4194,262 @@ TEST(RunTruncateFloat64ToFloat32) {
 
   m.Return(m.TruncateFloat64ToFloat32(m.Parameter(0)));
 
-  FOR_FLOAT64_INPUTS(i) { CheckFloatEq(DoubleToFloat32(*i), m.Call(*i)); }
+  FOR_FLOAT64_INPUTS(i) { CHECK_FLOAT_EQ(DoubleToFloat32(*i), m.Call(*i)); }
 }
 
+uint64_t ToInt64(uint32_t low, uint32_t high) {
+  return (static_cast<uint64_t>(high) << 32) | static_cast<uint64_t>(low);
+}
+
+#if V8_TARGET_ARCH_32_BIT && !V8_TARGET_ARCH_MIPS && !V8_TARGET_ARCH_X87
+TEST(RunInt32PairAdd) {
+  BufferedRawMachineAssemblerTester<int32_t> m(
+      MachineType::Uint32(), MachineType::Uint32(), MachineType::Uint32(),
+      MachineType::Uint32());
+
+  uint32_t high;
+  uint32_t low;
+
+  Node* PairAdd = m.Int32PairAdd(m.Parameter(0), m.Parameter(1), m.Parameter(2),
+                                 m.Parameter(3));
+
+  m.StoreToPointer(&low, MachineRepresentation::kWord32,
+                   m.Projection(0, PairAdd));
+  m.StoreToPointer(&high, MachineRepresentation::kWord32,
+                   m.Projection(1, PairAdd));
+  m.Return(m.Int32Constant(74));
+
+  FOR_UINT64_INPUTS(i) {
+    FOR_UINT64_INPUTS(j) {
+      m.Call(static_cast<uint32_t>(*i & 0xffffffff),
+             static_cast<uint32_t>(*i >> 32),
+             static_cast<uint32_t>(*j & 0xffffffff),
+             static_cast<uint32_t>(*j >> 32));
+      CHECK_EQ(*i + *j, ToInt64(low, high));
+    }
+  }
+}
+
+void TestInt32PairAddWithSharedInput(int a, int b, int c, int d) {
+  BufferedRawMachineAssemblerTester<int32_t> m(MachineType::Uint32(),
+                                               MachineType::Uint32());
+
+  uint32_t high;
+  uint32_t low;
+
+  Node* PairAdd = m.Int32PairAdd(m.Parameter(a), m.Parameter(b), m.Parameter(c),
+                                 m.Parameter(d));
+
+  m.StoreToPointer(&low, MachineRepresentation::kWord32,
+                   m.Projection(0, PairAdd));
+  m.StoreToPointer(&high, MachineRepresentation::kWord32,
+                   m.Projection(1, PairAdd));
+  m.Return(m.Int32Constant(74));
+
+  FOR_UINT32_INPUTS(i) {
+    FOR_UINT32_INPUTS(j) {
+      m.Call(*i, *j);
+      uint32_t inputs[] = {*i, *j};
+      CHECK_EQ(ToInt64(inputs[a], inputs[b]) + ToInt64(inputs[c], inputs[d]),
+               ToInt64(low, high));
+    }
+  }
+}
+
+TEST(RunInt32PairAddWithSharedInput) {
+  TestInt32PairAddWithSharedInput(0, 0, 0, 0);
+  TestInt32PairAddWithSharedInput(1, 0, 0, 0);
+  TestInt32PairAddWithSharedInput(0, 1, 0, 0);
+  TestInt32PairAddWithSharedInput(0, 0, 1, 0);
+  TestInt32PairAddWithSharedInput(0, 0, 0, 1);
+  TestInt32PairAddWithSharedInput(1, 1, 0, 0);
+}
+
+TEST(RunInt32PairSub) {
+  BufferedRawMachineAssemblerTester<int32_t> m(
+      MachineType::Uint32(), MachineType::Uint32(), MachineType::Uint32(),
+      MachineType::Uint32());
+
+  uint32_t high;
+  uint32_t low;
+
+  Node* PairSub = m.Int32PairSub(m.Parameter(0), m.Parameter(1), m.Parameter(2),
+                                 m.Parameter(3));
+
+  m.StoreToPointer(&low, MachineRepresentation::kWord32,
+                   m.Projection(0, PairSub));
+  m.StoreToPointer(&high, MachineRepresentation::kWord32,
+                   m.Projection(1, PairSub));
+  m.Return(m.Int32Constant(74));
+
+  FOR_UINT64_INPUTS(i) {
+    FOR_UINT64_INPUTS(j) {
+      m.Call(static_cast<uint32_t>(*i & 0xffffffff),
+             static_cast<uint32_t>(*i >> 32),
+             static_cast<uint32_t>(*j & 0xffffffff),
+             static_cast<uint32_t>(*j >> 32));
+      CHECK_EQ(*i - *j, ToInt64(low, high));
+    }
+  }
+}
+
+void TestInt32PairSubWithSharedInput(int a, int b, int c, int d) {
+  BufferedRawMachineAssemblerTester<int32_t> m(MachineType::Uint32(),
+                                               MachineType::Uint32());
+
+  uint32_t high;
+  uint32_t low;
+
+  Node* PairSub = m.Int32PairSub(m.Parameter(a), m.Parameter(b), m.Parameter(c),
+                                 m.Parameter(d));
+
+  m.StoreToPointer(&low, MachineRepresentation::kWord32,
+                   m.Projection(0, PairSub));
+  m.StoreToPointer(&high, MachineRepresentation::kWord32,
+                   m.Projection(1, PairSub));
+  m.Return(m.Int32Constant(74));
+
+  FOR_UINT32_INPUTS(i) {
+    FOR_UINT32_INPUTS(j) {
+      m.Call(*i, *j);
+      uint32_t inputs[] = {*i, *j};
+      CHECK_EQ(ToInt64(inputs[a], inputs[b]) - ToInt64(inputs[c], inputs[d]),
+               ToInt64(low, high));
+    }
+  }
+}
+
+TEST(RunInt32PairSubWithSharedInput) {
+  TestInt32PairSubWithSharedInput(0, 0, 0, 0);
+  TestInt32PairSubWithSharedInput(1, 0, 0, 0);
+  TestInt32PairSubWithSharedInput(0, 1, 0, 0);
+  TestInt32PairSubWithSharedInput(0, 0, 1, 0);
+  TestInt32PairSubWithSharedInput(0, 0, 0, 1);
+  TestInt32PairSubWithSharedInput(1, 1, 0, 0);
+}
+
+TEST(RunInt32PairMul) {
+  BufferedRawMachineAssemblerTester<int32_t> m(
+      MachineType::Uint32(), MachineType::Uint32(), MachineType::Uint32(),
+      MachineType::Uint32());
+
+  uint32_t high;
+  uint32_t low;
+
+  Node* PairMul = m.Int32PairMul(m.Parameter(0), m.Parameter(1), m.Parameter(2),
+                                 m.Parameter(3));
+
+  m.StoreToPointer(&low, MachineRepresentation::kWord32,
+                   m.Projection(0, PairMul));
+  m.StoreToPointer(&high, MachineRepresentation::kWord32,
+                   m.Projection(1, PairMul));
+  m.Return(m.Int32Constant(74));
+
+  FOR_UINT64_INPUTS(i) {
+    FOR_UINT64_INPUTS(j) {
+      m.Call(static_cast<uint32_t>(*i & 0xffffffff),
+             static_cast<uint32_t>(*i >> 32),
+             static_cast<uint32_t>(*j & 0xffffffff),
+             static_cast<uint32_t>(*j >> 32));
+      CHECK_EQ(*i * *j, ToInt64(low, high));
+    }
+  }
+}
+
+void TestInt32PairMulWithSharedInput(int a, int b, int c, int d) {
+  BufferedRawMachineAssemblerTester<int32_t> m(MachineType::Uint32(),
+                                               MachineType::Uint32());
+
+  uint32_t high;
+  uint32_t low;
+
+  Node* PairMul = m.Int32PairMul(m.Parameter(a), m.Parameter(b), m.Parameter(c),
+                                 m.Parameter(d));
+
+  m.StoreToPointer(&low, MachineRepresentation::kWord32,
+                   m.Projection(0, PairMul));
+  m.StoreToPointer(&high, MachineRepresentation::kWord32,
+                   m.Projection(1, PairMul));
+  m.Return(m.Int32Constant(74));
+
+  FOR_UINT32_INPUTS(i) {
+    FOR_UINT32_INPUTS(j) {
+      m.Call(*i, *j);
+      uint32_t inputs[] = {*i, *j};
+      CHECK_EQ(ToInt64(inputs[a], inputs[b]) * ToInt64(inputs[c], inputs[d]),
+               ToInt64(low, high));
+    }
+  }
+}
+
+TEST(RunInt32PairMulWithSharedInput) {
+  TestInt32PairMulWithSharedInput(0, 0, 0, 0);
+  TestInt32PairMulWithSharedInput(1, 0, 0, 0);
+  TestInt32PairMulWithSharedInput(0, 1, 0, 0);
+  TestInt32PairMulWithSharedInput(0, 0, 1, 0);
+  TestInt32PairMulWithSharedInput(0, 0, 0, 1);
+  TestInt32PairMulWithSharedInput(1, 1, 0, 0);
+  TestInt32PairMulWithSharedInput(0, 1, 1, 0);
+}
+
+TEST(RunWord32PairShl) {
+  BufferedRawMachineAssemblerTester<int32_t> m(
+      MachineType::Uint32(), MachineType::Uint32(), MachineType::Uint32());
+
+  uint32_t high;
+  uint32_t low;
+
+  Node* PairAdd =
+      m.Word32PairShl(m.Parameter(0), m.Parameter(1), m.Parameter(2));
+
+  m.StoreToPointer(&low, MachineRepresentation::kWord32,
+                   m.Projection(0, PairAdd));
+  m.StoreToPointer(&high, MachineRepresentation::kWord32,
+                   m.Projection(1, PairAdd));
+  m.Return(m.Int32Constant(74));
+
+  FOR_UINT64_INPUTS(i) {
+    for (uint32_t j = 0; j < 64; j++) {
+      m.Call(static_cast<uint32_t>(*i & 0xffffffff),
+             static_cast<uint32_t>(*i >> 32), j);
+      CHECK_EQ(*i << j, ToInt64(low, high));
+    }
+  }
+}
+
+void TestWord32PairShlWithSharedInput(int a, int b) {
+  BufferedRawMachineAssemblerTester<int32_t> m(MachineType::Uint32(),
+                                               MachineType::Uint32());
+
+  uint32_t high;
+  uint32_t low;
+
+  Node* PairAdd =
+      m.Word32PairShl(m.Parameter(a), m.Parameter(b), m.Parameter(1));
+
+  m.StoreToPointer(&low, MachineRepresentation::kWord32,
+                   m.Projection(0, PairAdd));
+  m.StoreToPointer(&high, MachineRepresentation::kWord32,
+                   m.Projection(1, PairAdd));
+  m.Return(m.Int32Constant(74));
+
+  FOR_UINT32_INPUTS(i) {
+    for (uint32_t j = 0; j < 64; j++) {
+      m.Call(*i, j);
+      uint32_t inputs[] = {*i, j};
+      CHECK_EQ(ToInt64(inputs[a], inputs[b]) << j, ToInt64(low, high));
+    }
+  }
+}
+
+TEST(RunWord32PairShlWithSharedInput) {
+  TestWord32PairShlWithSharedInput(0, 0);
+  TestWord32PairShlWithSharedInput(0, 1);
+  TestWord32PairShlWithSharedInput(1, 0);
+  TestWord32PairShlWithSharedInput(1, 1);
+}
+
+#endif
 
 TEST(RunDeadChangeFloat64ToInt32) {
   RawMachineAssemblerTester<int32_t> m;
@@ -5258,7 +5495,9 @@ TEST(RunChangeFloat32ToFloat64) {
 
   m.Return(m.ChangeFloat32ToFloat64(m.Parameter(0)));
 
-  FOR_FLOAT32_INPUTS(i) { CheckDoubleEq(static_cast<double>(*i), m.Call(*i)); }
+  FOR_FLOAT32_INPUTS(i) {
+    CHECK_DOUBLE_EQ(static_cast<double>(*i), m.Call(*i));
+  }
 }
 
 
@@ -5266,7 +5505,7 @@ TEST(RunFloat32Constant) {
   FOR_FLOAT32_INPUTS(i) {
     BufferedRawMachineAssemblerTester<float> m;
     m.Return(m.Float32Constant(*i));
-    CheckFloatEq(*i, m.Call());
+    CHECK_FLOAT_EQ(*i, m.Call());
   }
 }
 
@@ -5300,7 +5539,7 @@ TEST(RunFloat64InsertLowWord32) {
       double expected = bit_cast<double>(
           (bit_cast<uint64_t>(*i) & ~(V8_UINT64_C(0xFFFFFFFF))) |
           (static_cast<uint64_t>(bit_cast<uint32_t>(*j))));
-      CheckDoubleEq(expected, m.Call(*i, *j));
+      CHECK_DOUBLE_EQ(expected, m.Call(*i, *j));
     }
   }
 }
@@ -5315,7 +5554,7 @@ TEST(RunFloat64InsertHighWord32) {
       uint64_t expected = (bit_cast<uint64_t>(*i) & 0xFFFFFFFF) |
                           (static_cast<uint64_t>(*j) << 32);
 
-      CheckDoubleEq(bit_cast<double>(expected), m.Call(*i, *j));
+      CHECK_DOUBLE_EQ(bit_cast<double>(expected), m.Call(*i, *j));
     }
   }
 }
@@ -5324,14 +5563,14 @@ TEST(RunFloat64InsertHighWord32) {
 TEST(RunFloat32Abs) {
   BufferedRawMachineAssemblerTester<float> m(MachineType::Float32());
   m.Return(m.Float32Abs(m.Parameter(0)));
-  FOR_FLOAT32_INPUTS(i) { CheckFloatEq(std::abs(*i), m.Call(*i)); }
+  FOR_FLOAT32_INPUTS(i) { CHECK_FLOAT_EQ(std::abs(*i), m.Call(*i)); }
 }
 
 
 TEST(RunFloat64Abs) {
   BufferedRawMachineAssemblerTester<double> m(MachineType::Float64());
   m.Return(m.Float64Abs(m.Parameter(0)));
-  FOR_FLOAT64_INPUTS(i) { CheckDoubleEq(std::abs(*i), m.Call(*i)); }
+  FOR_FLOAT64_INPUTS(i) { CHECK_DOUBLE_EQ(std::abs(*i), m.Call(*i)); }
 }
 
 
@@ -5439,7 +5678,7 @@ TEST(RunFloat32RoundDown) {
 
   m.Return(m.Float32RoundDown(m.Parameter(0)));
 
-  FOR_FLOAT32_INPUTS(i) { CheckFloatEq(floorf(*i), m.Call(*i)); }
+  FOR_FLOAT32_INPUTS(i) { CHECK_FLOAT_EQ(floorf(*i), m.Call(*i)); }
 }
 
 
@@ -5449,7 +5688,7 @@ TEST(RunFloat64RoundDown1) {
 
   m.Return(m.Float64RoundDown(m.Parameter(0)));
 
-  FOR_FLOAT64_INPUTS(i) { CheckDoubleEq(floor(*i), m.Call(*i)); }
+  FOR_FLOAT64_INPUTS(i) { CHECK_DOUBLE_EQ(floor(*i), m.Call(*i)); }
 }
 
 
@@ -5471,7 +5710,7 @@ TEST(RunFloat32RoundUp) {
   if (!m.machine()->Float32RoundUp().IsSupported()) return;
   m.Return(m.Float32RoundUp(m.Parameter(0)));
 
-  FOR_FLOAT32_INPUTS(i) { CheckFloatEq(ceilf(*i), m.Call(*i)); }
+  FOR_FLOAT32_INPUTS(i) { CHECK_FLOAT_EQ(ceilf(*i), m.Call(*i)); }
 }
 
 
@@ -5480,7 +5719,7 @@ TEST(RunFloat64RoundUp) {
   if (!m.machine()->Float64RoundUp().IsSupported()) return;
   m.Return(m.Float64RoundUp(m.Parameter(0)));
 
-  FOR_FLOAT64_INPUTS(i) { CheckDoubleEq(ceil(*i), m.Call(*i)); }
+  FOR_FLOAT64_INPUTS(i) { CHECK_DOUBLE_EQ(ceil(*i), m.Call(*i)); }
 }
 
 
@@ -5489,7 +5728,7 @@ TEST(RunFloat32RoundTiesEven) {
   if (!m.machine()->Float32RoundTiesEven().IsSupported()) return;
   m.Return(m.Float32RoundTiesEven(m.Parameter(0)));
 
-  FOR_FLOAT32_INPUTS(i) { CheckFloatEq(nearbyint(*i), m.Call(*i)); }
+  FOR_FLOAT32_INPUTS(i) { CHECK_FLOAT_EQ(nearbyint(*i), m.Call(*i)); }
 }
 
 
@@ -5498,7 +5737,7 @@ TEST(RunFloat64RoundTiesEven) {
   if (!m.machine()->Float64RoundTiesEven().IsSupported()) return;
   m.Return(m.Float64RoundTiesEven(m.Parameter(0)));
 
-  FOR_FLOAT64_INPUTS(i) { CheckDoubleEq(nearbyint(*i), m.Call(*i)); }
+  FOR_FLOAT64_INPUTS(i) { CHECK_DOUBLE_EQ(nearbyint(*i), m.Call(*i)); }
 }
 
 
@@ -5508,7 +5747,7 @@ TEST(RunFloat32RoundTruncate) {
 
   m.Return(m.Float32RoundTruncate(m.Parameter(0)));
 
-  FOR_FLOAT32_INPUTS(i) { CheckFloatEq(truncf(*i), m.Call(*i)); }
+  FOR_FLOAT32_INPUTS(i) { CHECK_FLOAT_EQ(truncf(*i), m.Call(*i)); }
 }
 
 
@@ -5612,79 +5851,6 @@ TEST(RunCallCFunction8) {
   }
 }
 #endif  // USE_SIMULATOR
-
-template <typename T>
-void TestExternalReferenceFunction(
-    BufferedRawMachineAssemblerTester<int32_t>* m, ExternalReference ref,
-    T (*comparison)(T)) {
-  T parameter;
-
-  Node* function = m->ExternalConstant(ref);
-  m->CallCFunction1(MachineType::Pointer(), MachineType::Pointer(), function,
-                    m->PointerConstant(&parameter));
-  m->Return(m->Int32Constant(4356));
-  FOR_FLOAT64_INPUTS(i) {
-    parameter = *i;
-    m->Call();
-    CheckDoubleEq(comparison(*i), parameter);
-  }
-}
-
-TEST(RunCallExternalReferenceF32Trunc) {
-  BufferedRawMachineAssemblerTester<int32_t> m;
-  ExternalReference ref =
-      ExternalReference::f32_trunc_wrapper_function(m.isolate());
-  TestExternalReferenceFunction<float>(&m, ref, truncf);
-}
-
-TEST(RunCallExternalReferenceF32Floor) {
-  BufferedRawMachineAssemblerTester<int32_t> m;
-  ExternalReference ref =
-      ExternalReference::f32_floor_wrapper_function(m.isolate());
-  TestExternalReferenceFunction<float>(&m, ref, floorf);
-}
-
-TEST(RunCallExternalReferenceF32Ceil) {
-  BufferedRawMachineAssemblerTester<int32_t> m;
-  ExternalReference ref =
-      ExternalReference::f32_ceil_wrapper_function(m.isolate());
-  TestExternalReferenceFunction<float>(&m, ref, ceilf);
-}
-
-TEST(RunCallExternalReferenceF32RoundTiesEven) {
-  BufferedRawMachineAssemblerTester<int32_t> m;
-  ExternalReference ref =
-      ExternalReference::f32_nearest_int_wrapper_function(m.isolate());
-  TestExternalReferenceFunction<float>(&m, ref, nearbyintf);
-}
-
-TEST(RunCallExternalReferenceF64Trunc) {
-  BufferedRawMachineAssemblerTester<int32_t> m;
-  ExternalReference ref =
-      ExternalReference::f64_trunc_wrapper_function(m.isolate());
-  TestExternalReferenceFunction<double>(&m, ref, trunc);
-}
-
-TEST(RunCallExternalReferenceF64Floor) {
-  BufferedRawMachineAssemblerTester<int32_t> m;
-  ExternalReference ref =
-      ExternalReference::f64_floor_wrapper_function(m.isolate());
-  TestExternalReferenceFunction<double>(&m, ref, floor);
-}
-
-TEST(RunCallExternalReferenceF64Ceil) {
-  BufferedRawMachineAssemblerTester<int32_t> m;
-  ExternalReference ref =
-      ExternalReference::f64_ceil_wrapper_function(m.isolate());
-  TestExternalReferenceFunction<double>(&m, ref, ceil);
-}
-
-TEST(RunCallExternalReferenceF64RoundTiesEven) {
-  BufferedRawMachineAssemblerTester<int32_t> m;
-  ExternalReference ref =
-      ExternalReference::f64_nearest_int_wrapper_function(m.isolate());
-  TestExternalReferenceFunction<double>(&m, ref, nearbyint);
-}
 
 #if V8_TARGET_ARCH_64_BIT
 // TODO(titzer): run int64 tests on all platforms when supported.
@@ -5867,7 +6033,7 @@ TEST(RunTryTruncateFloat32ToUint64WithCheck) {
 
 TEST(RunTryTruncateFloat64ToUint64WithoutCheck) {
   BufferedRawMachineAssemblerTester<uint64_t> m(MachineType::Float64());
-  m.Return(m.TruncateFloat64ToUint64(m.Parameter(0)));
+  m.Return(m.TryTruncateFloat64ToUint64(m.Parameter(0)));
 
   FOR_UINT64_INPUTS(j) {
     double input = static_cast<double>(*j);
@@ -6123,7 +6289,10 @@ TEST(RunRoundInt32ToFloat32) {
 TEST(RunRoundUint32ToFloat32) {
   BufferedRawMachineAssemblerTester<float> m(MachineType::Uint32());
   m.Return(m.RoundUint32ToFloat32(m.Parameter(0)));
-  FOR_UINT32_INPUTS(i) { CHECK_EQ(static_cast<float>(*i), m.Call(*i)); }
+  FOR_UINT32_INPUTS(i) {
+    volatile float expected = static_cast<float>(*i);
+    CHECK_EQ(expected, m.Call(*i));
+  }
 }
 
 
@@ -6192,6 +6361,27 @@ TEST(RunComputedCodeObject) {
 
   CHECK_EQ(33, r.Call(1));
   CHECK_EQ(44, r.Call(0));
+}
+
+TEST(ParentFramePointer) {
+  RawMachineAssemblerTester<int32_t> r(MachineType::Int32());
+  RawMachineLabel tlabel;
+  RawMachineLabel flabel;
+  RawMachineLabel merge;
+  Node* frame = r.LoadFramePointer();
+  Node* parent_frame = r.LoadParentFramePointer();
+  frame = r.Load(MachineType::IntPtr(), frame);
+  r.Branch(r.WordEqual(frame, parent_frame), &tlabel, &flabel);
+  r.Bind(&tlabel);
+  Node* fa = r.Int32Constant(1);
+  r.Goto(&merge);
+  r.Bind(&flabel);
+  Node* fb = r.Int32Constant(0);
+  r.Goto(&merge);
+  r.Bind(&merge);
+  Node* phi = r.Phi(MachineRepresentation::kWord32, fa, fb);
+  r.Return(phi);
+  CHECK_EQ(1, r.Call(1));
 }
 
 }  // namespace compiler

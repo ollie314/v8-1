@@ -49,13 +49,15 @@ class Interpreter {
   void TraceCodegen(Handle<Code> code);
   const char* LookupNameOfBytecodeHandler(Code* code);
 
+  void WriteDispatchCounters();
+
   Address dispatch_table_address() {
     return reinterpret_cast<Address>(&dispatch_table_[0]);
   }
 
-  // Returns true if a handler is generated for a bytecode at a given
-  // operand scale.
-  static bool BytecodeHasHandler(Bytecode bytecode, OperandScale operand_scale);
+  uintptr_t* bytecode_dispatch_count_table() {
+    return bytecode_dispatch_count_table_.get();
+  }
 
  private:
 // Bytecode handler generator functions.
@@ -144,7 +146,8 @@ class Interpreter {
   static const int kDispatchTableSize = kNumberOfWideVariants * (kMaxUInt8 + 1);
 
   Isolate* isolate_;
-  Code* dispatch_table_[kDispatchTableSize];
+  Address dispatch_table_[kDispatchTableSize];
+  v8::base::SmartArrayPointer<uintptr_t> bytecode_dispatch_count_table_;
 
   DISALLOW_COPY_AND_ASSIGN(Interpreter);
 };

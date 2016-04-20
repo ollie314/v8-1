@@ -194,6 +194,8 @@ SLOW_ARCHS = ["android_arm",
               "mips64el",
               "nacl_ia32",
               "nacl_x64",
+              "s390",
+              "s390x",
               "x87",
               "arm64"]
 
@@ -335,7 +337,7 @@ def BuildOptions():
   result.add_option("--time", help="Print timing information after running",
                     default=False, action="store_true")
   result.add_option("-t", "--timeout", help="Timeout in seconds",
-                    default= -1, type="int")
+                    default=TIMEOUT_DEFAULT, type="int")
   result.add_option("--tsan",
                     help="Regard test expectations for TSAN",
                     default=False, action="store_true")
@@ -378,6 +380,10 @@ def BuildbotToV8Mode(config):
 
 def SetupEnvironment(options):
   """Setup additional environment variables."""
+
+  # Many tests assume an English interface.
+  os.environ['LANG'] = 'en_US.UTF-8'
+
   symbolizer = 'external_symbolizer_path=%s' % (
       os.path.join(
           BASE_DIR, 'third_party', 'llvm-build', 'Release+Asserts', 'bin',
@@ -663,19 +669,16 @@ def Execute(arch, mode, args, options, suites):
 
   # Populate context object.
   mode_flags = MODES[mode]["flags"]
-  timeout = options.timeout
-  if timeout == -1:
-    # Simulators are slow, therefore allow a longer default timeout.
-    if arch in SLOW_ARCHS:
-      timeout = 2 * TIMEOUT_DEFAULT;
-    else:
-      timeout = TIMEOUT_DEFAULT;
 
-  timeout *= MODES[mode]["timeout_scalefactor"]
+  # Simulators are slow, therefore allow a longer timeout.
+  if arch in SLOW_ARCHS:
+    options.timeout *= 2
+
+  options.timeout *= MODES[mode]["timeout_scalefactor"]
 
   if options.predictable:
     # Predictable mode is slower.
-    timeout *= 2
+    options.timeout *= 2
 
   # TODO(machenbach): Remove temporary verbose output on windows after
   # debugging driver-hung-up on XP.
@@ -685,7 +688,8 @@ def Execute(arch, mode, args, options, suites):
   )
   ctx = context.Context(arch, MODES[mode]["execution_mode"], shell_dir,
                         mode_flags, verbose_output,
-                        timeout, options.isolates,
+                        options.timeout,
+                        options.isolates,
                         options.command_prefix,
                         options.extra_flags,
                         options.no_i18n,

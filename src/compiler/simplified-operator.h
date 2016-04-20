@@ -152,8 +152,6 @@ class SimplifiedOperatorBuilder final : public ZoneObject {
   const Operator* NumberToUint32();
   const Operator* NumberIsHoleNaN();
 
-  const Operator* PlainPrimitiveToNumber();
-
   const Operator* ReferenceEqual(Type* type);
 
   const Operator* StringEqual();
@@ -161,6 +159,7 @@ class SimplifiedOperatorBuilder final : public ZoneObject {
   const Operator* StringLessThanOrEqual();
   const Operator* StringToNumber();
 
+  const Operator* ChangeSmiToInt32();
   const Operator* ChangeTaggedToInt32();
   const Operator* ChangeTaggedToUint32();
   const Operator* ChangeTaggedToFloat64();
@@ -170,9 +169,11 @@ class SimplifiedOperatorBuilder final : public ZoneObject {
   const Operator* ChangeBoolToBit();
   const Operator* ChangeBitToBool();
 
+  const Operator* ObjectIsCallable();
   const Operator* ObjectIsNumber();
   const Operator* ObjectIsReceiver();
   const Operator* ObjectIsSmi();
+  const Operator* ObjectIsString();
   const Operator* ObjectIsUndetectable();
 
   const Operator* Allocate(PretenureFlag pretenure = NOT_TENURED);

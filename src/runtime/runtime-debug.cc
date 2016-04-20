@@ -1454,11 +1454,14 @@ RUNTIME_FUNCTION(Runtime_FunctionGetDebugName) {
 
   CONVERT_ARG_HANDLE_CHECKED(JSReceiver, function, 0);
 
+  Handle<Object> name;
   if (function->IsJSBoundFunction()) {
-    return Handle<JSBoundFunction>::cast(function)->name();
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, name, JSBoundFunction::GetName(
+                           isolate, Handle<JSBoundFunction>::cast(function)));
+  } else {
+    name = JSFunction::GetDebugName(Handle<JSFunction>::cast(function));
   }
-  Handle<Object> name =
-      JSFunction::GetDebugName(Handle<JSFunction>::cast(function));
   return *name;
 }
 
@@ -1598,18 +1601,9 @@ RUNTIME_FUNCTION(Runtime_GetScript) {
 // built-in function such as Array.forEach to enable stepping into the callback,
 // if we are indeed stepping and the callback is subject to debugging.
 RUNTIME_FUNCTION(Runtime_DebugPrepareStepInIfStepping) {
-  DCHECK(args.length() == 1);
   HandleScope scope(isolate);
-  CONVERT_ARG_HANDLE_CHECKED(Object, object, 0);
-  RUNTIME_ASSERT(object->IsJSFunction() || object->IsJSGeneratorObject());
-  Handle<JSFunction> fun;
-  if (object->IsJSFunction()) {
-    fun = Handle<JSFunction>::cast(object);
-  } else {
-    fun = Handle<JSFunction>(
-        Handle<JSGeneratorObject>::cast(object)->function(), isolate);
-  }
-
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, fun, 0);
   isolate->debug()->PrepareStepIn(fun);
   return isolate->heap()->undefined_value();
 }
@@ -1631,15 +1625,6 @@ RUNTIME_FUNCTION(Runtime_DebugPopPromise) {
   DCHECK(args.length() == 0);
   SealHandleScope shs(isolate);
   isolate->PopPromise();
-  return isolate->heap()->undefined_value();
-}
-
-
-RUNTIME_FUNCTION(Runtime_DebugPromiseEvent) {
-  DCHECK(args.length() == 1);
-  HandleScope scope(isolate);
-  CONVERT_ARG_HANDLE_CHECKED(JSObject, data, 0);
-  isolate->debug()->OnPromiseEvent(data);
   return isolate->heap()->undefined_value();
 }
 

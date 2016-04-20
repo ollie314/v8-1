@@ -54,12 +54,14 @@ class CodeFactory final {
       Isolate* isolate, LanguageMode mode,
       InlineCacheState initialization_state);
 
-  static Callable StoreInterceptor(Isolate* isolate);
+  static Callable ResumeGenerator(Isolate* isolate);
 
   static Callable CompareIC(Isolate* isolate, Token::Value op);
   static Callable CompareNilIC(Isolate* isolate, NilValue nil_value);
 
   static Callable BinaryOpIC(Isolate* isolate, Token::Value op);
+
+  static Callable ApiGetter(Isolate* isolate);
 
   // Code stubs. Add methods here as needed to reduce dependency on
   // code-stubs.h.
@@ -82,6 +84,12 @@ class CodeFactory final {
 
   static Callable Add(Isolate* isolate);
   static Callable Subtract(Isolate* isolate);
+  static Callable Multiply(Isolate* isolate);
+  static Callable Divide(Isolate* isolate);
+  static Callable Modulus(Isolate* isolate);
+  static Callable ShiftRight(Isolate* isolate);
+  static Callable ShiftRightLogical(Isolate* isolate);
+  static Callable ShiftLeft(Isolate* isolate);
   static Callable BitwiseAnd(Isolate* isolate);
   static Callable BitwiseOr(Isolate* isolate);
   static Callable BitwiseXor(Isolate* isolate);
@@ -125,7 +133,7 @@ class CodeFactory final {
   static Callable Allocate##Type(Isolate* isolate);
   SIMD128_TYPES(SIMD128_ALLOC)
 #undef SIMD128_ALLOC
-  static Callable AllocateInNewSpace(Isolate* isolate);
+  static Callable Allocate(Isolate* isolate, PretenureFlag pretenure_flag);
 
   static Callable ArgumentAdaptor(Isolate* isolate);
   static Callable Call(Isolate* isolate,

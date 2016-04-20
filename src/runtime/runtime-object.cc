@@ -8,6 +8,7 @@
 #include "src/bootstrapper.h"
 #include "src/debug/debug.h"
 #include "src/isolate-inl.h"
+#include "src/json-stringifier.h"
 #include "src/messages.h"
 #include "src/property-descriptor.h"
 #include "src/runtime/runtime.h"
@@ -225,6 +226,15 @@ MaybeHandle<Object> Runtime::SetObjectProperty(Isolate* isolate,
   return value;
 }
 
+MaybeHandle<Object> Runtime::BasicJsonStringify(Isolate* isolate,
+                                                Handle<Object> object) {
+  return BasicJsonStringifier(isolate).Stringify(object);
+}
+
+MaybeHandle<Object> Runtime::BasicJsonStringifyString(Isolate* isolate,
+                                                      Handle<String> string) {
+  return BasicJsonStringifier::StringifyString(isolate, string);
+}
 
 RUNTIME_FUNCTION(Runtime_GetPrototype) {
   HandleScope scope(isolate);
@@ -1238,6 +1248,21 @@ RUNTIME_FUNCTION(Runtime_ObjectDefineProperty) {
   return JSReceiver::DefineProperty(isolate, o, name, attributes);
 }
 
+RUNTIME_FUNCTION(Runtime_CreateDataProperty) {
+  HandleScope scope(isolate);
+  DCHECK(args.length() == 3);
+  CONVERT_ARG_HANDLE_CHECKED(JSReceiver, o, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Object, key, 1);
+  CONVERT_ARG_HANDLE_CHECKED(Object, value, 2);
+  bool success;
+  LookupIterator it = LookupIterator::PropertyOrElement(
+      isolate, o, key, &success, LookupIterator::HIDDEN);
+  if (!success) return isolate->heap()->exception();
+  MAYBE_RETURN(
+      JSReceiver::CreateDataProperty(&it, value, Object::THROW_ON_ERROR),
+      isolate->heap()->exception());
+  return *value;
+}
 
 RUNTIME_FUNCTION(Runtime_ObjectDefineProperties) {
   HandleScope scope(isolate);

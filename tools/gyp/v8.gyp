@@ -121,30 +121,18 @@
         }],
         ['v8_use_snapshot=="true" and v8_use_external_startup_data==1 and want_separate_host_toolset==0', {
           'dependencies': ['v8_base', 'v8_external_snapshot'],
-          'inputs': ['<(PRODUCT_DIR)/snapshot_blob.bin'],
-          'conditions': [
-            ['v8_separate_ignition_snapshot==1', {
-              'inputs': ['<(PRODUCT_DIR)/snapshot_blob_ignition.bin'],
-            }],
-          ]
+          'inputs': [ '<(PRODUCT_DIR)/snapshot_blob.bin', ],
         }],
         ['v8_use_snapshot=="true" and v8_use_external_startup_data==1 and want_separate_host_toolset==1', {
           'dependencies': ['v8_base', 'v8_external_snapshot'],
           'target_conditions': [
             ['_toolset=="host"', {
-              'inputs': ['<(PRODUCT_DIR)/snapshot_blob_host.bin'],
+              'inputs': [
+                '<(PRODUCT_DIR)/snapshot_blob_host.bin',
+              ],
             }, {
-              'inputs': ['<(PRODUCT_DIR)/snapshot_blob.bin'],
-            }],
-          ],
-          'conditions': [
-            ['v8_separate_ignition_snapshot==1', {
-              'target_conditions': [
-                ['_toolset=="host"', {
-                  'inputs': ['<(PRODUCT_DIR)/snapshot_blob_ignition_host.bin'],
-                }, {
-                  'inputs': ['<(PRODUCT_DIR)/snapshot_blob_ignition.bin'],
-                }],
+              'inputs': [
+                '<(PRODUCT_DIR)/snapshot_blob.bin',
               ],
             }],
           ],
@@ -211,10 +199,7 @@
             '<(INTERMEDIATE_DIR)/snapshot.cc',
           ],
           'variables': {
-            'mksnapshot_flags': [
-              '--log-snapshot-positions',
-              '--logfile', '<(INTERMEDIATE_DIR)/snapshot.log',
-            ],
+            'mksnapshot_flags': [],
             'conditions': [
               ['v8_random_seed!=0', {
                 'mksnapshot_flags': ['--random-seed', '<(v8_random_seed)'],
@@ -298,68 +283,6 @@
                 ],
               },
             }],
-            # Extra snapshot blob for ignition.
-            ['v8_separate_ignition_snapshot==1', {
-              # This is concatenated to the other actions list of
-              # v8_external_snapshot.
-              'actions': [
-                {
-                  'action_name': 'run_mksnapshot (ignition)',
-                  'inputs': ['<(mksnapshot_exec)'],
-                  'variables': {
-                    # TODO: Extract common mksnapshot_flags to a separate
-                    # variable.
-                    'mksnapshot_flags_ignition': [
-                      '--ignition',
-                      '--log-snapshot-positions',
-                      '--logfile', '<(INTERMEDIATE_DIR)/snapshot_ignition.log',
-                    ],
-                    'conditions': [
-                      ['v8_random_seed!=0', {
-                        'mksnapshot_flags_ignition': ['--random-seed', '<(v8_random_seed)'],
-                      }],
-                      ['v8_vector_stores!=0', {
-                        'mksnapshot_flags_ignition': ['--vector-stores'],
-                      }],
-                    ],
-                  },
-                  'conditions': [
-                    ['want_separate_host_toolset==1', {
-                      'target_conditions': [
-                        ['_toolset=="host"', {
-                          'outputs': ['<(PRODUCT_DIR)/snapshot_blob_ignition_host.bin'],
-                          'action': [
-                            '<(mksnapshot_exec)',
-                            '<@(mksnapshot_flags_ignition)',
-                            '--startup_blob', '<(PRODUCT_DIR)/snapshot_blob_ignition_host.bin',
-                            '<(embed_script)',
-                            '<(warmup_script)',
-                          ],
-                        }, {
-                          'outputs': ['<(PRODUCT_DIR)/snapshot_blob_ignition.bin'],
-                          'action': [
-                            '<(mksnapshot_exec)',
-                            '<@(mksnapshot_flags_ignition)',
-                            '--startup_blob', '<(PRODUCT_DIR)/snapshot_blob_ignition.bin',
-                            '<(embed_script)',
-                            '<(warmup_script)',
-                          ],
-                        }],
-                      ],
-                    }, {
-                      'outputs': ['<(PRODUCT_DIR)/snapshot_blob_ignition.bin'],
-                      'action': [
-                        '<(mksnapshot_exec)',
-                        '<@(mksnapshot_flags_ignition)',
-                        '--startup_blob', '<(PRODUCT_DIR)/snapshot_blob_ignition.bin',
-                        '<(embed_script)',
-                        '<(warmup_script)',
-                      ],
-                    }],
-                  ],
-                },
-              ],
-            }],
           ],
           'dependencies': [
             'v8_base',
@@ -374,12 +297,11 @@
           'actions': [
             {
               'action_name': 'run_mksnapshot (external)',
-              'inputs': ['<(mksnapshot_exec)'],
+              'inputs': [
+                '<(mksnapshot_exec)',
+              ],
               'variables': {
-                'mksnapshot_flags': [
-                  '--log-snapshot-positions',
-                  '--logfile', '<(INTERMEDIATE_DIR)/snapshot.log',
-                ],
+                'mksnapshot_flags': [],
                 'conditions': [
                   ['v8_random_seed!=0', {
                     'mksnapshot_flags': ['--random-seed', '<(v8_random_seed)'],
@@ -393,7 +315,9 @@
                 ['want_separate_host_toolset==1', {
                   'target_conditions': [
                     ['_toolset=="host"', {
-                      'outputs': ['<(PRODUCT_DIR)/snapshot_blob_host.bin'],
+                      'outputs': [
+                        '<(PRODUCT_DIR)/snapshot_blob_host.bin',
+                      ],
                       'action': [
                         '<(mksnapshot_exec)',
                         '<@(mksnapshot_flags)',
@@ -402,7 +326,9 @@
                         '<(warmup_script)',
                       ],
                     }, {
-                      'outputs': ['<(PRODUCT_DIR)/snapshot_blob.bin'],
+                      'outputs': [
+                        '<(PRODUCT_DIR)/snapshot_blob.bin',
+                      ],
                       'action': [
                         '<(mksnapshot_exec)',
                         '<@(mksnapshot_flags)',
@@ -413,7 +339,9 @@
                     }],
                   ],
                 }, {
-                  'outputs': ['<(PRODUCT_DIR)/snapshot_blob.bin'],
+                  'outputs': [
+                    '<(PRODUCT_DIR)/snapshot_blob.bin',
+                  ],
                   'action': [
                     '<(mksnapshot_exec)',
                     '<@(mksnapshot_flags)',
@@ -527,6 +455,8 @@
         '../../src/checks.h',
         '../../src/code-factory.cc',
         '../../src/code-factory.h',
+        '../../src/code-stub-assembler.cc',
+        '../../src/code-stub-assembler.h',
         '../../src/code-stubs.cc',
         '../../src/code-stubs.h',
         '../../src/code-stubs-hydrogen.cc',
@@ -565,8 +495,8 @@
         '../../src/compiler/code-generator-impl.h',
         '../../src/compiler/code-generator.cc',
         '../../src/compiler/code-generator.h',
-        '../../src/compiler/code-stub-assembler.cc',
-        '../../src/compiler/code-stub-assembler.h',
+        '../../src/compiler/code-assembler.cc',
+        '../../src/compiler/code-assembler.h',
         '../../src/compiler/common-node-cache.cc',
         '../../src/compiler/common-node-cache.h',
         '../../src/compiler/common-operator-reducer.cc',
@@ -582,6 +512,8 @@
         '../../src/compiler/dead-code-elimination.cc',
         '../../src/compiler/dead-code-elimination.h',
         '../../src/compiler/diamond.h',
+        '../../src/compiler/effect-control-linearizer.cc',
+        '../../src/compiler/effect-control-linearizer.h',
         '../../src/compiler/escape-analysis.cc',
         '../../src/compiler/escape-analysis.h',
         "../../src/compiler/escape-analysis-reducer.cc",
@@ -1188,6 +1120,8 @@
         '../../src/version.h',
         '../../src/vm-state-inl.h',
         '../../src/vm-state.h',
+        '../../src/wasm/switch-logic.h',
+        '../../src/wasm/switch-logic.cc',
         '../../src/wasm/asm-wasm-builder.cc',
         '../../src/wasm/asm-wasm-builder.h',
         '../../src/wasm/ast-decoder.cc',
@@ -1195,6 +1129,8 @@
         '../../src/wasm/decoder.h',
         '../../src/wasm/encoder.cc',
         '../../src/wasm/encoder.h',
+        '../../src/wasm/wasm-external-refs.cc',
+        '../../src/wasm/wasm-external-refs.h',
         '../../src/wasm/module-decoder.cc',
         '../../src/wasm/module-decoder.h',
         '../../src/wasm/wasm-js.cc',
@@ -1562,7 +1498,6 @@
             '../../src/ppc/frames-ppc.cc',
             '../../src/ppc/frames-ppc.h',
             '../../src/ppc/interface-descriptors-ppc.cc',
-            '../../src/ppc/interface-descriptors-ppc.h',
             '../../src/ppc/macro-assembler-ppc.cc',
             '../../src/ppc/macro-assembler-ppc.h',
             '../../src/ppc/simulator-ppc.cc',
@@ -1700,6 +1635,7 @@
         '../../src/base/division-by-constant.cc',
         '../../src/base/division-by-constant.h',
         '../../src/base/flags.h',
+        '../../src/base/format-macros.h',
         '../../src/base/functional.cc',
         '../../src/base/functional.h',
         '../../src/base/iterator.h',
@@ -1762,11 +1698,12 @@
             ],
             'link_settings': {
               'target_conditions': [
-                ['_toolset=="host"', {
+                ['_toolset=="host" and host_os!="mac"', {
                   # Only include libdl and librt on host builds because they
                   # are included by default on Android target builds, and we
                   # don't want to re-include them here since this will change
                   # library order and break (see crbug.com/469973).
+                  # These libraries do not exist on Mac hosted builds.
                   'libraries': [
                     '-ldl',
                     '-lrt'
@@ -2061,7 +1998,6 @@
           '../../src/js/arraybuffer.js',
           '../../src/js/typedarray.js',
           '../../src/js/iterator-prototype.js',
-          '../../src/js/generator.js',
           '../../src/js/object-observe.js',
           '../../src/js/collection.js',
           '../../src/js/weak-collection.js',
@@ -2081,7 +2017,6 @@
         'experimental_library_files': [
           '../../src/js/macros.py',
           '../../src/messages.h',
-          '../../src/js/generator.js',
           '../../src/js/harmony-atomics.js',
           '../../src/js/harmony-regexp-exec.js',
           '../../src/js/harmony-object-observe.js',

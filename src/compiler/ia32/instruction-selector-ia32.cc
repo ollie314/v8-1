@@ -56,6 +56,8 @@ class IA32OperandGenerator final : public OperandGenerator {
       case IrOpcode::kInt32Constant:
       case IrOpcode::kNumberConstant:
       case IrOpcode::kExternalConstant:
+      case IrOpcode::kRelocatableInt32Constant:
+      case IrOpcode::kRelocatableInt64Constant:
         return true;
       case IrOpcode::kHeapConstant: {
         // Constants in new space cannot be used as immediates in V8 because
@@ -1563,6 +1565,14 @@ void InstructionSelector::VisitFloat64InsertHighWord32(Node* node) {
        g.UseRegister(left), g.Use(right));
 }
 
+void InstructionSelector::VisitAtomicLoad(Node* node) {
+  LoadRepresentation load_rep = LoadRepresentationOf(node->op());
+  DCHECK(load_rep.representation() == MachineRepresentation::kWord8 ||
+         load_rep.representation() == MachineRepresentation::kWord16 ||
+         load_rep.representation() == MachineRepresentation::kWord32);
+  USE(load_rep);
+  VisitLoad(node);
+}
 
 // static
 MachineOperatorBuilder::Flags

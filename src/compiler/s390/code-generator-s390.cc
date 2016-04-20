@@ -656,6 +656,14 @@ void CodeGenerator::AssembleArchInstruction(Instruction* instr) {
       frame_access_state()->ClearSPDelta();
       break;
     }
+    case kArchTailCallAddress: {
+      int stack_param_delta = i.InputInt32(instr->InputCount() - 1);
+      AssembleDeconstructActivationRecord(stack_param_delta);
+      CHECK(!instr->InputAt(0)->IsImmediate());
+      __ Jump(i.InputRegister(0));
+      frame_access_state()->ClearSPDelta();
+      break;
+    }
     case kArchCallJSFunction: {
       EnsureSpaceForLazyDeopt();
       Register func = i.InputRegister(0);
@@ -1203,13 +1211,12 @@ void CodeGenerator::AssembleArchInstruction(Instruction* instr) {
       ASSEMBLE_FLOAT_UNOP(sqebr);
       break;
     case kS390_FloorFloat:
-      //      ASSEMBLE_FLOAT_UNOP_RC(frim);
-      __ FloatFloor32(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
-                      kScratchReg);
+      __ fiebra(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
+                v8::internal::Assembler::FIDBRA_ROUND_TOWARD_NEG_INF);
       break;
     case kS390_CeilFloat:
-      __ FloatCeiling32(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
-                        kScratchReg, kScratchDoubleReg);
+      __ fiebra(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
+                v8::internal::Assembler::FIDBRA_ROUND_TOWARD_POS_INF);
       break;
     case kS390_TruncateFloat:
       __ fiebra(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
@@ -1235,12 +1242,12 @@ void CodeGenerator::AssembleArchInstruction(Instruction* instr) {
       ASSEMBLE_FLOAT_UNOP(sqdbr);
       break;
     case kS390_FloorDouble:
-      __ FloatFloor64(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
-                      kScratchReg);
+      __ fidbra(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
+                v8::internal::Assembler::FIDBRA_ROUND_TOWARD_NEG_INF);
       break;
     case kS390_CeilDouble:
-      __ FloatCeiling64(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
-                        kScratchReg, kScratchDoubleReg);
+      __ fidbra(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
+                v8::internal::Assembler::FIDBRA_ROUND_TOWARD_POS_INF);
       break;
     case kS390_TruncateDouble:
       __ fidbra(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
@@ -1695,7 +1702,8 @@ void CodeGenerator::AssembleArchBoolean(Instruction* instr,
 
   // Overflow checked for add/sub only.
   DCHECK((condition != kOverflow && condition != kNotOverflow) ||
-         (op == kS390_AddWithOverflow32 || op == kS390_SubWithOverflow32));
+         (op == kS390_AddWithOverflow32 || op == kS390_SubWithOverflow32) ||
+         (op == kS390_Add || op == kS390_Sub));
 
   // Materialize a full 32-bit 1 or 0 value. The result register is always the
   // last output of the instruction.
@@ -1906,10 +1914,26 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
           destination->IsRegister() ? g.ToRegister(destination) : kScratchReg;
       switch (src.type()) {
         case Constant::kInt32:
+#if !V8_TARGET_ARCH_S390X
+          if (src.rmode() == RelocInfo::WASM_MEMORY_REFERENCE) {
+            __ mov(dst, Operand(src.ToInt32(), src.rmode()));
+          } else {
+            __ mov(dst, Operand(src.ToInt32()));
+          }
+#else
           __ mov(dst, Operand(src.ToInt32()));
+#endif  // V8_TARGET_ARCH_S390X
           break;
         case Constant::kInt64:
+#if V8_TARGET_ARCH_S390X
+          if (src.rmode() == RelocInfo::WASM_MEMORY_REFERENCE) {
+            __ mov(dst, Operand(src.ToInt64(), src.rmode()));
+          } else {
+            __ mov(dst, Operand(src.ToInt64()));
+          }
+#else
           __ mov(dst, Operand(src.ToInt64()));
+#endif  // V8_TARGET_ARCH_S390X
           break;
         case Constant::kFloat32:
           __ Move(dst,

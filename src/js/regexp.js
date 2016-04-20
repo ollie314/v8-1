@@ -11,7 +11,6 @@
 // -------------------------------------------------------------------
 // Imports
 
-var AddIndexedProperty;
 var ExpandReplacement;
 var GlobalArray = global.Array;
 var GlobalObject = global.Object;
@@ -29,7 +28,6 @@ var splitSymbol = utils.ImportNow("split_symbol");
 var SpeciesConstructor;
 
 utils.Import(function(from) {
-  AddIndexedProperty = from.AddIndexedProperty;
   ExpandReplacement = from.ExpandReplacement;
   MakeTypeError = from.MakeTypeError;
   MaxSimple = from.MaxSimple;
@@ -194,8 +192,8 @@ function RegExpSubclassExecJS(string) {
   // algorithm, step 4) even if the value is discarded for non-global RegExps.
   var i = TO_LENGTH(lastIndex);
 
-  var global = TO_BOOLEAN(this.global);
-  var sticky = TO_BOOLEAN(this.sticky);
+  var global = TO_BOOLEAN(REGEXP_GLOBAL(this));
+  var sticky = TO_BOOLEAN(REGEXP_STICKY(this));
   var updateLastIndex = global || sticky;
   if (updateLastIndex) {
     if (i > string.length) {
@@ -370,27 +368,14 @@ function TrimRegExp(regexp) {
 
 
 function RegExpToString() {
-  if (!IS_REGEXP(this)) {
-    // RegExp.prototype.toString() returns '/(?:)/' as a compatibility fix;
-    // a UseCounter is incremented to track it.
-    // TODO(littledan): Remove this workaround or standardize it
-    if (this === GlobalRegExpPrototype) {
-      %IncrementUseCounter(kRegExpPrototypeToString);
-      return '/(?:)/';
-    }
-    if (!IS_RECEIVER(this)) {
-      throw MakeTypeError(
-          kIncompatibleMethodReceiver, 'RegExp.prototype.toString', this);
-    }
-    return '/' + TO_STRING(this.source) + '/' + TO_STRING(this.flags);
+  if (!IS_RECEIVER(this)) {
+    throw MakeTypeError(
+        kIncompatibleMethodReceiver, 'RegExp.prototype.toString', this);
   }
-  var result = '/' + REGEXP_SOURCE(this) + '/';
-  if (REGEXP_GLOBAL(this)) result += 'g';
-  if (REGEXP_IGNORE_CASE(this)) result += 'i';
-  if (REGEXP_MULTILINE(this)) result += 'm';
-  if (REGEXP_UNICODE(this)) result += 'u';
-  if (REGEXP_STICKY(this)) result += 'y';
-  return result;
+  if (this === GlobalRegExpPrototype) {
+    %IncrementUseCounter(kRegExpPrototypeToString);
+  }
+  return '/' + TO_STRING(this.source) + '/' + TO_STRING(this.flags);
 }
 
 
@@ -515,7 +500,7 @@ function RegExpSubclassSplit(string, limit) {
   var result;
   if (size === 0) {
     result = RegExpSubclassExec(splitter, string);
-    if (IS_NULL(result)) AddIndexedProperty(array, 0, string);
+    if (IS_NULL(result)) %AddElement(array, 0, string);
     return array;
   }
   var stringIndex = prevStringIndex;
@@ -531,7 +516,7 @@ function RegExpSubclassSplit(string, limit) {
       if (end === stringIndex) {
         stringIndex += AdvanceStringIndex(string, stringIndex, unicode);
       } else {
-        AddIndexedProperty(
+        %AddElement(
             array, arrayIndex,
             %_SubString(string, prevStringIndex, stringIndex));
         arrayIndex++;
@@ -539,7 +524,7 @@ function RegExpSubclassSplit(string, limit) {
         prevStringIndex = end;
         var numberOfCaptures = MaxSimple(TO_LENGTH(result.length), 0);
         for (var i = 1; i < numberOfCaptures; i++) {
-          AddIndexedProperty(array, arrayIndex, result[i]);
+          %AddElement(array, arrayIndex, result[i]);
           arrayIndex++;
           if (arrayIndex === lim) return array;
         }
@@ -547,7 +532,7 @@ function RegExpSubclassSplit(string, limit) {
       }
     }
   }
-  AddIndexedProperty(array, arrayIndex,
+  %AddElement(array, arrayIndex,
                      %_SubString(string, prevStringIndex, size));
   return array;
 }
@@ -1126,7 +1111,7 @@ function RegExpGetSource() {
     // TODO(littledan): Remove this RegExp compat workaround
     if (this === GlobalRegExpPrototype) {
       %IncrementUseCounter(kRegExpPrototypeSourceGetter);
-      return UNDEFINED;
+      return "(?:)";
     }
     throw MakeTypeError(kRegExpNonRegExp, "RegExp.prototype.source");
   }

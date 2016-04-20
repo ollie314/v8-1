@@ -330,6 +330,8 @@ class Local {
   template <class F1, class F2, class F3>
   friend class PersistentValueMapBase;
   template<class F1, class F2> friend class PersistentValueVector;
+  template <class F>
+  friend class ReturnValue;
 
   explicit V8_INLINE Local(T* that) : val_(that) {}
   V8_INLINE static Local<T> New(Isolate* isolate, T* that);
@@ -478,9 +480,12 @@ class WeakCallbackData {
 template <class T>
 using PhantomCallbackData = WeakCallbackInfo<T>;
 
-
-enum class WeakCallbackType { kParameter, kInternalFields };
-
+// kParameter will pass a void* parameter back to the callback, kInternalFields
+// will pass the first two internal fields back to the callback, kFinalizer
+// will pass a void* parameter back, but is invoked before the object is
+// actually collected, so it can be resurrected. In the last case, it is not
+// possible to request a second pass callback.
+enum class WeakCallbackType { kParameter, kInternalFields, kFinalizer };
 
 /**
  * An object reference that is independent of any handle scope.  Where
@@ -600,7 +605,7 @@ template <class T> class PersistentBase {
    * is alive. Only allowed when the embedder is asked to trace its heap by
    * EmbedderHeapTracer.
    */
-  V8_INLINE void RegisterExternalReference(Isolate* isolate);
+  V8_INLINE void RegisterExternalReference(Isolate* isolate) const;
 
   /**
    * Marks the reference to this object independent. Garbage collector is free
@@ -1663,9 +1668,8 @@ struct SampleInfo {
   StateTag vm_state;
 };
 
-
 /**
- * A JSON Parser.
+ * A JSON Parser and Stringifier.
  */
 class V8_EXPORT JSON {
  public:
@@ -1676,10 +1680,23 @@ class V8_EXPORT JSON {
    * \param json_string The string to parse.
    * \return The corresponding value if successfully parsed.
    */
-  static V8_DEPRECATED("Use maybe version",
+  static V8_DEPRECATED("Use the maybe version taking context",
                        Local<Value> Parse(Local<String> json_string));
+  static V8_DEPRECATE_SOON("Use the maybe version taking context",
+                           MaybeLocal<Value> Parse(Isolate* isolate,
+                                                   Local<String> json_string));
   static V8_WARN_UNUSED_RESULT MaybeLocal<Value> Parse(
-      Isolate* isolate, Local<String> json_string);
+      Local<Context> context, Local<String> json_string);
+
+  /**
+   * Tries to stringify the JSON-serializable object |json_object| and returns
+   * it as string if successful.
+   *
+   * \param json_object The JSON-serializable object to stringify.
+   * \return The corresponding string if successfully stringified.
+   */
+  static V8_WARN_UNUSED_RESULT MaybeLocal<String> Stringify(
+      Local<Context> context, Local<Object> json_object);
 };
 
 
@@ -2637,6 +2654,10 @@ enum AccessControl {
   PROHIBITS_OVERWRITING = 1 << 2
 };
 
+/**
+ * Integrity level for objects.
+ */
+enum class IntegrityLevel { kFrozen, kSealed };
 
 /**
  * A JavaScript object (ECMA-262, 4.3.3)
@@ -2827,6 +2848,11 @@ class V8_EXPORT Object : public Value {
    * Returns the name of the function invoked as a constructor for this object.
    */
   Local<String> GetConstructorName();
+
+  /**
+   * Sets the integrity level of the object.
+   */
+  Maybe<bool> SetIntegrityLevel(Local<Context> context, IntegrityLevel level);
 
   /** Gets the number of internal fields for this Object. */
   int InternalFieldCount();
@@ -3127,11 +3153,16 @@ class ReturnValue {
   V8_INLINE void SetUndefined();
   V8_INLINE void SetEmptyString();
   // Convenience getter for Isolate
-  V8_INLINE Isolate* GetIsolate();
+  V8_INLINE Isolate* GetIsolate() const;
 
   // Pointer setter: Uncompilable to prevent inadvertent misuse.
   template <typename S>
   V8_INLINE void Set(S* whatever);
+
+  // Getter. Creates a new Local<> so it comes with a certain performance
+  // hit. If the ReturnValue was not yet set, this will return the undefined
+  // value.
+  V8_INLINE Local<Value> Get() const;
 
  private:
   template<class F> friend class ReturnValue;
@@ -4111,7 +4142,11 @@ enum Intrinsic {
  */
 class V8_EXPORT Template : public Data {
  public:
-  /** Adds a property to each instance created by this template.*/
+  /**
+   * Adds a property to each instance created by this template.
+   *
+   * The property must be defined either as a primitive value, or a template.
+   */
   void Set(Local<Name> name, Local<Data> value,
            PropertyAttribute attributes = None);
   V8_INLINE void Set(Isolate* isolate, const char* name, Local<Data> value);
@@ -5378,31 +5413,29 @@ enum class MemoryPressureLevel { kNone, kModerate, kCritical };
  * trace through its heap and call PersistentBase::RegisterExternalReference on
  * each js object reachable from any of the given wrappers.
  *
- * Before the first call to the TraceWrappableFrom function v8 will call
- * TraceRoots. When the v8 garbage collection is finished, v8 will call
- * ClearTracingMarks.
+ * Before the first call to the TraceWrappersFrom function TracePrologue will be
+ * called. When the garbage collection cycle is finished, TraceEpilogue will be
+ * called.
  */
 class EmbedderHeapTracer {
  public:
   /**
    * V8 will call this method at the beginning of the gc cycle.
    */
-  virtual void TraceRoots(Isolate* isolate) = 0;
-
+  virtual void TracePrologue() = 0;
   /**
    * V8 will call this method with internal fields of a potential wrappers.
    * Embedder is expected to trace its heap (synchronously) and call
    * PersistentBase::RegisterExternalReference() on all wrappers reachable from
    * any of the given wrappers.
    */
-  virtual void TraceWrappableFrom(
-      Isolate* isolate,
+  virtual void TraceWrappersFrom(
       const std::vector<std::pair<void*, void*> >& internal_fields) = 0;
   /**
    * V8 will call this method at the end of the gc cycle. Allocation is *not*
-   * allowed in the ClearTracingMarks.
+   * allowed in the TraceEpilogue.
    */
-  virtual void ClearTracingMarks(Isolate* isolate) = 0;
+  virtual void TraceEpilogue() = 0;
 
  protected:
   virtual ~EmbedderHeapTracer() = default;
@@ -6218,13 +6251,17 @@ class V8_EXPORT Isolate {
    * Enables the host application to provide a mechanism to be notified
    * and perform custom logging when V8 Allocates Executable Memory.
    */
-  void AddMemoryAllocationCallback(MemoryAllocationCallback callback,
-                                   ObjectSpace space, AllocationAction action);
+  void V8_DEPRECATED(
+      "Use a combination of RequestInterrupt and GCCallback instead",
+      AddMemoryAllocationCallback(MemoryAllocationCallback callback,
+                                  ObjectSpace space, AllocationAction action));
 
   /**
    * Removes callback that was installed by AddMemoryAllocationCallback.
    */
-  void RemoveMemoryAllocationCallback(MemoryAllocationCallback callback);
+  void V8_DEPRECATED(
+      "Use a combination of RequestInterrupt and GCCallback instead",
+      RemoveMemoryAllocationCallback(MemoryAllocationCallback callback));
 
   /**
    * Iterates through all external resources referenced from current isolate
@@ -6461,23 +6498,6 @@ class V8_EXPORT V8 {
       void RemoveGCEpilogueCallback(GCCallback callback));
 
   /**
-   * Enables the host application to provide a mechanism to be notified
-   * and perform custom logging when V8 Allocates Executable Memory.
-   */
-  V8_INLINE static V8_DEPRECATED(
-      "Use isolate version",
-      void AddMemoryAllocationCallback(MemoryAllocationCallback callback,
-                                       ObjectSpace space,
-                                       AllocationAction action));
-
-  /**
-   * Removes callback that was installed by AddMemoryAllocationCallback.
-   */
-  V8_INLINE static V8_DEPRECATED(
-      "Use isolate version",
-      void RemoveMemoryAllocationCallback(MemoryAllocationCallback callback));
-
-  /**
    * Initializes V8. This function needs to be called before the first Isolate
    * is created. It always returns true.
    */
@@ -6638,8 +6658,6 @@ class V8_EXPORT V8 {
   static internal::Object** CopyPersistent(internal::Object** handle);
   static void DisposeGlobal(internal::Object** global_handle);
   typedef WeakCallbackData<Value, void>::Callback WeakCallback;
-  static void RegisterExternallyReferencedObject(internal::Object** object,
-                                                 internal::Isolate* isolate);
   static void MakeWeak(internal::Object** global_handle, void* data,
                        WeakCallback weak_callback);
   static void MakeWeak(internal::Object** global_handle, void* data,
@@ -6656,6 +6674,11 @@ class V8_EXPORT V8 {
                          Value* handle,
                          int* index);
   static Local<Value> GetEternal(Isolate* isolate, int index);
+
+  static void RegisterExternallyReferencedObject(internal::Object** object,
+                                                 internal::Isolate* isolate);
+  template <class K, class V, class T>
+  friend class PersistentValueMapBase;
 
   static void FromJustIsNothing();
   static void ToLocalEmpty();
@@ -7334,6 +7357,7 @@ class Internals {
       kAmountOfExternalAllocatedMemoryAtLastGlobalGCOffset + kApiInt64Size +
       kApiPointerSize;
   static const int kUndefinedValueRootIndex = 4;
+  static const int kTheHoleValueRootIndex = 5;
   static const int kNullValueRootIndex = 6;
   static const int kTrueValueRootIndex = 7;
   static const int kFalseValueRootIndex = 8;
@@ -7353,7 +7377,8 @@ class Internals {
   static const int kNodeIsPartiallyDependentShift = 4;
   static const int kNodeIsActiveShift = 4;
 
-  static const int kJSObjectType = 0xb8;
+  static const int kJSObjectType = 0xb7;
+  static const int kJSApiObjectType = 0xb6;
   static const int kFirstNonstringType = 0x80;
   static const int kOddballType = 0x83;
   static const int kForeignType = 0x87;
@@ -7658,7 +7683,7 @@ P* PersistentBase<T>::ClearWeak() {
 }
 
 template <class T>
-void PersistentBase<T>::RegisterExternalReference(Isolate* isolate) {
+void PersistentBase<T>::RegisterExternalReference(Isolate* isolate) const {
   if (IsEmpty()) return;
   V8::RegisterExternallyReferencedObject(
       reinterpret_cast<internal::Object**>(this->val_),
@@ -7813,14 +7838,22 @@ void ReturnValue<T>::SetEmptyString() {
   *value_ = *I::GetRoot(GetIsolate(), I::kEmptyStringRootIndex);
 }
 
-template<typename T>
-Isolate* ReturnValue<T>::GetIsolate() {
+template <typename T>
+Isolate* ReturnValue<T>::GetIsolate() const {
   // Isolate is always the pointer below the default value on the stack.
   return *reinterpret_cast<Isolate**>(&value_[-2]);
 }
 
-template<typename T>
-template<typename S>
+template <typename T>
+Local<Value> ReturnValue<T>::Get() const {
+  typedef internal::Internals I;
+  if (*value_ == *I::GetRoot(GetIsolate(), I::kTheHoleValueRootIndex))
+    return Local<Value>(*Undefined(GetIsolate()));
+  return Local<Value>::New(GetIsolate(), reinterpret_cast<Value*>(value_));
+}
+
+template <typename T>
+template <typename S>
 void ReturnValue<T>::Set(S* whatever) {
   // Uncompilable to prevent inadvertent misuse.
   TYPE_CHECK(S*, Primitive);
@@ -7985,7 +8018,9 @@ Local<Value> Object::GetInternalField(int index) {
   O* obj = *reinterpret_cast<O**>(this);
   // Fast path: If the object is a plain JSObject, which is the common case, we
   // know where to find the internal fields and can return the value directly.
-  if (I::GetInstanceType(obj) == I::kJSObjectType) {
+  auto instance_type = I::GetInstanceType(obj);
+  if (instance_type == I::kJSObjectType ||
+      instance_type == I::kJSApiObjectType) {
     int offset = I::kJSObjectHeaderSize + (internal::kApiPointerSize * index);
     O* value = I::ReadField<O*>(obj, offset);
     O** result = HandleScope::CreateHandle(reinterpret_cast<HO*>(obj), value);
@@ -8003,7 +8038,9 @@ void* Object::GetAlignedPointerFromInternalField(int index) {
   O* obj = *reinterpret_cast<O**>(this);
   // Fast path: If the object is a plain JSObject, which is the common case, we
   // know where to find the internal fields and can return the value directly.
-  if (V8_LIKELY(I::GetInstanceType(obj) == I::kJSObjectType)) {
+  auto instance_type = I::GetInstanceType(obj);
+  if (V8_LIKELY(instance_type == I::kJSObjectType ||
+                instance_type == I::kJSApiObjectType)) {
     int offset = I::kJSObjectHeaderSize + (internal::kApiPointerSize * index);
     return I::ReadField<void*>(obj, offset);
   }
@@ -8682,21 +8719,6 @@ void V8::RemoveGCEpilogueCallback(GCCallback callback) {
   isolate->RemoveGCEpilogueCallback(
       reinterpret_cast<v8::Isolate::GCCallback>(callback));
 }
-
-
-void V8::AddMemoryAllocationCallback(MemoryAllocationCallback callback,
-                                     ObjectSpace space,
-                                     AllocationAction action) {
-  Isolate* isolate = Isolate::GetCurrent();
-  isolate->AddMemoryAllocationCallback(callback, space, action);
-}
-
-
-void V8::RemoveMemoryAllocationCallback(MemoryAllocationCallback callback) {
-  Isolate* isolate = Isolate::GetCurrent();
-  isolate->RemoveMemoryAllocationCallback(callback);
-}
-
 
 void V8::TerminateExecution(Isolate* isolate) { isolate->TerminateExecution(); }
 

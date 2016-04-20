@@ -14403,7 +14403,6 @@ int SetFunctionEntryHookTest::CountInvocations(
   return invocations;
 }
 
-
 void SetFunctionEntryHookTest::RunLoopInNewEnv(v8::Isolate* isolate) {
   v8::HandleScope outer(isolate);
   v8::Local<Context> env = Context::New(isolate);
@@ -14461,10 +14460,19 @@ void SetFunctionEntryHookTest::RunTest() {
 
     RunLoopInNewEnv(isolate);
 
-    // Check the exepected invocation counts.
-    CHECK_EQ(2, CountInvocations(NULL, "bar"));
-    CHECK_EQ(200, CountInvocations("bar", "foo"));
-    CHECK_EQ(200, CountInvocations(NULL, "foo"));
+    // Check the expected invocation counts.
+    if (!i::FLAG_ignition) {
+      CHECK_EQ(2, CountInvocations(NULL, "bar"));
+      CHECK_EQ(200, CountInvocations("bar", "foo"));
+      CHECK_EQ(200, CountInvocations(NULL, "foo"));
+    } else {
+      // For ignition we don't see the actual functions being called, instead
+      // we see the IterpreterEntryTrampoline at least 102 times
+      // (100 unoptimized calls to foo, and 2 calls to bar).
+      CHECK_LE(102, CountInvocations(NULL, "InterpreterEntryTrampoline"));
+      // We should also see the calls to the optimized function foo.
+      CHECK_EQ(100, CountInvocations(NULL, "foo"));
+    }
 
     // Verify that we have an entry hook on some specific stubs.
     CHECK_NE(0, CountInvocations(NULL, "CEntryStub"));
@@ -21947,29 +21955,39 @@ THREADED_TEST(Regress260106) {
   CHECK(function->IsFunction());
 }
 
-
 THREADED_TEST(JSONParseObject) {
   LocalContext context;
   HandleScope scope(context->GetIsolate());
   Local<Value> obj =
-      v8::JSON::Parse(context->GetIsolate(), v8_str("{\"x\":42}"))
-          .ToLocalChecked();
+      v8::JSON::Parse(context.local(), v8_str("{\"x\":42}")).ToLocalChecked();
   Local<Object> global = context->Global();
   global->Set(context.local(), v8_str("obj"), obj).FromJust();
   ExpectString("JSON.stringify(obj)", "{\"x\":42}");
 }
 
-
 THREADED_TEST(JSONParseNumber) {
   LocalContext context;
   HandleScope scope(context->GetIsolate());
   Local<Value> obj =
-      v8::JSON::Parse(context->GetIsolate(), v8_str("42")).ToLocalChecked();
+      v8::JSON::Parse(context.local(), v8_str("42")).ToLocalChecked();
   Local<Object> global = context->Global();
   global->Set(context.local(), v8_str("obj"), obj).FromJust();
   ExpectString("JSON.stringify(obj)", "42");
 }
 
+THREADED_TEST(JSONStringifyObject) {
+  LocalContext context;
+  HandleScope scope(context->GetIsolate());
+  Local<Value> value =
+      v8::JSON::Parse(context.local(), v8_str("{\"x\":42}")).ToLocalChecked();
+  Local<Object> obj = value->ToObject(context.local()).ToLocalChecked();
+  Local<Object> global = context->Global();
+  global->Set(context.local(), v8_str("obj"), obj).FromJust();
+  Local<String> json =
+      v8::JSON::Stringify(context.local(), obj).ToLocalChecked();
+  v8::String::Utf8Value utf8(json);
+  ExpectString("JSON.stringify(obj)", *utf8);
+}
 
 #if V8_OS_POSIX && !V8_OS_NACL
 class ThreadInterruptTest {
@@ -24064,8 +24082,7 @@ void TestInvalidCacheData(v8::ScriptCompiler::CompileOptions option) {
       script->Run(context).ToLocalChecked()->Int32Value(context).FromJust());
 }
 
-
-TEST(InvalidCacheData) {
+TEST(InvalidParserCacheData) {
   v8::V8::Initialize();
   v8::HandleScope scope(CcTest::isolate());
   LocalContext context;
@@ -24073,6 +24090,12 @@ TEST(InvalidCacheData) {
     // Cached parser data is not consumed while parsing eagerly.
     TestInvalidCacheData(v8::ScriptCompiler::kConsumeParserCache);
   }
+}
+
+TEST(InvalidCodeCacheData) {
+  v8::V8::Initialize();
+  v8::HandleScope scope(CcTest::isolate());
+  LocalContext context;
   TestInvalidCacheData(v8::ScriptCompiler::kConsumeCodeCache);
 }
 
@@ -24658,6 +24681,53 @@ TEST(CompatibleReceiverCheckOnCachedICHandler) {
       0);
 }
 
+THREADED_TEST(ReceiverConversionForAccessors) {
+  LocalContext env;
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope scope(isolate);
+  Local<v8::FunctionTemplate> acc =
+      v8::FunctionTemplate::New(isolate, Returns42);
+  CHECK(env->Global()
+            ->Set(env.local(), v8_str("acc"),
+                  acc->GetFunction(env.local()).ToLocalChecked())
+            .FromJust());
+
+  Local<ObjectTemplate> templ = ObjectTemplate::New(isolate);
+  templ->SetAccessorProperty(v8_str("acc"), acc, acc);
+  Local<v8::Object> instance = templ->NewInstance(env.local()).ToLocalChecked();
+
+  CHECK(env->Global()->Set(env.local(), v8_str("p"), instance).FromJust());
+  CHECK(CompileRun("(p.acc == 42)")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("(p.acc = 7) == 7")->BooleanValue(env.local()).FromJust());
+
+  CHECK(!CompileRun("Number.prototype.__proto__ = p;"
+                    "var a = 1;")
+             .IsEmpty());
+  CHECK(CompileRun("(a.acc == 42)")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("(a.acc = 7) == 7")->BooleanValue(env.local()).FromJust());
+
+  CHECK(!CompileRun("Boolean.prototype.__proto__ = p;"
+                    "var a = true;")
+             .IsEmpty());
+  CHECK(CompileRun("(a.acc == 42)")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("(a.acc = 7) == 7")->BooleanValue(env.local()).FromJust());
+
+  CHECK(!CompileRun("String.prototype.__proto__ = p;"
+                    "var a = 'foo';")
+             .IsEmpty());
+  CHECK(CompileRun("(a.acc == 42)")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("(a.acc = 7) == 7")->BooleanValue(env.local()).FromJust());
+
+  CHECK(CompileRun("acc.call(1) == 42")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("acc.call(true)==42")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("acc.call('aa')==42")->BooleanValue(env.local()).FromJust());
+  CHECK(
+      CompileRun("acc.call(null) == 42")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("acc.call(undefined) == 42")
+            ->BooleanValue(env.local())
+            .FromJust());
+}
+
 class FutexInterruptionThread : public v8::base::Thread {
  public:
   explicit FutexInterruptionThread(v8::Isolate* isolate)
@@ -24937,4 +25007,22 @@ TEST(MemoryPressure) {
   // Check that disabling memory pressure returns GC into normal mode.
   isolate->MemoryPressureNotification(v8::MemoryPressureLevel::kNone);
   CHECK(!CcTest::i_isolate()->heap()->ShouldOptimizeForMemoryUsage());
+}
+
+TEST(SetIntegrityLevel) {
+  LocalContext context;
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope scope(isolate);
+
+  v8::Local<v8::Object> obj = v8::Object::New(isolate);
+  CHECK(context->Global()->Set(context.local(), v8_str("o"), obj).FromJust());
+
+  v8::Local<v8::Value> is_frozen = CompileRun("Object.isFrozen(o)");
+  CHECK(!is_frozen->BooleanValue(context.local()).FromJust());
+
+  CHECK(obj->SetIntegrityLevel(context.local(), v8::IntegrityLevel::kFrozen)
+            .FromJust());
+
+  is_frozen = CompileRun("Object.isFrozen(o)");
+  CHECK(is_frozen->BooleanValue(context.local()).FromJust());
 }

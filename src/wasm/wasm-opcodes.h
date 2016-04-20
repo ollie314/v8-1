@@ -329,12 +329,33 @@ enum WasmOpcode {
 #undef DECLARE_NAMED_ENUM
 };
 
+// The reason for a trap.
+#define FOREACH_WASM_TRAPREASON(V) \
+  V(TrapUnreachable)          \
+  V(TrapMemOutOfBounds)       \
+  V(TrapDivByZero)            \
+  V(TrapDivUnrepresentable)   \
+  V(TrapRemByZero)            \
+  V(TrapFloatUnrepresentable) \
+  V(TrapFuncInvalid)          \
+  V(TrapFuncSigMismatch)
+
+enum TrapReason {
+#define DECLARE_ENUM(name) k##name,
+  FOREACH_WASM_TRAPREASON(DECLARE_ENUM)
+  kTrapCount
+#undef DECLARE_ENUM
+};
+
 // A collection of opcode-related static methods.
 class WasmOpcodes {
  public:
   static bool IsSupported(WasmOpcode opcode);
   static const char* OpcodeName(WasmOpcode opcode);
   static FunctionSig* Signature(WasmOpcode opcode);
+
+  static int TrapReasonToMessageId(TrapReason reason);
+  static const char* TrapReasonMessage(TrapReason reason);
 
   static byte MemSize(MachineType type) {
     return 1 << ElementSizeLog2Of(type.representation());

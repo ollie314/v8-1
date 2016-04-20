@@ -32,14 +32,16 @@
   V(End)
 
 // Opcodes for constant operators.
-#define CONSTANT_OP_LIST(V) \
-  V(Int32Constant)          \
-  V(Int64Constant)          \
-  V(Float32Constant)        \
-  V(Float64Constant)        \
-  V(ExternalConstant)       \
-  V(NumberConstant)         \
-  V(HeapConstant)
+#define CONSTANT_OP_LIST(V)   \
+  V(Int32Constant)            \
+  V(Int64Constant)            \
+  V(Float32Constant)          \
+  V(Float64Constant)          \
+  V(ExternalConstant)         \
+  V(NumberConstant)           \
+  V(HeapConstant)             \
+  V(RelocatableInt32Constant) \
+  V(RelocatableInt64Constant)
 
 #define INNER_OP_LIST(V) \
   V(Select)              \
@@ -193,8 +195,8 @@
   V(NumberToInt32)                 \
   V(NumberToUint32)                \
   V(NumberIsHoleNaN)               \
-  V(PlainPrimitiveToNumber)        \
   V(StringToNumber)                \
+  V(ChangeSmiToInt32)              \
   V(ChangeTaggedToInt32)           \
   V(ChangeTaggedToUint32)          \
   V(ChangeTaggedToFloat64)         \
@@ -210,9 +212,11 @@
   V(StoreField)                    \
   V(StoreBuffer)                   \
   V(StoreElement)                  \
+  V(ObjectIsCallable)              \
   V(ObjectIsNumber)                \
   V(ObjectIsReceiver)              \
   V(ObjectIsSmi)                   \
+  V(ObjectIsString)                \
   V(ObjectIsUndetectable)
 
 // Opcodes for Machine-level operators.
@@ -348,7 +352,8 @@
   V(Int32PairMul)               \
   V(Word32PairShl)              \
   V(Word32PairShr)              \
-  V(Word32PairSar)
+  V(Word32PairSar)              \
+  V(AtomicLoad)
 
 #define VALUE_OP_LIST(V) \
   COMMON_OP_LIST(V)      \
@@ -399,7 +404,7 @@ class IrOpcode {
 
   // Returns true if opcode for constant operator.
   static bool IsConstantOpcode(Value value) {
-    return kInt32Constant <= value && value <= kHeapConstant;
+    return kInt32Constant <= value && value <= kRelocatableInt64Constant;
   }
 
   static bool IsPhiOpcode(Value value) {

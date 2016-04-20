@@ -247,9 +247,11 @@ class Typer::Visitor : public Reducer {
   static Type* NumberToInt32(Type*, Typer*);
   static Type* NumberToUint32(Type*, Typer*);
 
+  static Type* ObjectIsCallable(Type*, Typer*);
   static Type* ObjectIsNumber(Type*, Typer*);
   static Type* ObjectIsReceiver(Type*, Typer*);
   static Type* ObjectIsSmi(Type*, Typer*);
+  static Type* ObjectIsString(Type*, Typer*);
   static Type* ObjectIsUndetectable(Type*, Typer*);
 
   static Type* JSAddRanger(RangeType*, RangeType*, Typer*);
@@ -556,6 +558,11 @@ Type* Typer::Visitor::NumberToUint32(Type* type, Typer* t) {
 
 // Type checks.
 
+Type* Typer::Visitor::ObjectIsCallable(Type* type, Typer* t) {
+  if (type->Is(Type::Function())) return t->singleton_true_;
+  if (type->Is(Type::Primitive())) return t->singleton_false_;
+  return Type::Boolean();
+}
 
 Type* Typer::Visitor::ObjectIsNumber(Type* type, Typer* t) {
   if (type->Is(Type::Number())) return t->singleton_true_;
@@ -577,6 +584,11 @@ Type* Typer::Visitor::ObjectIsSmi(Type* type, Typer* t) {
   return Type::Boolean();
 }
 
+Type* Typer::Visitor::ObjectIsString(Type* type, Typer* t) {
+  if (type->Is(Type::String())) return t->singleton_true_;
+  if (!type->Maybe(Type::String())) return t->singleton_false_;
+  return Type::Boolean();
+}
 
 Type* Typer::Visitor::ObjectIsUndetectable(Type* type, Typer* t) {
   if (type->Is(Type::Undetectable())) return t->singleton_true_;
@@ -624,6 +636,14 @@ Type* Typer::Visitor::TypeInt64Constant(Node* node) {
   return Type::Internal();  // TODO(rossberg): Add int64 bitset type?
 }
 
+// TODO(gdeepti) : Fix this to do something meaningful.
+Type* Typer::Visitor::TypeRelocatableInt32Constant(Node* node) {
+  return Type::Internal();
+}
+
+Type* Typer::Visitor::TypeRelocatableInt64Constant(Node* node) {
+  return Type::Internal();
+}
 
 Type* Typer::Visitor::TypeFloat32Constant(Node* node) {
   return Type::Intersect(Type::Of(OpParameter<float>(node), zone()),
@@ -1791,12 +1811,6 @@ Type* Typer::Visitor::TypeNumberIsHoleNaN(Node* node) {
   return Type::Boolean();
 }
 
-
-Type* Typer::Visitor::TypePlainPrimitiveToNumber(Node* node) {
-  return TypeUnaryOp(node, ToNumber);
-}
-
-
 // static
 Type* Typer::Visitor::ReferenceEqualTyper(Type* lhs, Type* rhs, Typer* t) {
   if (lhs->IsConstant() && rhs->Is(lhs)) {
@@ -1831,6 +1845,11 @@ Type* ChangeRepresentation(Type* type, Type* rep, Zone* zone) {
 
 }  // namespace
 
+Type* Typer::Visitor::TypeChangeSmiToInt32(Node* node) {
+  Type* arg = Operand(node, 0);
+  // TODO(neis): DCHECK(arg->Is(Type::Signed32()));
+  return ChangeRepresentation(arg, Type::UntaggedIntegral32(), zone());
+}
 
 Type* Typer::Visitor::TypeChangeTaggedToInt32(Node* node) {
   Type* arg = Operand(node, 0);
@@ -1947,9 +1966,9 @@ Type* Typer::Visitor::TypeLoadBuffer(Node* node) {
   // TODO(bmeurer): This typing is not yet correct. Since we can still access
   // out of bounds, the type in the general case has to include Undefined.
   switch (BufferAccessOf(node->op()).external_array_type()) {
-#define TYPED_ARRAY_CASE(Type, type, TYPE, ctype, size) \
-  case kExternal##Type##Array:                          \
-    return typer_->cache_.k##Type;
+#define TYPED_ARRAY_CASE(ElemType, type, TYPE, ctype, size) \
+  case kExternal##ElemType##Array:                          \
+    return Type::Union(typer_->cache_.k##ElemType, Type::Undefined(), zone());
     TYPED_ARRAYS(TYPED_ARRAY_CASE)
 #undef TYPED_ARRAY_CASE
   }
@@ -1980,6 +1999,9 @@ Type* Typer::Visitor::TypeStoreElement(Node* node) {
   return nullptr;
 }
 
+Type* Typer::Visitor::TypeObjectIsCallable(Node* node) {
+  return TypeUnaryOp(node, ObjectIsCallable);
+}
 
 Type* Typer::Visitor::TypeObjectIsNumber(Node* node) {
   return TypeUnaryOp(node, ObjectIsNumber);
@@ -1995,6 +2017,9 @@ Type* Typer::Visitor::TypeObjectIsSmi(Node* node) {
   return TypeUnaryOp(node, ObjectIsSmi);
 }
 
+Type* Typer::Visitor::TypeObjectIsString(Node* node) {
+  return TypeUnaryOp(node, ObjectIsString);
+}
 
 Type* Typer::Visitor::TypeObjectIsUndetectable(Node* node) {
   return TypeUnaryOp(node, ObjectIsUndetectable);
@@ -2501,6 +2526,7 @@ Type* Typer::Visitor::TypeLoadParentFramePointer(Node* node) {
 
 Type* Typer::Visitor::TypeCheckedLoad(Node* node) { return Type::Any(); }
 
+Type* Typer::Visitor::TypeAtomicLoad(Node* node) { return Type::Any(); }
 
 Type* Typer::Visitor::TypeCheckedStore(Node* node) {
   UNREACHABLE();

@@ -30,6 +30,22 @@ class LAllocator;
 class LChunk;
 class LiveRange;
 
+class HCompilationJob final : public OptimizedCompileJob {
+ public:
+  explicit HCompilationJob(CompilationInfo* info)
+      : OptimizedCompileJob(info, "Crankshaft"),
+        graph_(nullptr),
+        chunk_(nullptr) {}
+
+ protected:
+  virtual Status CreateGraphImpl();
+  virtual Status OptimizeGraphImpl();
+  virtual Status GenerateCodeImpl();
+
+ private:
+  HGraph* graph_;
+  LChunk* chunk_;
+};
 
 class HBasicBlock final : public ZoneObject {
  public:
@@ -392,13 +408,11 @@ class HGraph final : public ZoneObject {
   }
   int maximum_environment_size() { return maximum_environment_size_; }
 
-  bool use_optimistic_licm() {
-    return use_optimistic_licm_;
-  }
+  bool allow_code_motion() const { return allow_code_motion_; }
+  void set_allow_code_motion(bool value) { allow_code_motion_ = value; }
 
-  void set_use_optimistic_licm(bool value) {
-    use_optimistic_licm_ = value;
-  }
+  bool use_optimistic_licm() const { return use_optimistic_licm_; }
+  void set_use_optimistic_licm(bool value) { use_optimistic_licm_ = value; }
 
   void MarkDependsOnEmptyArrayProtoElements() {
     // Add map dependency if not already added.
@@ -480,6 +494,7 @@ class HGraph final : public ZoneObject {
   CallInterfaceDescriptor descriptor_;
   Zone* zone_;
 
+  bool allow_code_motion_;
   bool use_optimistic_licm_;
   bool depends_on_empty_array_proto_elements_;
   int type_change_checksum_;
@@ -625,6 +640,9 @@ class HEnvironment final : public ZoneObject {
       outer = outer->outer_;
     }
     if (drop_extra) outer->Drop(1);
+    if (outer->frame_type() == TAIL_CALLER_FUNCTION) {
+      outer->ClearTailCallerMark();
+    }
     return outer;
   }
 
@@ -685,6 +703,7 @@ class HEnvironment final : public ZoneObject {
   // Marks current environment as tail caller by setting frame type to
   // TAIL_CALLER_FUNCTION.
   void MarkAsTailCaller();
+  void ClearTailCallerMark();
 
   // True if index is included in the expression stack part of the environment.
   bool HasExpressionAt(int index) const;

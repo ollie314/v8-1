@@ -3857,8 +3857,8 @@ void LoadICStub::GenerateImpl(MacroAssembler* masm, bool in_frame) {
   __ j(not_equal, &miss);
   __ push(slot);
   __ push(vector);
-  Code::Flags code_flags = Code::RemoveTypeAndHolderFromFlags(
-      Code::ComputeHandlerFlags(Code::LOAD_IC));
+  Code::Flags code_flags =
+      Code::RemoveHolderFromFlags(Code::ComputeHandlerFlags(Code::LOAD_IC));
   masm->isolate()->stub_cache()->GenerateProbe(masm, Code::LOAD_IC, code_flags,
                                                receiver, name, vector, scratch);
   __ pop(vector);
@@ -4118,8 +4118,8 @@ void VectorStoreICStub::GenerateImpl(MacroAssembler* masm, bool in_frame) {
   __ pop(value);
   __ push(slot);
   __ push(vector);
-  Code::Flags code_flags = Code::RemoveTypeAndHolderFromFlags(
-      Code::ComputeHandlerFlags(Code::STORE_IC));
+  Code::Flags code_flags =
+      Code::RemoveHolderFromFlags(Code::ComputeHandlerFlags(Code::STORE_IC));
   masm->isolate()->stub_cache()->GenerateProbe(masm, Code::STORE_IC, code_flags,
                                                receiver, key, slot, no_reg);
   __ pop(vector);
@@ -5792,14 +5792,34 @@ void CallApiCallbackStub::Generate(MacroAssembler* masm) {
 
 
 void CallApiGetterStub::Generate(MacroAssembler* masm) {
-  // ----------- S t a t e -------------
-  //  -- esp[0]                        : return address
-  //  -- esp[4]                        : name
-  //  -- esp[8 .. (8 + kArgsLength*4)] : v8::PropertyCallbackInfo::args_
-  //  -- ...
-  //  -- edx                           : api_function_address
-  // -----------------------------------
-  DCHECK(edx.is(ApiGetterDescriptor::function_address()));
+  // Build v8::PropertyCallbackInfo::args_ array on the stack and push property
+  // name below the exit frame to make GC aware of them.
+  STATIC_ASSERT(PropertyCallbackArguments::kShouldThrowOnErrorIndex == 0);
+  STATIC_ASSERT(PropertyCallbackArguments::kHolderIndex == 1);
+  STATIC_ASSERT(PropertyCallbackArguments::kIsolateIndex == 2);
+  STATIC_ASSERT(PropertyCallbackArguments::kReturnValueDefaultValueIndex == 3);
+  STATIC_ASSERT(PropertyCallbackArguments::kReturnValueOffset == 4);
+  STATIC_ASSERT(PropertyCallbackArguments::kDataIndex == 5);
+  STATIC_ASSERT(PropertyCallbackArguments::kThisIndex == 6);
+  STATIC_ASSERT(PropertyCallbackArguments::kArgsLength == 7);
+
+  Register receiver = ApiGetterDescriptor::ReceiverRegister();
+  Register holder = ApiGetterDescriptor::HolderRegister();
+  Register callback = ApiGetterDescriptor::CallbackRegister();
+  Register scratch = ebx;
+  DCHECK(!AreAliased(receiver, holder, callback, scratch));
+
+  __ pop(scratch);  // Pop return address to extend the frame.
+  __ push(receiver);
+  __ push(FieldOperand(callback, AccessorInfo::kDataOffset));
+  __ PushRoot(Heap::kUndefinedValueRootIndex);  // ReturnValue
+  // ReturnValue default value
+  __ PushRoot(Heap::kUndefinedValueRootIndex);
+  __ push(Immediate(ExternalReference::isolate_address(isolate())));
+  __ push(holder);
+  __ push(Immediate(Smi::FromInt(0)));  // should_throw_on_error -> false
+  __ push(FieldOperand(callback, AccessorInfo::kNameOffset));
+  __ push(scratch);  // Restore return address.
 
   // v8::PropertyCallbackInfo::args_ array and name handle.
   const int kStackUnwindSpace = PropertyCallbackArguments::kArgsLength + 1;
@@ -5808,9 +5828,6 @@ void CallApiGetterStub::Generate(MacroAssembler* masm) {
   // space for optional callback address parameter (in case CPU profiler is
   // active) in non-GCed stack space.
   const int kApiArgc = 3 + 1;
-
-  Register api_function_address = edx;
-  Register scratch = ebx;
 
   // Load address of v8::PropertyAccessorInfo::args_ array.
   __ lea(scratch, Operand(esp, 2 * kPointerSize));
@@ -5821,24 +5838,29 @@ void CallApiGetterStub::Generate(MacroAssembler* masm) {
   Operand info_object = ApiParameterOperand(3);
   __ mov(info_object, scratch);
 
+  // Name as handle.
   __ sub(scratch, Immediate(kPointerSize));
-  __ mov(ApiParameterOperand(0), scratch);  // name.
+  __ mov(ApiParameterOperand(0), scratch);
+  // Arguments pointer.
   __ lea(scratch, info_object);
-  __ mov(ApiParameterOperand(1), scratch);  // arguments pointer.
+  __ mov(ApiParameterOperand(1), scratch);
   // Reserve space for optional callback address parameter.
   Operand thunk_last_arg = ApiParameterOperand(2);
 
   ExternalReference thunk_ref =
       ExternalReference::invoke_accessor_getter_callback(isolate());
 
+  __ mov(scratch, FieldOperand(callback, AccessorInfo::kJsGetterOffset));
+  Register function_address = edx;
+  __ mov(function_address,
+         FieldOperand(scratch, Foreign::kForeignAddressOffset));
   // +3 is to skip prolog, return address and name handle.
   Operand return_value_operand(
       ebp, (PropertyCallbackArguments::kReturnValueOffset + 3) * kPointerSize);
-  CallApiFunctionAndReturn(masm, api_function_address, thunk_ref,
-                           thunk_last_arg, kStackUnwindSpace, nullptr,
-                           return_value_operand, NULL);
+  CallApiFunctionAndReturn(masm, function_address, thunk_ref, thunk_last_arg,
+                           kStackUnwindSpace, nullptr, return_value_operand,
+                           NULL);
 }
-
 
 #undef __
 

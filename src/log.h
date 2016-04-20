@@ -8,6 +8,7 @@
 #include <string>
 
 #include "src/allocation.h"
+#include "src/base/compiler-specific.h"
 #include "src/base/platform/elapsed-timer.h"
 #include "src/base/platform/platform.h"
 #include "src/objects.h"
@@ -89,7 +90,6 @@ struct TickSample;
   V(CODE_DELETE_EVENT, "code-delete")                                    \
   V(CODE_MOVING_GC, "code-moving-gc")                                    \
   V(SHARED_FUNC_MOVE_EVENT, "sfi-move")                                  \
-  V(SNAPSHOT_POSITION_EVENT, "snapshot-pos")                             \
   V(SNAPSHOT_CODE_NAME_EVENT, "snapshot-code-name")                      \
   V(TICK_EVENT, "tick")                                                  \
   V(REPEAT_META_EVENT, "repeat")                                         \
@@ -100,12 +100,9 @@ struct TickSample;
   V(CALL_MEGAMORPHIC_TAG, "CallMegamorphic")                             \
   V(CALL_MISS_TAG, "CallMiss")                                           \
   V(CALL_NORMAL_TAG, "CallNormal")                                       \
-  V(CALL_PRE_MONOMORPHIC_TAG, "CallPreMonomorphic")                      \
   V(LOAD_INITIALIZE_TAG, "LoadInitialize")                               \
-  V(LOAD_PREMONOMORPHIC_TAG, "LoadPreMonomorphic")                       \
   V(LOAD_MEGAMORPHIC_TAG, "LoadMegamorphic")                             \
   V(STORE_INITIALIZE_TAG, "StoreInitialize")                             \
-  V(STORE_PREMONOMORPHIC_TAG, "StorePreMonomorphic")                     \
   V(STORE_GENERIC_TAG, "StoreGeneric")                                   \
   V(STORE_MEGAMORPHIC_TAG, "StoreMegamorphic")                           \
   V(KEYED_CALL_DEBUG_BREAK_TAG, "KeyedCallDebugBreak")                   \
@@ -114,7 +111,6 @@ struct TickSample;
   V(KEYED_CALL_MEGAMORPHIC_TAG, "KeyedCallMegamorphic")                  \
   V(KEYED_CALL_MISS_TAG, "KeyedCallMiss")                                \
   V(KEYED_CALL_NORMAL_TAG, "KeyedCallNormal")                            \
-  V(KEYED_CALL_PRE_MONOMORPHIC_TAG, "KeyedCallPreMonomorphic")           \
   V(CALLBACK_TAG, "Callback")                                            \
   V(EVAL_TAG, "Eval")                                                    \
   V(FUNCTION_TAG, "Function")                                            \
@@ -260,7 +256,6 @@ class Logger {
   void SharedFunctionInfoMoveEvent(Address from, Address to);
 
   void CodeNameEvent(Address addr, int pos, const char* code_name);
-  void SnapshotPositionEvent(HeapObject* obj, int pos);
 
   // ==== Events logged by --log-gc. ====
   // Heap sampling events: start, end, and individual types.
@@ -360,7 +355,7 @@ class Logger {
   // Emits a profiler tick event. Used by the profiler thread.
   void TickEvent(TickSample* sample, bool overflow);
 
-  void ApiEvent(const char* name, ...);
+  PRINTF_FORMAT(2, 3) void ApiEvent(const char* format, ...);
 
   // Logs a StringEvent regardless of whether FLAG_log is true.
   void UncheckedStringEvent(const char* name, const char* value);

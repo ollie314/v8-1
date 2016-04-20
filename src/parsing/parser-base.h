@@ -98,7 +98,6 @@ class ParserBase : public Traits {
              v8::Extension* extension, AstValueFactory* ast_value_factory,
              ParserRecorder* log, typename Traits::Type::Parser this_object)
       : Traits(this_object),
-        parenthesized_function_(false),
         scope_(NULL),
         function_state_(NULL),
         extension_(extension),
@@ -113,9 +112,6 @@ class ParserBase : public Traits {
         allow_lazy_(false),
         allow_natives_(false),
         allow_tailcalls_(false),
-        allow_harmony_sloppy_(false),
-        allow_harmony_sloppy_function_(false),
-        allow_harmony_sloppy_let_(false),
         allow_harmony_restrictive_declarations_(false),
         allow_harmony_do_expressions_(false),
         allow_harmony_function_name_(false),
@@ -134,9 +130,6 @@ class ParserBase : public Traits {
   ALLOW_ACCESSORS(lazy);
   ALLOW_ACCESSORS(natives);
   ALLOW_ACCESSORS(tailcalls);
-  ALLOW_ACCESSORS(harmony_sloppy);
-  ALLOW_ACCESSORS(harmony_sloppy_function);
-  ALLOW_ACCESSORS(harmony_sloppy_let);
   ALLOW_ACCESSORS(harmony_restrictive_declarations);
   ALLOW_ACCESSORS(harmony_do_expressions);
   ALLOW_ACCESSORS(harmony_function_name);
@@ -272,6 +265,14 @@ class ParserBase : public Traits {
       return &non_patterns_to_rewrite_;
     }
 
+    void next_function_is_parenthesized(bool parenthesized) {
+      next_function_is_parenthesized_ = parenthesized;
+    }
+
+    bool this_function_is_parenthesized() const {
+      return this_function_is_parenthesized_;
+    }
+
    private:
     void AddDestructuringAssignment(DestructuringAssignment pair) {
       destructuring_assignments_to_rewrite_.Add(pair);
@@ -317,6 +318,14 @@ class ParserBase : public Traits {
     ZoneList<ExpressionT> non_patterns_to_rewrite_;
 
     typename Traits::Type::Factory* factory_;
+
+    // If true, the next (and immediately following) function literal is
+    // preceded by a parenthesis.
+    bool next_function_is_parenthesized_;
+
+    // The value of the parents' next_function_is_parenthesized_, as it applies
+    // to this function. Filled in by constructor.
+    bool this_function_is_parenthesized_;
 
     friend class ParserTraits;
     friend class PreParserTraits;
@@ -563,14 +572,6 @@ class ParserBase : public Traits {
 
   LanguageMode language_mode() { return scope_->language_mode(); }
   bool is_generator() const { return function_state_->is_generator(); }
-
-  bool allow_const() {
-    return is_strict(language_mode()) || allow_harmony_sloppy();
-  }
-
-  bool allow_let() {
-    return is_strict(language_mode()) || allow_harmony_sloppy_let();
-  }
 
   // Report syntax errors.
   void ReportMessage(MessageTemplate::Template message, const char* arg = NULL,
@@ -902,12 +903,6 @@ class ParserBase : public Traits {
     bool has_seen_constructor_;
   };
 
-  // If true, the next (and immediately following) function literal is
-  // preceded by a parenthesis.
-  // Heuristically that means that the function will be called immediately,
-  // so never lazily compile it.
-  bool parenthesized_function_;
-
   Scope* scope_;                   // Scope stack.
   FunctionState* function_state_;  // Function state stack.
   v8::Extension* extension_;
@@ -926,9 +921,6 @@ class ParserBase : public Traits {
   bool allow_lazy_;
   bool allow_natives_;
   bool allow_tailcalls_;
-  bool allow_harmony_sloppy_;
-  bool allow_harmony_sloppy_function_;
-  bool allow_harmony_sloppy_let_;
   bool allow_harmony_restrictive_declarations_;
   bool allow_harmony_do_expressions_;
   bool allow_harmony_function_name_;
@@ -952,9 +944,16 @@ ParserBase<Traits>::FunctionState::FunctionState(
       outer_scope_(*scope_stack),
       collect_expressions_in_tail_position_(true),
       non_patterns_to_rewrite_(0, scope->zone()),
-      factory_(factory) {
+      factory_(factory),
+      next_function_is_parenthesized_(false),
+      this_function_is_parenthesized_(false) {
   *scope_stack_ = scope;
   *function_state_stack = this;
+  if (outer_function_state_) {
+    this_function_is_parenthesized_ =
+        outer_function_state_->next_function_is_parenthesized_;
+    outer_function_state_->next_function_is_parenthesized_ = false;
+  }
 }
 
 
@@ -1320,7 +1319,8 @@ ParserBase<Traits>::ParsePrimaryExpression(ExpressionClassifier* classifier,
       }
       // Heuristically try to detect immediately called functions before
       // seeing the call parentheses.
-      parenthesized_function_ = (peek() == Token::FUNCTION);
+      function_state_->next_function_is_parenthesized(peek() ==
+                                                      Token::FUNCTION);
       ExpressionT expr = this->ParseExpression(true, classifier, CHECK_OK);
       Expect(Token::RPAREN, CHECK_OK);
       return expr;
@@ -1329,11 +1329,6 @@ ParserBase<Traits>::ParsePrimaryExpression(ExpressionClassifier* classifier,
     case Token::CLASS: {
       BindingPatternUnexpectedToken(classifier);
       Consume(Token::CLASS);
-      if (!allow_harmony_sloppy() && is_sloppy(language_mode())) {
-        ReportMessage(MessageTemplate::kSloppyLexical);
-        *ok = false;
-        return this->EmptyExpression();
-      }
       int class_token_position = position();
       IdentifierT name = this->EmptyIdentifier();
       bool is_strict_reserved_name = false;
@@ -2787,9 +2782,6 @@ void ParserBase<Traits>::CheckArityRestrictions(int param_count,
 template <class Traits>
 bool ParserBase<Traits>::IsNextLetKeyword() {
   DCHECK(peek() == Token::LET);
-  if (!allow_let()) {
-    return false;
-  }
   Token::Value next_next = PeekAhead();
   switch (next_next) {
     case Token::LBRACE:
@@ -2862,7 +2854,6 @@ ParserBase<Traits>::ParseArrowFunctionLiteral(
     } else {
       // Single-expression body
       int pos = position();
-      parenthesized_function_ = false;
       ExpressionClassifier classifier(this);
       ExpressionT expression =
           ParseAssignmentExpression(accept_IN, &classifier, CHECK_OK);
@@ -2890,9 +2881,7 @@ ParserBase<Traits>::ParseArrowFunctionLiteral(
       CheckStrictOctalLiteral(formal_parameters.scope->start_position(),
                               scanner()->location().end_pos, CHECK_OK);
     }
-    if (is_strict(language_mode()) || allow_harmony_sloppy()) {
-      this->CheckConflictingVarDeclarations(formal_parameters.scope, CHECK_OK);
-    }
+    this->CheckConflictingVarDeclarations(formal_parameters.scope, CHECK_OK);
 
     Traits::RewriteDestructuringAssignments();
   }

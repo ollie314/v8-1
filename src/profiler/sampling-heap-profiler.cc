@@ -117,6 +117,9 @@ void SamplingHeapProfiler::OnWeakCallback(
   AllocationNode* node = sample->owner;
   DCHECK(node->allocations_[sample->size] > 0);
   node->allocations_[sample->size]--;
+  if (node->allocations_[sample->size] == 0) {
+    node->allocations_.erase(sample->size);
+  }
   sample->profiler->samples_.erase(sample);
   delete sample;
 }
@@ -143,7 +146,7 @@ SamplingHeapProfiler::AllocationNode* SamplingHeapProfiler::AddStack() {
   StackTraceFrameIterator it(isolate_);
   int frames_captured = 0;
   while (!it.done() && frames_captured < stack_depth_) {
-    JavaScriptFrame* frame = it.frame();
+    StandardFrame* frame = it.frame();
     SharedFunctionInfo* shared = frame->function()->shared();
     stack.push_back(shared);
 

@@ -58,9 +58,8 @@ const Register InstanceOfDescriptor::RightRegister() { return eax; }
 const Register StringCompareDescriptor::LeftRegister() { return edx; }
 const Register StringCompareDescriptor::RightRegister() { return eax; }
 
-
-const Register ApiGetterDescriptor::function_address() { return edx; }
-
+const Register ApiGetterDescriptor::HolderRegister() { return ecx; }
+const Register ApiGetterDescriptor::CallbackRegister() { return eax; }
 
 const Register MathPowTaggedDescriptor::exponent() { return eax; }
 
@@ -250,7 +249,7 @@ void AllocateHeapNumberDescriptor::InitializePlatformSpecific(
 SIMD128_TYPES(SIMD128_ALLOC_DESC)
 #undef SIMD128_ALLOC_DESC
 
-void AllocateInNewSpaceDescriptor::InitializePlatformSpecific(
+void AllocateDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {eax};
   data->InitializePlatformSpecific(arraysize(registers), registers);
@@ -380,8 +379,8 @@ void ApiCallbackDescriptorBase::InitializePlatformSpecific(
 void InterpreterDispatchDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {
-      kInterpreterAccumulatorRegister, kInterpreterRegisterFileRegister,
-      kInterpreterBytecodeOffsetRegister, kInterpreterBytecodeArrayRegister};
+      kInterpreterAccumulatorRegister, kInterpreterBytecodeOffsetRegister,
+      kInterpreterBytecodeArrayRegister, kInterpreterDispatchTableRegister};
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
@@ -412,6 +411,16 @@ void InterpreterCEntryDescriptor::InitializePlatformSpecific(
       eax,  // argument count (argc)
       ecx,  // address of first argument (argv)
       ebx   // the runtime function to call
+  };
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
+void ResumeGeneratorDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  Register registers[] = {
+      eax,  // the value to pass to the generator
+      ebx,  // the JSGeneratorObject to resume
+      edx   // the resume mode (tagged)
   };
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }

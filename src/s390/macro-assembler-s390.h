@@ -335,6 +335,7 @@ class MacroAssembler : public Assembler {
   void LoadW(Register dst, const MemOperand& opnd, Register scratch = no_reg);
   void LoadlW(Register dst, const MemOperand& opnd, Register scratch = no_reg);
   void LoadB(Register dst, const MemOperand& opnd);
+  void LoadB(Register dst, Register src);
   void LoadlB(Register dst, const MemOperand& opnd);
 
   // Load And Test
@@ -1180,22 +1181,6 @@ class MacroAssembler : public Assembler {
                      Register input_high, Register scratch,
                      DoubleRegister double_scratch, Label* done, Label* exact);
 
-  // Perform ceiling of float in input_register and store in double_output.
-  void FloatCeiling32(DoubleRegister double_output, DoubleRegister double_input,
-                      Register scratch, DoubleRegister double_scratch);
-
-  // Perform floor of float in input_register and store in double_output.
-  void FloatFloor32(DoubleRegister double_output, DoubleRegister double_input,
-                    Register scratch);
-
-  // Perform ceiling of double in input_register and store in double_output.
-  void FloatCeiling64(DoubleRegister double_output, DoubleRegister double_input,
-                      Register scratch, DoubleRegister double_scratch);
-
-  // Perform floor of double in input_register and store in double_output.
-  void FloatFloor64(DoubleRegister double_output, DoubleRegister double_input,
-                    Register scratch);
-
   // Performs a truncating conversion of a floating point number as used by
   // the JS bitwise operations. See ECMA-262 9.5: ToInt32. Goes to 'done' if it
   // succeeds, otherwise falls through if result is saturated. On return
@@ -1675,6 +1660,10 @@ class MacroAssembler : public Assembler {
   // Abort execution if argument is not a JSBoundFunction,
   // enabled via --debug-code.
   void AssertBoundFunction(Register object);
+
+  // Abort execution if argument is not a JSGeneratorObject,
+  // enabled via --debug-code.
+  void AssertGeneratorObject(Register object);
 
   // Abort execution if argument is not a JSReceiver, enabled via --debug-code.
   void AssertReceiver(Register object);

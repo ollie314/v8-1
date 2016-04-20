@@ -19,7 +19,6 @@ const Register kReturnRegister2 = {Register::kCode_a0};
 const Register kJSFunctionRegister = {Register::kCode_a1};
 const Register kContextRegister = {Register::kCpRegister};
 const Register kInterpreterAccumulatorRegister = {Register::kCode_v0};
-const Register kInterpreterRegisterFileRegister = {Register::kCode_t3};
 const Register kInterpreterBytecodeOffsetRegister = {Register::kCode_t4};
 const Register kInterpreterBytecodeArrayRegister = {Register::kCode_t5};
 const Register kInterpreterDispatchTableRegister = {Register::kCode_t6};
@@ -649,6 +648,7 @@ class MacroAssembler: public Assembler {
 
   DEFINE_INSTRUCTION3(Div);
   DEFINE_INSTRUCTION3(Mul);
+  DEFINE_INSTRUCTION3(Mulu);
 
   DEFINE_INSTRUCTION(And);
   DEFINE_INSTRUCTION(Or);
@@ -807,6 +807,31 @@ class MacroAssembler: public Assembler {
   // MIPS32 R2 instruction macro.
   void Ins(Register rt, Register rs, uint16_t pos, uint16_t size);
   void Ext(Register rt, Register rs, uint16_t pos, uint16_t size);
+
+  // Int64Lowering instructions
+  void AddPair(Register dst_low, Register dst_high, Register left_low,
+               Register left_high, Register right_low, Register right_high);
+
+  void SubPair(Register dst_low, Register dst_high, Register left_low,
+               Register left_high, Register right_low, Register right_high);
+
+  void ShlPair(Register dst_low, Register dst_high, Register src_low,
+               Register src_high, Register shift);
+
+  void ShlPair(Register dst_low, Register dst_high, Register src_low,
+               Register src_high, uint32_t shift);
+
+  void ShrPair(Register dst_low, Register dst_high, Register src_low,
+               Register src_high, Register shift);
+
+  void ShrPair(Register dst_low, Register dst_high, Register src_low,
+               Register src_high, uint32_t shift);
+
+  void SarPair(Register dst_low, Register dst_high, Register src_low,
+               Register src_high, Register shift);
+
+  void SarPair(Register dst_low, Register dst_high, Register src_low,
+               Register src_high, uint32_t shift);
 
   // ---------------------------------------------------------------------------
   // FPU macros. These do not handle special cases like NaN or +- inf.
@@ -1544,6 +1569,10 @@ const Operand& rt = Operand(zero_reg), BranchDelaySlot bd = PROTECT
   // Abort execution if argument is not a JSBoundFunction,
   // enabled via --debug-code.
   void AssertBoundFunction(Register object);
+
+  // Abort execution if argument is not a JSGeneratorObject,
+  // enabled via --debug-code.
+  void AssertGeneratorObject(Register object);
 
   // Abort execution if argument is not a JSReceiver, enabled via --debug-code.
   void AssertReceiver(Register object);

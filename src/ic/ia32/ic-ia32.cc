@@ -336,8 +336,8 @@ void KeyedLoadIC::GenerateMegamorphic(MacroAssembler* masm) {
   __ push(Immediate(Smi::FromInt(slot)));
   __ push(Immediate(dummy_vector));
 
-  Code::Flags flags = Code::RemoveTypeAndHolderFromFlags(
-      Code::ComputeHandlerFlags(Code::LOAD_IC));
+  Code::Flags flags =
+      Code::RemoveHolderFromFlags(Code::ComputeHandlerFlags(Code::LOAD_IC));
   masm->isolate()->stub_cache()->GenerateProbe(masm, Code::KEYED_LOAD_IC, flags,
                                                receiver, key, ebx, edi);
 
@@ -563,10 +563,10 @@ void KeyedStoreIC::GenerateMegamorphic(MacroAssembler* masm,
   __ push(Immediate(Smi::FromInt(slot)));
   __ push(Immediate(dummy_vector));
 
-  Code::Flags flags = Code::RemoveTypeAndHolderFromFlags(
-      Code::ComputeHandlerFlags(Code::STORE_IC));
-  masm->isolate()->stub_cache()->GenerateProbe(masm, Code::STORE_IC, flags,
-                                               receiver, key, edi, no_reg);
+  Code::Flags flags =
+      Code::RemoveHolderFromFlags(Code::ComputeHandlerFlags(Code::STORE_IC));
+  masm->isolate()->stub_cache()->GenerateProbe(
+      masm, Code::KEYED_STORE_IC, flags, receiver, key, edi, no_reg);
 
   __ pop(VectorStoreICDescriptor::VectorRegister());
   __ pop(VectorStoreICDescriptor::SlotRegister());

@@ -20,7 +20,6 @@ const Register kReturnRegister2 = {Register::kCode_r5};
 const Register kJSFunctionRegister = {Register::kCode_r4};
 const Register kContextRegister = {Register::kCode_r30};
 const Register kInterpreterAccumulatorRegister = {Register::kCode_r3};
-const Register kInterpreterRegisterFileRegister = {Register::kCode_r14};
 const Register kInterpreterBytecodeOffsetRegister = {Register::kCode_r15};
 const Register kInterpreterBytecodeArrayRegister = {Register::kCode_r16};
 const Register kInterpreterDispatchTableRegister = {Register::kCode_r17};
@@ -1379,6 +1378,10 @@ class MacroAssembler : public Assembler {
   // Abort execution if argument is not a JSBoundFunction,
   // enabled via --debug-code.
   void AssertBoundFunction(Register object);
+
+  // Abort execution if argument is not a JSGeneratorObject,
+  // enabled via --debug-code.
+  void AssertGeneratorObject(Register object);
 
   // Abort execution if argument is not a JSReceiver, enabled via --debug-code.
   void AssertReceiver(Register object);

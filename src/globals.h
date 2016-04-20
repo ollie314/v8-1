@@ -124,11 +124,6 @@ const int kFloatSize     = sizeof(float);     // NOLINT
 const int kDoubleSize    = sizeof(double);    // NOLINT
 const int kIntptrSize    = sizeof(intptr_t);  // NOLINT
 const int kPointerSize   = sizeof(void*);     // NOLINT
-#if V8_TARGET_ARCH_ARM64
-const int kFrameAlignmentInBytes = 2 * kPointerSize;
-#else
-const int kFrameAlignmentInBytes = kPointerSize;
-#endif
 #if V8_TARGET_ARCH_X64 && V8_TARGET_ARCH_32_BIT
 const int kRegisterSize  = kPointerSize + kPointerSize;
 #else
@@ -137,7 +132,7 @@ const int kRegisterSize  = kPointerSize;
 const int kPCOnStackSize = kRegisterSize;
 const int kFPOnStackSize = kRegisterSize;
 
-#if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_IA32
+#if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X87
 const int kElidedFrameSlots = kPCOnStackSize / kPointerSize;
 #else
 const int kElidedFrameSlots = 0;
@@ -551,7 +546,7 @@ enum InlineCacheState {
   // Has been executed and only one receiver type has been seen.
   MONOMORPHIC,
   // Check failed due to prototype (or map deprecation).
-  PROTOTYPE_FAILURE,
+  RECOMPUTE_HANDLER,
   // Multiple receiver types have been seen.
   POLYMORPHIC,
   // Many receiver types have been seen.
@@ -561,7 +556,6 @@ enum InlineCacheState {
   // Special state for debug break or step in prepare stubs.
   DEBUG_STUB
 };
-
 
 enum CacheHolderFlag {
   kCacheOnPrototype,
@@ -800,33 +794,30 @@ const double kMaxSafeInteger = 9007199254740991.0;  // 2^53-1
 // The order of this enum has to be kept in sync with the predicates below.
 enum VariableMode {
   // User declared variables:
-  VAR,             // declared via 'var', and 'function' declarations
+  VAR,  // declared via 'var', and 'function' declarations
 
-  CONST_LEGACY,    // declared via legacy 'const' declarations
+  CONST_LEGACY,  // declared via legacy 'const' declarations
 
-  LET,             // declared via 'let' declarations (first lexical)
+  LET,  // declared via 'let' declarations (first lexical)
 
-  CONST,           // declared via 'const' declarations
-
-  IMPORT,          // declared via 'import' declarations (last lexical)
+  CONST,  // declared via 'const' declarations (last lexical)
 
   // Variables introduced by the compiler:
-  TEMPORARY,       // temporary variables (not user-visible), stack-allocated
-                   // unless the scope as a whole has forced context allocation
+  TEMPORARY,  // temporary variables (not user-visible), stack-allocated
+              // unless the scope as a whole has forced context allocation
 
-  DYNAMIC,         // always require dynamic lookup (we don't know
-                   // the declaration)
+  DYNAMIC,  // always require dynamic lookup (we don't know
+            // the declaration)
 
   DYNAMIC_GLOBAL,  // requires dynamic lookup, but we know that the
                    // variable is global unless it has been shadowed
                    // by an eval-introduced variable
 
-  DYNAMIC_LOCAL    // requires dynamic lookup, but we know that the
-                   // variable is local and where it is unless it
-                   // has been shadowed by an eval-introduced
-                   // variable
+  DYNAMIC_LOCAL  // requires dynamic lookup, but we know that the
+                 // variable is local and where it is unless it
+                 // has been shadowed by an eval-introduced
+                 // variable
 };
-
 
 inline bool IsDynamicVariableMode(VariableMode mode) {
   return mode >= DYNAMIC && mode <= DYNAMIC_LOCAL;
@@ -834,17 +825,17 @@ inline bool IsDynamicVariableMode(VariableMode mode) {
 
 
 inline bool IsDeclaredVariableMode(VariableMode mode) {
-  return mode >= VAR && mode <= IMPORT;
+  return mode >= VAR && mode <= CONST;
 }
 
 
 inline bool IsLexicalVariableMode(VariableMode mode) {
-  return mode >= LET && mode <= IMPORT;
+  return mode >= LET && mode <= CONST;
 }
 
 
 inline bool IsImmutableVariableMode(VariableMode mode) {
-  return mode == CONST || mode == CONST_LEGACY || mode == IMPORT;
+  return mode == CONST || mode == CONST_LEGACY;
 }
 
 

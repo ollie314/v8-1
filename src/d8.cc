@@ -41,6 +41,7 @@
 #include "src/base/platform/platform.h"
 #include "src/base/sys-info.h"
 #include "src/basic-block-profiler.h"
+#include "src/interpreter/interpreter.h"
 #include "src/snapshot/natives.h"
 #include "src/utils.h"
 #include "src/v8.h"
@@ -1312,6 +1313,13 @@ void Shell::OnExit(v8::Isolate* isolate) {
            "-------------+\n");
     delete [] counters;
   }
+
+  if (i::FLAG_trace_ignition_dispatches) {
+    reinterpret_cast<i::Isolate*>(isolate)
+        ->interpreter()
+        ->WriteDispatchCounters();
+  }
+
   delete counters_file_;
   delete counter_map_;
 #endif  // !V8_SHARED
@@ -2478,6 +2486,9 @@ int Shell::Main(int argc, char* argv[]) {
 
     // Shut down contexts and collect garbage.
     evaluation_context_.Reset();
+#ifndef V8_SHARED
+    stringify_function_.Reset();
+#endif  // !V8_SHARED
     CollectGarbage(isolate);
   }
   OnExit(isolate);

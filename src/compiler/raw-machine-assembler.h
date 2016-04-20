@@ -76,6 +76,7 @@ class RawMachineAssembler {
     return kPointerSize == 8 ? Int64Constant(value)
                              : Int32Constant(static_cast<int>(value));
   }
+  Node* RelocatableIntPtrConstant(intptr_t value, RelocInfo::Mode rmode);
   Node* Int32Constant(int32_t value) {
     return AddNode(common()->Int32Constant(value));
   }
@@ -104,6 +105,12 @@ class RawMachineAssembler {
   Node* ExternalConstant(ExternalReference address) {
     return AddNode(common()->ExternalConstant(address));
   }
+  Node* RelocatableInt32Constant(int32_t value, RelocInfo::Mode rmode) {
+    return AddNode(common()->RelocatableInt32Constant(value, rmode));
+  }
+  Node* RelocatableInt64Constant(int64_t value, RelocInfo::Mode rmode) {
+    return AddNode(common()->RelocatableInt64Constant(value, rmode));
+  }
 
   Node* Projection(int index, Node* a) {
     return AddNode(common()->Projection(index), a);
@@ -124,6 +131,11 @@ class RawMachineAssembler {
               WriteBarrierKind write_barrier) {
     return AddNode(machine()->Store(StoreRepresentation(rep, write_barrier)),
                    base, index, value);
+  }
+
+  // Atomic memory operations.
+  Node* AtomicLoad(MachineType rep, Node* base, Node* index) {
+    return AddNode(machine()->AtomicLoad(rep), base, index);
   }
 
   // Arithmetic Operations.
@@ -353,6 +365,8 @@ class RawMachineAssembler {
   INTPTR_BINOP(Int, AddWithOverflow);
   INTPTR_BINOP(Int, Sub);
   INTPTR_BINOP(Int, SubWithOverflow);
+  INTPTR_BINOP(Int, Mul);
+  INTPTR_BINOP(Int, Div);
   INTPTR_BINOP(Int, LessThan);
   INTPTR_BINOP(Int, LessThanOrEqual);
   INTPTR_BINOP(Word, Equal);

@@ -3749,8 +3749,8 @@ void LoadICStub::GenerateImpl(MacroAssembler* masm, bool in_frame) {
   __ bind(&not_array);
   __ CompareRoot(feedback, Heap::kmegamorphic_symbolRootIndex);
   __ j(not_equal, &miss);
-  Code::Flags code_flags = Code::RemoveTypeAndHolderFromFlags(
-      Code::ComputeHandlerFlags(Code::LOAD_IC));
+  Code::Flags code_flags =
+      Code::RemoveHolderFromFlags(Code::ComputeHandlerFlags(Code::LOAD_IC));
   masm->isolate()->stub_cache()->GenerateProbe(
       masm, Code::LOAD_IC, code_flags, receiver, name, feedback, no_reg);
 
@@ -3891,8 +3891,8 @@ void VectorStoreICStub::GenerateImpl(MacroAssembler* masm, bool in_frame) {
   __ CompareRoot(feedback, Heap::kmegamorphic_symbolRootIndex);
   __ j(not_equal, &miss);
 
-  Code::Flags code_flags = Code::RemoveTypeAndHolderFromFlags(
-      Code::ComputeHandlerFlags(Code::STORE_IC));
+  Code::Flags code_flags =
+      Code::RemoveHolderFromFlags(Code::ComputeHandlerFlags(Code::STORE_IC));
   masm->isolate()->stub_cache()->GenerateProbe(masm, Code::STORE_IC, code_flags,
                                                receiver, key, feedback, no_reg);
 
@@ -5507,14 +5507,6 @@ void CallApiCallbackStub::Generate(MacroAssembler* masm) {
 
 
 void CallApiGetterStub::Generate(MacroAssembler* masm) {
-  // ----------- S t a t e -------------
-  //  -- rsp[0]                          : return address
-  //  -- rsp[8]                          : name
-  //  -- rsp[16 .. (16 + kArgsLength*8)] : v8::PropertyCallbackInfo::args_
-  //  -- ...
-  //  -- r8                              : api_function_address
-  // -----------------------------------
-
 #if defined(__MINGW64__) || defined(_WIN64)
   Register getter_arg = r8;
   Register accessor_info_arg = rdx;
@@ -5524,9 +5516,36 @@ void CallApiGetterStub::Generate(MacroAssembler* masm) {
   Register accessor_info_arg = rsi;
   Register name_arg = rdi;
 #endif
-  Register api_function_address = ApiGetterDescriptor::function_address();
-  DCHECK(api_function_address.is(r8));
+  Register api_function_address = r8;
+  Register receiver = ApiGetterDescriptor::ReceiverRegister();
+  Register holder = ApiGetterDescriptor::HolderRegister();
+  Register callback = ApiGetterDescriptor::CallbackRegister();
   Register scratch = rax;
+  DCHECK(!AreAliased(receiver, holder, callback, scratch));
+
+  // Build v8::PropertyCallbackInfo::args_ array on the stack and push property
+  // name below the exit frame to make GC aware of them.
+  STATIC_ASSERT(PropertyCallbackArguments::kShouldThrowOnErrorIndex == 0);
+  STATIC_ASSERT(PropertyCallbackArguments::kHolderIndex == 1);
+  STATIC_ASSERT(PropertyCallbackArguments::kIsolateIndex == 2);
+  STATIC_ASSERT(PropertyCallbackArguments::kReturnValueDefaultValueIndex == 3);
+  STATIC_ASSERT(PropertyCallbackArguments::kReturnValueOffset == 4);
+  STATIC_ASSERT(PropertyCallbackArguments::kDataIndex == 5);
+  STATIC_ASSERT(PropertyCallbackArguments::kThisIndex == 6);
+  STATIC_ASSERT(PropertyCallbackArguments::kArgsLength == 7);
+
+  // Insert additional parameters into the stack frame above return address.
+  __ PopReturnAddressTo(scratch);
+  __ Push(receiver);
+  __ Push(FieldOperand(callback, AccessorInfo::kDataOffset));
+  __ LoadRoot(kScratchRegister, Heap::kUndefinedValueRootIndex);
+  __ Push(kScratchRegister);  // return value
+  __ Push(kScratchRegister);  // return value default
+  __ PushAddress(ExternalReference::isolate_address(isolate()));
+  __ Push(holder);
+  __ Push(Smi::FromInt(0));  // should_throw_on_error -> false
+  __ Push(FieldOperand(callback, AccessorInfo::kNameOffset));
+  __ PushReturnAddressFrom(scratch);
 
   // v8::PropertyCallbackInfo::args_ array and name handle.
   const int kStackUnwindSpace = PropertyCallbackArguments::kArgsLength + 1;
@@ -5553,8 +5572,11 @@ void CallApiGetterStub::Generate(MacroAssembler* masm) {
 
   // It's okay if api_function_address == getter_arg
   // but not accessor_info_arg or name_arg
-  DCHECK(!api_function_address.is(accessor_info_arg) &&
-         !api_function_address.is(name_arg));
+  DCHECK(!api_function_address.is(accessor_info_arg));
+  DCHECK(!api_function_address.is(name_arg));
+  __ movp(scratch, FieldOperand(callback, AccessorInfo::kJsGetterOffset));
+  __ movp(api_function_address,
+          FieldOperand(scratch, Foreign::kForeignAddressOffset));
 
   // +3 is to skip prolog, return address and name handle.
   Operand return_value_operand(
@@ -5563,7 +5585,6 @@ void CallApiGetterStub::Generate(MacroAssembler* masm) {
                            kStackUnwindSpace, nullptr, return_value_operand,
                            NULL);
 }
-
 
 #undef __
 

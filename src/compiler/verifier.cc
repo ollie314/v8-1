@@ -345,6 +345,10 @@ void Verifier::Visitor::Check(Node* node) {
       // Type is a number.
       CheckUpperIs(node, Type::Number());
       break;
+    case IrOpcode::kRelocatableInt32Constant:
+    case IrOpcode::kRelocatableInt64Constant:
+      CHECK_EQ(0, input_count);
+      break;
     case IrOpcode::kHeapConstant:
       // Constants have no inputs.
       CHECK_EQ(0, input_count);
@@ -646,17 +650,27 @@ void Verifier::Visitor::Check(Node* node) {
       CheckUpperIs(node, Type::Number());
       break;
     case IrOpcode::kNumberEqual:
+      // (NumberOrUndefined, NumberOrUndefined) -> Boolean
+      CheckValueInputIs(node, 0, Type::NumberOrUndefined());
+      CheckValueInputIs(node, 1, Type::NumberOrUndefined());
+      CheckUpperIs(node, Type::Boolean());
+      break;
     case IrOpcode::kNumberLessThan:
     case IrOpcode::kNumberLessThanOrEqual:
       // (Number, Number) -> Boolean
-      CheckValueInputIs(node, 0, Type::Number());
-      CheckValueInputIs(node, 1, Type::Number());
+      CheckValueInputIs(node, 0, Type::NumberOrUndefined());
+      CheckValueInputIs(node, 1, Type::NumberOrUndefined());
       CheckUpperIs(node, Type::Boolean());
       break;
     case IrOpcode::kNumberAdd:
     case IrOpcode::kNumberSubtract:
     case IrOpcode::kNumberMultiply:
     case IrOpcode::kNumberDivide:
+      // (Number, Number) -> Number
+      CheckValueInputIs(node, 0, Type::NumberOrUndefined());
+      CheckValueInputIs(node, 1, Type::NumberOrUndefined());
+      // CheckUpperIs(node, Type::Number());
+      break;
     case IrOpcode::kNumberModulus:
       // (Number, Number) -> Number
       CheckValueInputIs(node, 0, Type::Number());
@@ -700,23 +714,18 @@ void Verifier::Visitor::Check(Node* node) {
       break;
     case IrOpcode::kNumberToInt32:
       // Number -> Signed32
-      CheckValueInputIs(node, 0, Type::Number());
+      CheckValueInputIs(node, 0, Type::NumberOrUndefined());
       CheckUpperIs(node, Type::Signed32());
       break;
     case IrOpcode::kNumberToUint32:
       // Number -> Unsigned32
-      CheckValueInputIs(node, 0, Type::Number());
+      CheckValueInputIs(node, 0, Type::NumberOrUndefined());
       CheckUpperIs(node, Type::Unsigned32());
       break;
     case IrOpcode::kNumberIsHoleNaN:
       // Number -> Boolean
       CheckValueInputIs(node, 0, Type::Number());
       CheckUpperIs(node, Type::Boolean());
-      break;
-    case IrOpcode::kPlainPrimitiveToNumber:
-      // PlainPrimitive -> Number
-      CheckValueInputIs(node, 0, Type::PlainPrimitive());
-      CheckUpperIs(node, Type::Number());
       break;
     case IrOpcode::kStringEqual:
     case IrOpcode::kStringLessThan:
@@ -737,9 +746,11 @@ void Verifier::Visitor::Check(Node* node) {
       CheckUpperIs(node, Type::Boolean());
       break;
     }
+    case IrOpcode::kObjectIsCallable:
     case IrOpcode::kObjectIsNumber:
     case IrOpcode::kObjectIsReceiver:
     case IrOpcode::kObjectIsSmi:
+    case IrOpcode::kObjectIsString:
     case IrOpcode::kObjectIsUndetectable:
       CheckValueInputIs(node, 0, Type::Any());
       CheckUpperIs(node, Type::Boolean());
@@ -749,6 +760,15 @@ void Verifier::Visitor::Check(Node* node) {
       CheckUpperIs(node, Type::TaggedPointer());
       break;
 
+    case IrOpcode::kChangeSmiToInt32: {
+      // Signed32 /\ Tagged -> Signed32 /\ UntaggedInt32
+      // TODO(neis): Activate once ChangeRepresentation works in typer.
+      // Type* from = Type::Intersect(Type::Signed32(), Type::Tagged());
+      // Type* to = Type::Intersect(Type::Signed32(), Type::UntaggedInt32());
+      // CheckValueInputIs(node, 0, from));
+      // CheckUpperIs(node, to));
+      break;
+    }
     case IrOpcode::kChangeTaggedToInt32: {
       // Signed32 /\ Tagged -> Signed32 /\ UntaggedInt32
       // TODO(neis): Activate once ChangeRepresentation works in typer.
@@ -984,6 +1004,7 @@ void Verifier::Visitor::Check(Node* node) {
     case IrOpcode::kLoadParentFramePointer:
     case IrOpcode::kCheckedLoad:
     case IrOpcode::kCheckedStore:
+    case IrOpcode::kAtomicLoad:
       // TODO(rossberg): Check.
       break;
   }

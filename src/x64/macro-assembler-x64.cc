@@ -489,7 +489,7 @@ void MacroAssembler::RecordWriteCodeEntryField(Register js_function,
   // easier.
   DCHECK(js_function.is(rdi));
   DCHECK(code_entry.is(rcx));
-  DCHECK(scratch.is(rax));
+  DCHECK(scratch.is(r15));
 
   // Since a code entry (value) is always in old space, we don't need to update
   // remembered set. If incremental marking is off, there is nothing for us to
@@ -537,13 +537,13 @@ void MacroAssembler::RecordWriteCodeEntryField(Register js_function,
     DCHECK(arg_reg_2.is(rdx) && arg_reg_3.is(r8));
 
     movp(arg_reg_1, js_function);  // rcx gets rdi.
-    movp(arg_reg_2, dst);          // rdx gets rax.
+    movp(arg_reg_2, dst);          // rdx gets r15.
   } else {
     // AMD64 calling convention.
     DCHECK(arg_reg_1.is(rdi) && arg_reg_2.is(rsi) && arg_reg_3.is(rdx));
 
     // rdi is already loaded with js_function.
-    movp(arg_reg_2, dst);  // rsi gets rax.
+    movp(arg_reg_2, dst);  // rsi gets r15.
   }
   Move(arg_reg_3, ExternalReference::isolate_address(isolate()));
 
@@ -1113,15 +1113,6 @@ void MacroAssembler::Set(Register dst, int64_t x) {
     movq(dst, Immediate(static_cast<int32_t>(x)));
   } else {
     movq(dst, x);
-  }
-}
-
-void MacroAssembler::Set(Register dst, int64_t x, RelocInfo::Mode rmode) {
-  if (rmode == RelocInfo::WASM_MEMORY_REFERENCE) {
-    DCHECK(x != 0);
-    movq(dst, x, rmode);
-  } else {
-    DCHECK(RelocInfo::IsNone(rmode));
   }
 }
 
@@ -3970,6 +3961,16 @@ void MacroAssembler::AssertBoundFunction(Register object) {
   }
 }
 
+void MacroAssembler::AssertGeneratorObject(Register object) {
+  if (emit_debug_code()) {
+    testb(object, Immediate(kSmiTagMask));
+    Check(not_equal, kOperandIsASmiAndNotAGeneratorObject);
+    Push(object);
+    CmpObjectType(object, JS_GENERATOR_OBJECT_TYPE, object);
+    Pop(object);
+    Check(equal, kOperandIsNotAGeneratorObject);
+  }
+}
 
 void MacroAssembler::AssertReceiver(Register object) {
   if (emit_debug_code()) {

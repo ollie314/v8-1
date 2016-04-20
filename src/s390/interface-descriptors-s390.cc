@@ -211,7 +211,7 @@ void AllocateHeapNumberDescriptor::InitializePlatformSpecific(
 SIMD128_TYPES(SIMD128_ALLOC_DESC)
 #undef SIMD128_ALLOC_DESC
 
-void AllocateInNewSpaceDescriptor::InitializePlatformSpecific(
+void AllocateDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {r2};
   data->InitializePlatformSpecific(arraysize(registers), registers);
@@ -363,6 +363,16 @@ void InterpreterCEntryDescriptor::InitializePlatformSpecific(
       r2,  // argument count (argc)
       r4,  // address of first argument (argv)
       r3   // the runtime function to call
+  };
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
+void ResumeGeneratorDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  Register registers[] = {
+      r2,  // the value to pass to the generator
+      r3,  // the JSGeneratorObject to resume
+      r4   // the resume mode (tagged)
   };
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }

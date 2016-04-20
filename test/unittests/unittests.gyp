@@ -50,6 +50,7 @@
         'compiler/control-flow-optimizer-unittest.cc',
         'compiler/dead-code-elimination-unittest.cc',
         'compiler/diamond-unittest.cc',
+        'compiler/effect-control-linearizer-unittest.cc',
         'compiler/escape-analysis-unittest.cc',
         'compiler/graph-reducer-unittest.cc',
         'compiler/graph-reducer-unittest.h',
@@ -83,7 +84,6 @@
         'compiler/opcodes-unittest.cc',
         'compiler/register-allocator-unittest.cc',
         'compiler/schedule-unittest.cc',
-        'compiler/select-lowering-unittest.cc',
         'compiler/scheduler-unittest.cc',
         'compiler/scheduler-rpo-unittest.cc',
         'compiler/simplified-operator-reducer-unittest.cc',
@@ -121,6 +121,7 @@
         'wasm/encoder-unittest.cc',
         'wasm/loop-assignment-analysis-unittest.cc',
         'wasm/module-decoder-unittest.cc',
+        'wasm/switch-logic-unittest.cc',
         'wasm/wasm-macro-gen-unittest.cc',
       ],
       'conditions': [
@@ -139,9 +140,19 @@
             'compiler/ia32/instruction-selector-ia32-unittest.cc',
           ],
         }],
+        ['v8_target_arch=="mips"', {
+          'sources': [  ### gcmole(arch:mips) ###
+            'compiler/mips/instruction-selector-mips-unittest.cc',
+          ],
+        }],
         ['v8_target_arch=="mipsel"', {
           'sources': [  ### gcmole(arch:mipsel) ###
             'compiler/mips/instruction-selector-mips-unittest.cc',
+          ],
+        }],
+        ['v8_target_arch=="mips64"', {
+          'sources': [  ### gcmole(arch:mips64) ###
+            'compiler/mips64/instruction-selector-mips64-unittest.cc',
           ],
         }],
         ['v8_target_arch=="mips64el"', {

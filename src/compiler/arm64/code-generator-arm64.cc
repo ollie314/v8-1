@@ -185,7 +185,11 @@ class Arm64OperandConverter final : public InstructionOperandConverter {
       case Constant::kInt32:
         return Operand(constant.ToInt32());
       case Constant::kInt64:
-        return Operand(constant.ToInt64());
+        if (constant.rmode() == RelocInfo::WASM_MEMORY_REFERENCE) {
+          return Operand(constant.ToInt64(), constant.rmode());
+        } else {
+          return Operand(constant.ToInt64());
+        }
       case Constant::kFloat32:
         return Operand(
             isolate()->factory()->NewNumber(constant.ToFloat32(), TENURED));
@@ -468,6 +472,13 @@ Condition FlagsConditionToCondition(FlagsCondition condition) {
     }                                                                       \
   } while (0)
 
+#define ASSEMBLE_ATOMIC_LOAD_INTEGER(asm_instr)                       \
+  do {                                                                \
+    __ asm_instr(i.OutputRegister(),                                  \
+                 MemOperand(i.InputRegister(0), i.InputRegister(1))); \
+    __ Dmb(InnerShareable, BarrierAll);                               \
+  } while (0)
+
 void CodeGenerator::AssembleDeconstructFrame() {
   const CallDescriptor* descriptor = linkage()->GetIncomingDescriptor();
   if (descriptor->IsCFunctionCall() || descriptor->UseNativeStack()) {
@@ -574,6 +585,14 @@ void CodeGenerator::AssembleArchInstruction(Instruction* instr) {
         __ Add(target, target, Code::kHeaderSize - kHeapObjectTag);
         __ Jump(target);
       }
+      frame_access_state()->ClearSPDelta();
+      break;
+    }
+    case kArchTailCallAddress: {
+      int stack_param_delta = i.InputInt32(instr->InputCount() - 1);
+      AssembleDeconstructActivationRecord(stack_param_delta);
+      CHECK(!instr->InputAt(0)->IsImmediate());
+      __ Jump(i.InputRegister(0));
       frame_access_state()->ClearSPDelta();
       break;
     }
@@ -1392,6 +1411,23 @@ void CodeGenerator::AssembleArchInstruction(Instruction* instr) {
     case kCheckedStoreFloat64:
       ASSEMBLE_CHECKED_STORE_FLOAT(64);
       break;
+    case kAtomicLoadInt8:
+      ASSEMBLE_ATOMIC_LOAD_INTEGER(Ldrsb);
+      break;
+    case kAtomicLoadUint8:
+      ASSEMBLE_ATOMIC_LOAD_INTEGER(Ldrb);
+      break;
+    case kAtomicLoadInt16:
+      ASSEMBLE_ATOMIC_LOAD_INTEGER(Ldrsh);
+      break;
+    case kAtomicLoadUint16:
+      ASSEMBLE_ATOMIC_LOAD_INTEGER(Ldrh);
+      break;
+    case kAtomicLoadWord32:
+      __ Ldr(i.OutputRegister32(),
+             MemOperand(i.InputRegister(0), i.InputRegister(1)));
+      __ Dmb(InnerShareable, BarrierAll);
+      break;
   }
 }  // NOLINT(readability/fn_size)
 
@@ -1503,22 +1539,40 @@ void CodeGenerator::AssembleDeoptimizerCall(
   __ Call(deopt_entry, RelocInfo::RUNTIME_ENTRY);
 }
 
-void CodeGenerator::AssembleSetupStackPointer() {
-  const CallDescriptor* descriptor = linkage()->GetIncomingDescriptor();
+void CodeGenerator::FinishFrame(Frame* frame) {
+  frame->AlignFrame(16);
+  CallDescriptor* descriptor = linkage()->GetIncomingDescriptor();
+
   if (descriptor->UseNativeStack() || descriptor->IsCFunctionCall()) {
     __ SetStackPointer(csp);
   } else {
     __ SetStackPointer(jssp);
   }
+
+  // Save FP registers.
+  CPURegList saves_fp = CPURegList(CPURegister::kFPRegister, kDRegSizeInBits,
+                                   descriptor->CalleeSavedFPRegisters());
+  int saved_count = saves_fp.Count();
+  if (saved_count != 0) {
+    DCHECK(saves_fp.list() == CPURegList::GetCalleeSavedFP().list());
+    frame->AllocateSavedCalleeRegisterSlots(saved_count *
+                                            (kDoubleSize / kPointerSize));
+  }
+
+  CPURegList saves = CPURegList(CPURegister::kRegister, kXRegSizeInBits,
+                                descriptor->CalleeSavedRegisters());
+  saved_count = saves.Count();
+  if (saved_count != 0) {
+    frame->AllocateSavedCalleeRegisterSlots(saved_count);
+  }
 }
 
-void CodeGenerator::AssemblePrologue() {
+void CodeGenerator::AssembleConstructFrame() {
   CallDescriptor* descriptor = linkage()->GetIncomingDescriptor();
   if (descriptor->UseNativeStack()) {
     __ AssertCspAligned();
   }
 
-  int stack_shrink_slots = frame()->GetSpillSlotCount();
   if (frame_access_state()->has_frame()) {
     if (descriptor->IsJSFunctionCall()) {
       DCHECK(!descriptor->UseNativeStack());
@@ -1527,13 +1581,15 @@ void CodeGenerator::AssemblePrologue() {
       if (descriptor->IsCFunctionCall()) {
         __ Push(lr, fp);
         __ Mov(fp, masm_.StackPointer());
-        __ Claim(stack_shrink_slots);
+        __ Claim(frame()->GetSpillSlotCount());
       } else {
         __ StubPrologue(info()->GetOutputStackFrameType(),
                         frame()->GetTotalFrameSlotCount());
       }
     }
   }
+
+  int shrink_slots = frame()->GetSpillSlotCount();
 
   if (info()->is_osr()) {
     // TurboFan OSR-compiled functions cannot be entered directly.
@@ -1545,11 +1601,11 @@ void CodeGenerator::AssemblePrologue() {
     // remaining stack slots.
     if (FLAG_code_comments) __ RecordComment("-- OSR entrypoint --");
     osr_pc_offset_ = __ pc_offset();
-    stack_shrink_slots -= OsrHelper(info()).UnoptimizedFrameSlots();
+    shrink_slots -= OsrHelper(info()).UnoptimizedFrameSlots();
   }
 
   if (descriptor->IsJSFunctionCall()) {
-    __ Claim(stack_shrink_slots);
+    __ Claim(shrink_slots);
   }
 
   // Save FP registers.
@@ -1559,8 +1615,6 @@ void CodeGenerator::AssemblePrologue() {
   if (saved_count != 0) {
     DCHECK(saves_fp.list() == CPURegList::GetCalleeSavedFP().list());
     __ PushCPURegList(saves_fp);
-    frame()->AllocateSavedCalleeRegisterSlots(saved_count *
-                                              (kDoubleSize / kPointerSize));
   }
   // Save registers.
   // TODO(palfia): TF save list is not in sync with
@@ -1571,7 +1625,6 @@ void CodeGenerator::AssemblePrologue() {
   saved_count = saves.Count();
   if (saved_count != 0) {
     __ PushCPURegList(saves);
-    frame()->AllocateSavedCalleeRegisterSlots(saved_count);
   }
 }
 

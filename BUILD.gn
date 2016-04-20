@@ -21,19 +21,42 @@ declare_args() {
   # Enable the snapshot feature, for fast context creation.
   # http://v8project.blogspot.com/2015/09/custom-startup-snapshots.html
   v8_use_snapshot = true
+
+  # Sets -DVERIFY_HEAP.
+  v8_enable_verify_heap = false
+
+  # Enable compiler warnings when using V8_DEPRECATED apis.
+  v8_deprecation_warnings = false
+
+  # Enable compiler warnings when using V8_DEPRECATE_SOON apis.
+  v8_imminent_deprecation_warnings = false
+
+  # Sets -dENABLE_DISASSEMBLER.
+  v8_enable_disassembler = false
+
+  # Sets -dENABLE_GDB_JIT_INTERFACE.
+  v8_enable_gdbjit = false
+
+  # Sets -dENABLE_HANDLE_ZAPPING.
+  v8_enable_handle_zapping = true
+
+  # Enable ECMAScript Internationalization API. Enabling this feature will
+  # add a dependency on the ICU library.
+  v8_enable_i18n_support = true
+
+  # Interpreted regexp engine exists as platform-independent alternative
+  # based where the regular expression is compiled to a bytecode.
+  v8_interpreted_regexp = false
+
+  # Sets -dOBJECT_PRINT.
+  v8_object_print = false
+
+  # With post mortem support enabled, metadata is embedded into libv8 that
+  # describes various parameters of the VM for use by debuggers. See
+  # tools/gen-postmortem-metadata.py for details.
+  v8_postmortem_support = false
 }
 
-# TODO(jochen): These will need to be user-settable to support standalone V8
-# builds.
-v8_deprecation_warnings = false
-v8_enable_disassembler = false
-v8_enable_gdbjit = false
-v8_enable_handle_zapping = true
-v8_enable_i18n_support = true
-v8_enable_verify_heap = false
-v8_interpreted_regexp = false
-v8_object_print = false
-v8_postmortem_support = false
 v8_random_seed = "314159265"
 v8_toolset_for_d8 = "host"
 
@@ -107,31 +130,34 @@ config("features") {
 
   defines = []
 
-  if (v8_enable_disassembler == true) {
+  if (v8_enable_disassembler) {
     defines += [ "ENABLE_DISASSEMBLER" ]
   }
-  if (v8_enable_gdbjit == true) {
+  if (v8_enable_gdbjit) {
     defines += [ "ENABLE_GDB_JIT_INTERFACE" ]
   }
-  if (v8_object_print == true) {
+  if (v8_object_print) {
     defines += [ "OBJECT_PRINT" ]
   }
-  if (v8_enable_verify_heap == true) {
+  if (v8_enable_verify_heap) {
     defines += [ "VERIFY_HEAP" ]
   }
-  if (v8_interpreted_regexp == true) {
+  if (v8_interpreted_regexp) {
     defines += [ "V8_INTERPRETED_REGEXP" ]
   }
-  if (v8_deprecation_warnings == true) {
+  if (v8_deprecation_warnings) {
     defines += [ "V8_DEPRECATION_WARNINGS" ]
   }
-  if (v8_enable_i18n_support == true) {
+  if (v8_imminent_deprecation_warnings) {
+    defines += [ "V8_IMMINENT_DEPRECATION_WARNINGS" ]
+  }
+  if (v8_enable_i18n_support) {
     defines += [ "V8_I18N_SUPPORT" ]
   }
-  if (v8_enable_handle_zapping == true) {
+  if (v8_enable_handle_zapping) {
     defines += [ "ENABLE_HANDLE_ZAPPING" ]
   }
-  if (v8_use_external_startup_data == true) {
+  if (v8_use_external_startup_data) {
     defines += [ "V8_USE_EXTERNAL_STARTUP_DATA" ]
   }
 }
@@ -220,8 +246,11 @@ config("toolchain") {
       "OBJECT_PRINT",
       "VERIFY_HEAP",
       "DEBUG",
-      "OPTIMIZED_DEBUG",
+      "TRACE_MAPS",
     ]
+    if (!v8_optimized_debug) {
+      defines += [ "ENABLE_SLOW_DCHECKS" ]
+    }
   }
 }
 
@@ -257,7 +286,6 @@ action("js2c") {
     "src/js/arraybuffer.js",
     "src/js/typedarray.js",
     "src/js/iterator-prototype.js",
-    "src/js/generator.js",
     "src/js/object-observe.js",
     "src/js/collection.js",
     "src/js/weak-collection.js",
@@ -312,7 +340,6 @@ action("js2c_experimental") {
   sources = [
     "src/js/macros.py",
     "src/messages.h",
-    "src/js/generator.js",
     "src/js/harmony-atomics.js",
     "src/js/harmony-regexp-exec.js",
     "src/js/harmony-object-observe.js",
@@ -509,9 +536,6 @@ action("run_mksnapshot") {
     "./" + rebase_path(get_label_info(":mksnapshot($snapshot_toolchain)",
                                       "root_out_dir") + "/mksnapshot",
                        root_build_dir),
-    "--log-snapshot-positions",
-    "--logfile",
-    rebase_path("$target_gen_dir/snapshot.log", root_build_dir),
     "--startup_src",
     rebase_path("$target_gen_dir/snapshot.cc", root_build_dir),
   ]
@@ -562,6 +586,10 @@ source_set("v8_nosnapshot") {
     ":features",
     ":toolchain",
   ]
+  if (!is_debug || v8_optimized_debug) {
+    configs -= [ "//build/config/compiler:default_optimization" ]
+    configs += [ "//build/config/compiler:optimize_max" ]
+  }
 }
 
 source_set("v8_snapshot") {
@@ -600,6 +628,10 @@ source_set("v8_snapshot") {
     ":features",
     ":toolchain",
   ]
+  if (!is_debug || v8_optimized_debug) {
+    configs -= [ "//build/config/compiler:default_optimization" ]
+    configs += [ "//build/config/compiler:optimize_max" ]
+  }
 }
 
 if (v8_use_external_startup_data) {
@@ -630,6 +662,10 @@ if (v8_use_external_startup_data) {
       ":features",
       ":toolchain",
     ]
+    if (!is_debug || v8_optimized_debug) {
+      configs -= [ "//build/config/compiler:default_optimization" ]
+      configs += [ "//build/config/compiler:optimize_max" ]
+    }
   }
 }
 
@@ -719,6 +755,8 @@ source_set("v8_base") {
     "src/checks.h",
     "src/code-factory.cc",
     "src/code-factory.h",
+    "src/code-stub-assembler.cc",
+    "src/code-stub-assembler.h",
     "src/code-stubs-hydrogen.cc",
     "src/code-stubs.cc",
     "src/code-stubs.h",
@@ -756,11 +794,11 @@ source_set("v8_base") {
     "src/compiler/change-lowering.h",
     "src/compiler/coalesced-live-ranges.cc",
     "src/compiler/coalesced-live-ranges.h",
+    "src/compiler/code-assembler.cc",
+    "src/compiler/code-assembler.h",
     "src/compiler/code-generator-impl.h",
     "src/compiler/code-generator.cc",
     "src/compiler/code-generator.h",
-    "src/compiler/code-stub-assembler.cc",
-    "src/compiler/code-stub-assembler.h",
     "src/compiler/common-node-cache.cc",
     "src/compiler/common-node-cache.h",
     "src/compiler/common-operator-reducer.cc",
@@ -776,6 +814,8 @@ source_set("v8_base") {
     "src/compiler/dead-code-elimination.cc",
     "src/compiler/dead-code-elimination.h",
     "src/compiler/diamond.h",
+    "src/compiler/effect-control-linearizer.cc",
+    "src/compiler/effect-control-linearizer.h",
     "src/compiler/escape-analysis-reducer.cc",
     "src/compiler/escape-analysis-reducer.h",
     "src/compiler/escape-analysis.cc",
@@ -1376,6 +1416,8 @@ source_set("v8_base") {
     "src/version.h",
     "src/vm-state-inl.h",
     "src/vm-state.h",
+    "src/wasm/switch-logic.h",
+    "src/wasm/switch-logic.cc",
     "src/wasm/asm-wasm-builder.cc",
     "src/wasm/asm-wasm-builder.h",
     "src/wasm/ast-decoder.cc",
@@ -1385,6 +1427,7 @@ source_set("v8_base") {
     "src/wasm/encoder.h",
     "src/wasm/module-decoder.cc",
     "src/wasm/module-decoder.h",
+    "src/wasm/wasm-external-refs.cc",
     "src/wasm/wasm-external-refs.h",
     "src/wasm/wasm-js.cc",
     "src/wasm/wasm-js.h",
@@ -1712,7 +1755,7 @@ source_set("v8_base") {
     ":toolchain",
   ]
 
-  if (!is_debug) {
+  if (!is_debug || v8_optimized_debug) {
     configs -= [ "//build/config/compiler:default_optimization" ]
     configs += [ "//build/config/compiler:optimize_max" ]
   }
@@ -1776,6 +1819,7 @@ source_set("v8_libbase") {
     "src/base/division-by-constant.cc",
     "src/base/division-by-constant.h",
     "src/base/flags.h",
+    "src/base/format-macros.h",
     "src/base/functional.cc",
     "src/base/functional.h",
     "src/base/iterator.h",
@@ -1814,7 +1858,7 @@ source_set("v8_libbase") {
     ":toolchain",
   ]
 
-  if (!is_debug) {
+  if (!is_debug || v8_optimized_debug) {
     configs -= [ "//build/config/compiler:default_optimization" ]
     configs += [ "//build/config/compiler:optimize_max" ]
   }
@@ -1885,7 +1929,7 @@ source_set("v8_libplatform") {
     ":toolchain",
   ]
 
-  if (!is_debug) {
+  if (!is_debug || v8_optimized_debug) {
     configs -= [ "//build/config/compiler:default_optimization" ]
     configs += [ "//build/config/compiler:optimize_max" ]
   }

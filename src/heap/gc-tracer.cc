@@ -44,6 +44,18 @@ GCTracer::Scope::~Scope() {
   }
 }
 
+const char* GCTracer::Scope::Name(ScopeId id) {
+#define CASE(scope)  \
+  case Scope::scope: \
+    return "V8.GC_" #scope;
+  switch (id) {
+    TRACER_SCOPES(CASE)
+    case Scope::NUMBER_OF_SCOPES:
+      break;
+  }
+#undef CASE
+  return "(unknown)";
+}
 
 GCTracer::Event::Event(Type type, const char* gc_reason,
                        const char* collector_reason)
@@ -152,7 +164,7 @@ void GCTracer::Start(GarbageCollector collector, const char* gc_reason,
   current_.reduce_memory = heap_->ShouldReduceMemory();
   current_.start_time = start_time;
   current_.start_object_size = heap_->SizeOfObjects();
-  current_.start_memory_size = heap_->isolate()->memory_allocator()->Size();
+  current_.start_memory_size = heap_->memory_allocator()->Size();
   current_.start_holes_size = CountTotalHolesSize(heap_);
   current_.new_space_object_size =
       heap_->new_space()->top() - heap_->new_space()->bottom();
@@ -202,7 +214,7 @@ void GCTracer::Stop(GarbageCollector collector) {
 
   current_.end_time = heap_->MonotonicallyIncreasingTimeInMs();
   current_.end_object_size = heap_->SizeOfObjects();
-  current_.end_memory_size = heap_->isolate()->memory_allocator()->Size();
+  current_.end_memory_size = heap_->memory_allocator()->Size();
   current_.end_holes_size = CountTotalHolesSize(heap_);
   current_.survived_new_space_object_size = heap_->SurvivedNewSpaceObjectSize();
 
@@ -399,7 +411,7 @@ void GCTracer::Output(const char* format, ...) const {
 
 void GCTracer::Print() const {
   if (FLAG_trace_gc) {
-    PrintIsolate(heap_->isolate(), "");
+    PrintIsolate(heap_->isolate(), "%s", "");
   }
   Output("%8.0f ms: ", heap_->isolate()->time_millis_since_init());
 
@@ -468,20 +480,20 @@ void GCTracer::PrintNVP() const {
                    "steps_count=%d "
                    "steps_took=%.1f "
                    "scavenge_throughput=%.f "
-                   "total_size_before=%" V8_PTR_PREFIX
-                   "d "
-                   "total_size_after=%" V8_PTR_PREFIX
-                   "d "
-                   "holes_size_before=%" V8_PTR_PREFIX
-                   "d "
-                   "holes_size_after=%" V8_PTR_PREFIX
-                   "d "
-                   "allocated=%" V8_PTR_PREFIX
-                   "d "
-                   "promoted=%" V8_PTR_PREFIX
-                   "d "
-                   "semi_space_copied=%" V8_PTR_PREFIX
-                   "d "
+                   "total_size_before=%" V8PRIdPTR
+                   " "
+                   "total_size_after=%" V8PRIdPTR
+                   " "
+                   "holes_size_before=%" V8PRIdPTR
+                   " "
+                   "holes_size_after=%" V8PRIdPTR
+                   " "
+                   "allocated=%" V8PRIdPTR
+                   " "
+                   "promoted=%" V8PRIdPTR
+                   " "
+                   "semi_space_copied=%" V8PRIdPTR
+                   " "
                    "nodes_died_in_new=%d "
                    "nodes_copied_in_new=%d "
                    "nodes_promoted=%d "
@@ -543,7 +555,6 @@ void GCTracer::PrintNVP() const {
           "evacuate.clean_up=%.1f "
           "evacuate.copy=%.1f "
           "evacuate.update_pointers=%.1f "
-          "evacuate.update_pointers.between_evacuated=%.1f "
           "evacuate.update_pointers.to_evacuated=%.1f "
           "evacuate.update_pointers.to_new=%.1f "
           "evacuate.update_pointers.weak=%.1f "
@@ -574,20 +585,20 @@ void GCTracer::PrintNVP() const {
           "finalization_steps_took=%.1f "
           "finalization_longest_step=%.1f "
           "incremental_marking_throughput=%.f "
-          "total_size_before=%" V8_PTR_PREFIX
-          "d "
-          "total_size_after=%" V8_PTR_PREFIX
-          "d "
-          "holes_size_before=%" V8_PTR_PREFIX
-          "d "
-          "holes_size_after=%" V8_PTR_PREFIX
-          "d "
-          "allocated=%" V8_PTR_PREFIX
-          "d "
-          "promoted=%" V8_PTR_PREFIX
-          "d "
-          "semi_space_copied=%" V8_PTR_PREFIX
-          "d "
+          "total_size_before=%" V8PRIdPTR
+          " "
+          "total_size_after=%" V8PRIdPTR
+          " "
+          "holes_size_before=%" V8PRIdPTR
+          " "
+          "holes_size_after=%" V8PRIdPTR
+          " "
+          "allocated=%" V8PRIdPTR
+          " "
+          "promoted=%" V8PRIdPTR
+          " "
+          "semi_space_copied=%" V8PRIdPTR
+          " "
           "nodes_died_in_new=%d "
           "nodes_copied_in_new=%d "
           "nodes_promoted=%d "
@@ -616,7 +627,6 @@ void GCTracer::PrintNVP() const {
           current_.scopes[Scope::MC_EVACUATE_CLEAN_UP],
           current_.scopes[Scope::MC_EVACUATE_COPY],
           current_.scopes[Scope::MC_EVACUATE_UPDATE_POINTERS],
-          current_.scopes[Scope::MC_EVACUATE_UPDATE_POINTERS_BETWEEN_EVACUATED],
           current_.scopes[Scope::MC_EVACUATE_UPDATE_POINTERS_TO_EVACUATED],
           current_.scopes[Scope::MC_EVACUATE_UPDATE_POINTERS_TO_NEW],
           current_.scopes[Scope::MC_EVACUATE_UPDATE_POINTERS_WEAK],

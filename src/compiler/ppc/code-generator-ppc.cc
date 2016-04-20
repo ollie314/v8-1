@@ -672,6 +672,24 @@ Condition FlagsConditionToCondition(FlagsCondition condition, ArchOpcode op) {
     DCHECK_EQ(LeaveRC, i.OutputRCBit());                      \
   } while (0)
 
+#define ASSEMBLE_ATOMIC_LOAD_INTEGER(asm_instr, asm_instrx)   \
+  do {                                                        \
+    Label done;                                               \
+    Register result = i.OutputRegister();                     \
+    AddressingMode mode = kMode_None;                         \
+    MemOperand operand = i.MemoryOperand(&mode);              \
+    __ sync();                                                \
+    if (mode == kMode_MRI) {                                  \
+    __ asm_instr(result, operand);                            \
+    } else {                                                  \
+    __ asm_instrx(result, operand);                           \
+    }                                                         \
+    __ bind(&done);                                           \
+    __ cmp(result, result);                                   \
+    __ bne(&done);                                            \
+    __ isync();                                               \
+  } while (0)
+
 void CodeGenerator::AssembleDeconstructFrame() {
   __ LeaveFrame(StackFrame::MANUAL);
 }
@@ -768,6 +786,14 @@ void CodeGenerator::AssembleArchInstruction(Instruction* instr) {
                 RelocInfo::CODE_TARGET);
       }
       DCHECK_EQ(LeaveRC, i.OutputRCBit());
+      frame_access_state()->ClearSPDelta();
+      break;
+    }
+    case kArchTailCallAddress: {
+      int stack_param_delta = i.InputInt32(instr->InputCount() - 1);
+      AssembleDeconstructActivationRecord(stack_param_delta);
+      CHECK(!instr->InputAt(0)->IsImmediate());
+      __ Jump(i.InputRegister(0));
       frame_access_state()->ClearSPDelta();
       break;
     }
@@ -1577,6 +1603,23 @@ void CodeGenerator::AssembleArchInstruction(Instruction* instr) {
     case kCheckedStoreFloat64:
       ASSEMBLE_CHECKED_STORE_DOUBLE();
       break;
+
+    case kAtomicLoadInt8:
+      ASSEMBLE_ATOMIC_LOAD_INTEGER(lbz, lbzx);
+      __ extsb(i.OutputRegister(), i.OutputRegister());
+      break;
+    case kAtomicLoadUint8:
+      ASSEMBLE_ATOMIC_LOAD_INTEGER(lbz, lbzx);
+      break;
+    case kAtomicLoadInt16:
+      ASSEMBLE_ATOMIC_LOAD_INTEGER(lha, lhax);
+      break;
+    case kAtomicLoadUint16:
+      ASSEMBLE_ATOMIC_LOAD_INTEGER(lhz, lhzx);
+      break;
+    case kAtomicLoadWord32:
+      ASSEMBLE_ATOMIC_LOAD_INTEGER(lwa, lwax);
+      break;
     default:
       UNREACHABLE();
       break;
@@ -1848,10 +1891,26 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
           destination->IsRegister() ? g.ToRegister(destination) : kScratchReg;
       switch (src.type()) {
         case Constant::kInt32:
-          __ mov(dst, Operand(src.ToInt32()));
+#if !V8_TARGET_ARCH_PPC64
+          if (src.rmode() == RelocInfo::WASM_MEMORY_REFERENCE) {
+            __ mov(dst, Operand(src.ToInt32(), src.rmode()));
+          } else {
+#endif
+            __ mov(dst, Operand(src.ToInt32()));
+#if !V8_TARGET_ARCH_PPC64
+          }
+#endif
           break;
         case Constant::kInt64:
-          __ mov(dst, Operand(src.ToInt64()));
+#if V8_TARGET_ARCH_PPC64
+          if (src.rmode() == RelocInfo::WASM_MEMORY_REFERENCE) {
+            __ mov(dst, Operand(src.ToInt64(), src.rmode()));
+          } else {
+#endif
+            __ mov(dst, Operand(src.ToInt64()));
+#if V8_TARGET_ARCH_PPC64
+          }
+#endif
           break;
         case Constant::kFloat32:
           __ Move(dst,

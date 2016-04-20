@@ -2630,9 +2630,8 @@ TEST(Run_Wasm_F64Max) {
   }
 }
 
-// TODO(ahaas): Fix on arm and mips and reenable.
-#if !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_MIPS && \
-    !V8_TARGET_ARCH_MIPS64
+// TODO(ahaas): Fix on mips and reenable.
+#if !V8_TARGET_ARCH_MIPS && !V8_TARGET_ARCH_MIPS64
 
 TEST(Run_Wasm_F32Min_Snan) {
   // Test that the instruction does not return a signalling NaN.
@@ -2772,7 +2771,7 @@ TEST(Run_Wasm_F32CopySign) {
   BUILD(r, WASM_F32_COPYSIGN(WASM_GET_LOCAL(0), WASM_GET_LOCAL(1)));
 
   FOR_FLOAT32_INPUTS(i) {
-    FOR_FLOAT32_INPUTS(j) { CHECK_FLOAT_EQ(copysign(*i, *j), r.Call(*i, *j)); }
+    FOR_FLOAT32_INPUTS(j) { CHECK_FLOAT_EQ(copysignf(*i, *j), r.Call(*i, *j)); }
   }
 }
 
@@ -2818,3 +2817,15 @@ TEST(Compile_Wasm_CallIndirect_Many_f32) { CompileCallIndirectMany(kAstF32); }
 
 
 TEST(Compile_Wasm_CallIndirect_Many_f64) { CompileCallIndirectMany(kAstF64); }
+
+TEST(Run_WASM_Int32RemS_dead) {
+  WasmRunner<int32_t> r(MachineType::Int32(), MachineType::Int32());
+  BUILD(r, WASM_I32_REMS(WASM_GET_LOCAL(0), WASM_GET_LOCAL(1)), WASM_ZERO);
+  const int32_t kMin = std::numeric_limits<int32_t>::min();
+  CHECK_EQ(0, r.Call(133, 100));
+  CHECK_EQ(0, r.Call(kMin, -1));
+  CHECK_EQ(0, r.Call(0, 1));
+  CHECK_TRAP(r.Call(100, 0));
+  CHECK_TRAP(r.Call(-1001, 0));
+  CHECK_TRAP(r.Call(kMin, 0));
+}

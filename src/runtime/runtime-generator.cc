@@ -14,22 +14,18 @@ namespace internal {
 
 RUNTIME_FUNCTION(Runtime_CreateJSGeneratorObject) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 0);
-
-  JavaScriptFrameIterator it(isolate);
-  JavaScriptFrame* frame = it.frame();
-  Handle<JSFunction> function(frame->function());
+  DCHECK(args.length() == 2);
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Object, receiver, 1);
   RUNTIME_ASSERT(function->shared()->is_generator());
 
-  Handle<JSGeneratorObject> generator;
-  DCHECK(!frame->IsConstructor());
-  generator = isolate->factory()->NewJSGeneratorObject(function);
+  Handle<JSGeneratorObject> generator =
+      isolate->factory()->NewJSGeneratorObject(function);
   generator->set_function(*function);
-  generator->set_context(Context::cast(frame->context()));
-  generator->set_receiver(frame->receiver());
-  generator->set_continuation(0);
+  generator->set_context(isolate->context());
+  generator->set_receiver(*receiver);
   generator->set_operand_stack(isolate->heap()->empty_fixed_array());
-
+  generator->set_continuation(JSGeneratorObject::kGeneratorExecuting);
   return *generator;
 }
 
@@ -43,6 +39,8 @@ RUNTIME_FUNCTION(Runtime_SuspendJSGeneratorObject) {
   JavaScriptFrame* frame = stack_iterator.frame();
   RUNTIME_ASSERT(frame->function()->shared()->is_generator());
   DCHECK_EQ(frame->function(), generator_object->function());
+  DCHECK(frame->function()->shared()->is_compiled());
+  DCHECK(!frame->function()->IsOptimized());
 
   // The caller should have saved the context and continuation already.
   DCHECK_EQ(generator_object->context(), Context::cast(frame->context()));
@@ -68,62 +66,6 @@ RUNTIME_FUNCTION(Runtime_SuspendJSGeneratorObject) {
   }
 
   return isolate->heap()->undefined_value();
-}
-
-
-// Note that this function is the slow path for resuming generators.  It is only
-// called if the suspended activation had operands on the stack, stack handlers
-// needing rewinding, or if the resume should throw an exception.  The fast path
-// is handled directly in FullCodeGenerator::EmitGeneratorResume(), which is
-// inlined into GeneratorNext, GeneratorReturn, and GeneratorThrow.
-// EmitGeneratorResume is called in any case, as it needs to reconstruct the
-// stack frame and make space for arguments and operands.
-RUNTIME_FUNCTION(Runtime_ResumeJSGeneratorObject) {
-  SealHandleScope shs(isolate);
-  DCHECK(args.length() == 3);
-  CONVERT_ARG_CHECKED(JSGeneratorObject, generator_object, 0);
-  CONVERT_ARG_CHECKED(Object, value, 1);
-  CONVERT_SMI_ARG_CHECKED(resume_mode_int, 2);
-  JavaScriptFrameIterator stack_iterator(isolate);
-  JavaScriptFrame* frame = stack_iterator.frame();
-
-  DCHECK_EQ(frame->function(), generator_object->function());
-  DCHECK(frame->function()->is_compiled());
-
-  STATIC_ASSERT(JSGeneratorObject::kGeneratorExecuting < 0);
-  STATIC_ASSERT(JSGeneratorObject::kGeneratorClosed == 0);
-
-  Address pc = generator_object->function()->code()->instruction_start();
-  int offset = generator_object->continuation();
-  DCHECK(offset > 0);
-  frame->set_pc(pc + offset);
-  if (FLAG_enable_embedded_constant_pool) {
-    frame->set_constant_pool(
-        generator_object->function()->code()->constant_pool());
-  }
-  generator_object->set_continuation(JSGeneratorObject::kGeneratorExecuting);
-
-  FixedArray* operand_stack = generator_object->operand_stack();
-  int operands_count = operand_stack->length();
-  if (operands_count != 0) {
-    frame->RestoreOperandStack(operand_stack);
-    generator_object->set_operand_stack(isolate->heap()->empty_fixed_array());
-  }
-
-  JSGeneratorObject::ResumeMode resume_mode =
-      static_cast<JSGeneratorObject::ResumeMode>(resume_mode_int);
-  switch (resume_mode) {
-    // Note: this looks like NEXT and RETURN are the same but RETURN receives
-    // special treatment in the generator code (to which we return here).
-    case JSGeneratorObject::NEXT:
-    case JSGeneratorObject::RETURN:
-      return value;
-    case JSGeneratorObject::THROW:
-      return isolate->Throw(value);
-  }
-
-  UNREACHABLE();
-  return isolate->ThrowIllegalOperation();
 }
 
 
@@ -168,6 +110,16 @@ RUNTIME_FUNCTION(Runtime_GeneratorGetInput) {
 }
 
 
+// Returns resume mode of generator activation.
+RUNTIME_FUNCTION(Runtime_GeneratorGetResumeMode) {
+  HandleScope scope(isolate);
+  DCHECK(args.length() == 1);
+  CONVERT_ARG_HANDLE_CHECKED(JSGeneratorObject, generator, 0);
+
+  return Smi::FromInt(generator->resume_mode());
+}
+
+
 // Returns generator continuation as a PC offset, or the magic -1 or 0 values.
 RUNTIME_FUNCTION(Runtime_GeneratorGetContinuation) {
   HandleScope scope(isolate);
@@ -193,22 +145,59 @@ RUNTIME_FUNCTION(Runtime_GeneratorGetSourcePosition) {
   return isolate->heap()->undefined_value();
 }
 
-// Optimization for builtins calling any of the following three functions is
-// disabled in js/generator.js and compiler.cc, hence they are unreachable.
 
-RUNTIME_FUNCTION(Runtime_GeneratorNext) {
-  UNREACHABLE();
-  return nullptr;
+RUNTIME_FUNCTION(Runtime_SuspendIgnitionGenerator) {
+  HandleScope scope(isolate);
+  DCHECK(args.length() == 2);
+  CONVERT_ARG_HANDLE_CHECKED(JSGeneratorObject, generator, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Smi, state, 1);
+
+  JavaScriptFrameIterator it(isolate);
+  JavaScriptFrame* frame = it.frame();
+  Handle<JSFunction> function(frame->function());
+  CHECK(function->shared()->is_generator());
+  CHECK_EQ(frame->type(), StackFrame::INTERPRETED);
+
+  // Save register file.
+  int size = function->shared()->bytecode_array()->register_count();
+  Handle<FixedArray> register_file = isolate->factory()->NewFixedArray(size);
+  for (int i = 0; i < size; ++i) {
+    Object* value =
+        static_cast<InterpretedFrame*>(frame)->ReadInterpreterRegister(i);
+    register_file->set(i, value);
+  }
+
+  generator->set_operand_stack(*register_file);
+  generator->set_context(Context::cast(frame->context()));
+  generator->set_continuation(state->value());
+
+  return isolate->heap()->undefined_value();
 }
 
-RUNTIME_FUNCTION(Runtime_GeneratorReturn) {
-  UNREACHABLE();
-  return nullptr;
-}
 
-RUNTIME_FUNCTION(Runtime_GeneratorThrow) {
-  UNREACHABLE();
-  return nullptr;
+RUNTIME_FUNCTION(Runtime_ResumeIgnitionGenerator) {
+  HandleScope scope(isolate);
+  DCHECK(args.length() == 1);
+  CONVERT_ARG_HANDLE_CHECKED(JSGeneratorObject, generator, 0);
+
+  JavaScriptFrameIterator it(isolate);
+  JavaScriptFrame* frame = it.frame();
+  Handle<JSFunction> function(frame->function());
+  CHECK(function->shared()->is_generator());
+  CHECK_EQ(frame->type(), StackFrame::INTERPRETED);
+
+  // Restore register file.
+  int size = function->shared()->bytecode_array()->register_count();
+  DCHECK_EQ(size, generator->operand_stack()->length());
+  for (int i = 0; i < size; ++i) {
+    Object* value = generator->operand_stack()->get(i);
+    static_cast<InterpretedFrame*>(frame)->WriteInterpreterRegister(i, value);
+  }
+  generator->set_operand_stack(isolate->heap()->empty_fixed_array());
+
+  int state = generator->continuation();
+  generator->set_continuation(JSGeneratorObject::kGeneratorExecuting);
+  return Smi::FromInt(state);
 }
 
 }  // namespace internal

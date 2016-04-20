@@ -55,9 +55,8 @@ const Register InstanceOfDescriptor::RightRegister() { return r0; }
 const Register StringCompareDescriptor::LeftRegister() { return r1; }
 const Register StringCompareDescriptor::RightRegister() { return r0; }
 
-
-const Register ApiGetterDescriptor::function_address() { return r2; }
-
+const Register ApiGetterDescriptor::HolderRegister() { return r0; }
+const Register ApiGetterDescriptor::CallbackRegister() { return r3; }
 
 const Register MathPowTaggedDescriptor::exponent() { return r2; }
 
@@ -248,7 +247,7 @@ void AllocateHeapNumberDescriptor::InitializePlatformSpecific(
 SIMD128_TYPES(SIMD128_ALLOC_DESC)
 #undef SIMD128_ALLOC_DESC
 
-void AllocateInNewSpaceDescriptor::InitializePlatformSpecific(
+void AllocateDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {r0};
   data->InitializePlatformSpecific(arraysize(registers), registers);
@@ -398,9 +397,8 @@ void ApiCallbackDescriptorBase::InitializePlatformSpecific(
 void InterpreterDispatchDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {
-      kInterpreterAccumulatorRegister, kInterpreterRegisterFileRegister,
-      kInterpreterBytecodeOffsetRegister, kInterpreterBytecodeArrayRegister,
-      kInterpreterDispatchTableRegister};
+      kInterpreterAccumulatorRegister, kInterpreterBytecodeOffsetRegister,
+      kInterpreterBytecodeArrayRegister, kInterpreterDispatchTableRegister};
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
@@ -431,6 +429,16 @@ void InterpreterCEntryDescriptor::InitializePlatformSpecific(
       r0,  // argument count (argc)
       r2,  // address of first argument (argv)
       r1   // the runtime function to call
+  };
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
+void ResumeGeneratorDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  Register registers[] = {
+      r0,  // the value to pass to the generator
+      r1,  // the JSGeneratorObject to resume
+      r2   // the resume mode (tagged)
   };
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }

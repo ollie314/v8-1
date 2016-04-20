@@ -398,6 +398,7 @@ class RelocInfo {
     DEBUG_BREAK_SLOT_AT_POSITION,
     DEBUG_BREAK_SLOT_AT_RETURN,
     DEBUG_BREAK_SLOT_AT_CALL,
+    DEBUG_BREAK_SLOT_AT_TAIL_CALL,
 
     EXTERNAL_REFERENCE,  // The address of an external C++ function.
     INTERNAL_REFERENCE,  // An address inside the same function.
@@ -491,7 +492,7 @@ class RelocInfo {
   }
   static inline bool IsDebugBreakSlot(Mode mode) {
     return IsDebugBreakSlotAtPosition(mode) || IsDebugBreakSlotAtReturn(mode) ||
-           IsDebugBreakSlotAtCall(mode);
+           IsDebugBreakSlotAtCall(mode) || IsDebugBreakSlotAtTailCall(mode);
   }
   static inline bool IsDebugBreakSlotAtPosition(Mode mode) {
     return mode == DEBUG_BREAK_SLOT_AT_POSITION;
@@ -501,6 +502,9 @@ class RelocInfo {
   }
   static inline bool IsDebugBreakSlotAtCall(Mode mode) {
     return mode == DEBUG_BREAK_SLOT_AT_CALL;
+  }
+  static inline bool IsDebugBreakSlotAtTailCall(Mode mode) {
+    return mode == DEBUG_BREAK_SLOT_AT_TAIL_CALL;
   }
   static inline bool IsDebuggerStatement(Mode mode) {
     return mode == DEBUGGER_STATEMENT;
@@ -627,6 +631,8 @@ class RelocInfo {
   INLINE(void WipeOut());
 
   template<typename StaticVisitor> inline void Visit(Heap* heap);
+
+  template <typename ObjectVisitor>
   inline void Visit(Isolate* isolate, ObjectVisitor* v);
 
   // Check whether this debug break slot has been patched with a call to the
@@ -905,6 +911,7 @@ class ExternalReference BASE_EMBEDDED {
   // ExternalReferenceTable in serialize.cc manually.
 
   static ExternalReference interpreter_dispatch_table_address(Isolate* isolate);
+  static ExternalReference interpreter_dispatch_counters(Isolate* isolate);
 
   static ExternalReference incremental_marking_record_write_function(
       Isolate* isolate);

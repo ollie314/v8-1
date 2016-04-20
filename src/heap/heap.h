@@ -162,8 +162,6 @@ using v8::MemoryPressureLevel;
   V(HeapNumber, minus_infinity_value, MinusInfinityValue)                      \
   V(JSObject, message_listeners, MessageListeners)                             \
   V(UnseededNumberDictionary, code_stubs, CodeStubs)                           \
-  V(UnseededNumberDictionary, non_monomorphic_cache, NonMonomorphicCache)      \
-  V(PolymorphicCodeCache, polymorphic_code_cache, PolymorphicCodeCache)        \
   V(Code, js_entry_code, JsEntryCode)                                          \
   V(Code, js_construct_entry_code, JsConstructEntryCode)                       \
   V(FixedArray, natives_source_cache, NativesSourceCache)                      \
@@ -551,6 +549,7 @@ class Heap {
 
   STATIC_ASSERT(kUndefinedValueRootIndex ==
                 Internals::kUndefinedValueRootIndex);
+  STATIC_ASSERT(kTheHoleValueRootIndex == Internals::kTheHoleValueRootIndex);
   STATIC_ASSERT(kNullValueRootIndex == Internals::kNullValueRootIndex);
   STATIC_ASSERT(kTrueValueRootIndex == Internals::kTrueValueRootIndex);
   STATIC_ASSERT(kFalseValueRootIndex == Internals::kFalseValueRootIndex);
@@ -567,7 +566,7 @@ class Heap {
   static inline bool IsOneByte(T t, int chars);
 
   static void FatalProcessOutOfMemory(const char* location,
-                                      bool take_snapshot = false);
+                                      bool is_heap_oom = false);
 
   static bool RootIsImmortalImmovable(int root_index);
 
@@ -625,11 +624,9 @@ class Heap {
     return old_space_->allocation_limit_address();
   }
 
-  // TODO(hpayer): There is still a missmatch between capacity and actual
-  // committed memory size.
-  bool CanExpandOldGeneration(int size = 0) {
+  bool CanExpandOldGeneration(int size) {
     if (force_oom_) return false;
-    return (CommittedOldGenerationMemory() + size) < MaxOldGenerationSize();
+    return (OldGenerationCapacity() + size) < MaxOldGenerationSize();
   }
 
   // Clear the Instanceof cache (used when a prototype changes).
@@ -728,6 +725,14 @@ class Heap {
 
   // Returns false if not able to reserve.
   bool ReserveSpace(Reservation* reservations);
+
+  void SetEmbedderHeapTracer(EmbedderHeapTracer* tracer);
+
+  bool UsingEmbedderHeapTracer();
+
+  void TracePossibleWrapper(JSObject* js_object);
+
+  void RegisterExternallyReferencedObject(Object** object);
 
   //
   // Support for the API.
@@ -915,20 +920,12 @@ class Heap {
   const char* GetSpaceName(int idx);
 
   // ===========================================================================
-  // API. ======================================================================
-  // ===========================================================================
-
-  void SetEmbedderHeapTracer(EmbedderHeapTracer* tracer);
-
-  void RegisterExternallyReferencedObject(Object** object);
-
-  // ===========================================================================
   // Getters to other components. ==============================================
   // ===========================================================================
 
   GCTracer* tracer() { return tracer_; }
 
-  EmbedderHeapTracer* embedder_heap_tracer() { return embedder_heap_tracer_; }
+  MemoryAllocator* memory_allocator() { return memory_allocator_; }
 
   PromotionQueue* promotion_queue() { return &promotion_queue_; }
 
@@ -978,11 +975,6 @@ class Heap {
     roots_[kCodeStubsRootIndex] = value;
   }
 
-  // Sets the non_monomorphic_cache_ (only used when expanding the dictionary).
-  void SetRootNonMonomorphicCache(UnseededNumberDictionary* value) {
-    roots_[kNonMonomorphicCacheRootIndex] = value;
-  }
-
   void SetRootMaterializedObjects(FixedArray* objects) {
     roots_[kMaterializedObjectsRootIndex] = objects;
   }
@@ -1003,6 +995,10 @@ class Heap {
   // code that looks here, because it is faster than loading from the static
   // jslimit_/real_jslimit_ variable in the StackGuard.
   void SetStackLimits();
+
+  // The stack limit is thread-dependent. To be able to reproduce the same
+  // snapshot blob, we need to reset it before serializing.
+  void ClearStackLimits();
 
   // Generated code can treat direct references to this root as constant.
   bool RootCanBeTreatedAsConstant(RootListIndex root_index);
@@ -1084,6 +1080,8 @@ class Heap {
 
   // Write barrier support for object[offset] = o;
   inline void RecordWrite(Object* object, int offset, Object* o);
+  inline void RecordFixedArrayElements(FixedArray* array, int offset,
+                                       int length);
 
   Address* store_buffer_top_address() { return store_buffer()->top_address(); }
 
@@ -1174,16 +1172,11 @@ class Heap {
   // GC statistics. ============================================================
   // ===========================================================================
 
-  // Returns the maximum amount of memory reserved for the heap.  For
-  // the young generation, we reserve 4 times the amount needed for a
-  // semi space.  The young generation consists of two semi spaces and
-  // we reserve twice the amount needed for those in order to ensure
-  // that new space can be aligned to its size.
+  // Returns the maximum amount of memory reserved for the heap.
   intptr_t MaxReserved() {
-    return 4 * reserved_semispace_size_ + max_old_generation_size_;
+    return 2 * max_semi_space_size_ + max_old_generation_size_;
   }
   int MaxSemiSpaceSize() { return max_semi_space_size_; }
-  int ReservedSemiSpaceSize() { return reserved_semispace_size_; }
   int InitialSemiSpaceSize() { return initial_semispace_size_; }
   intptr_t MaxOldGenerationSize() { return max_old_generation_size_; }
   intptr_t MaxExecutableSize() { return max_executable_size_; }
@@ -1191,6 +1184,9 @@ class Heap {
   // Returns the capacity of the heap in bytes w/o growing. Heap grows when
   // more spaces are needed until it reaches the limit.
   intptr_t Capacity();
+
+  // Returns the capacity of the old generation.
+  intptr_t OldGenerationCapacity();
 
   // Returns the amount of memory currently committed for the heap.
   intptr_t CommittedMemory();
@@ -1261,13 +1257,8 @@ class Heap {
     return static_cast<intptr_t>(total);
   }
 
-  void UpdateNewSpaceAllocationCounter() {
-    new_space_allocation_counter_ = NewSpaceAllocationCounter();
-  }
-
-  size_t NewSpaceAllocationCounter() {
-    return new_space_allocation_counter_ + new_space()->AllocatedSinceLastGC();
-  }
+  inline void UpdateNewSpaceAllocationCounter();
+  inline size_t NewSpaceAllocationCounter();
 
   // This should be used only for testing.
   void set_new_space_allocation_counter(size_t new_value) {
@@ -1995,10 +1986,8 @@ class Heap {
   Object* roots_[kRootListLength];
 
   size_t code_range_size_;
-  int reserved_semispace_size_;
   int max_semi_space_size_;
   int initial_semispace_size_;
-  int target_semispace_size_;
   intptr_t max_old_generation_size_;
   intptr_t initial_old_generation_size_;
   bool old_generation_size_configured_;
@@ -2106,7 +2095,6 @@ class Heap {
   int deferred_counters_[v8::Isolate::kUseCounterFeatureCount];
 
   GCTracer* tracer_;
-  EmbedderHeapTracer* embedder_heap_tracer_;
 
   int high_survival_rate_period_length_;
   intptr_t promoted_objects_size_;
@@ -2152,6 +2140,8 @@ class Heap {
   Scavenger* scavenge_collector_;
 
   MarkCompactCollector* mark_compact_collector_;
+
+  MemoryAllocator* memory_allocator_;
 
   StoreBuffer store_buffer_;
 
@@ -2256,6 +2246,7 @@ class Heap {
   friend class Page;
   friend class Scavenger;
   friend class StoreBuffer;
+  friend class TestMemoryAllocatorScope;
 
   // The allocator interface.
   friend class Factory;

@@ -125,12 +125,12 @@ class ParseInfo {
   // TODO(titzer): these should not be part of ParseInfo.
   //--------------------------------------------------------------------------
   Isolate* isolate() { return isolate_; }
-  Handle<JSFunction> closure() { return closure_; }
   Handle<SharedFunctionInfo> shared_info() { return shared_; }
   Handle<Script> script() { return script_; }
   Handle<Context> context() { return context_; }
   void clear_script() { script_ = Handle<Script>::null(); }
   void set_isolate(Isolate* isolate) { isolate_ = isolate; }
+  void set_shared_info(Handle<SharedFunctionInfo> shared) { shared_ = shared; }
   void set_context(Handle<Context> context) { context_ = context; }
   void set_script(Handle<Script> script) { script_ = script; }
   //--------------------------------------------------------------------------
@@ -144,7 +144,6 @@ class ParseInfo {
   }
 
   void ReopenHandlesInNewHandleScope() {
-    closure_ = Handle<JSFunction>(*closure_);
     shared_ = Handle<SharedFunctionInfo>(*shared_);
     script_ = Handle<Script>(*script_);
     context_ = Handle<Context>(*context_);
@@ -185,7 +184,6 @@ class ParseInfo {
 
   // TODO(titzer): Move handles and isolate out of ParseInfo.
   Isolate* isolate_;
-  Handle<JSFunction> closure_;
   Handle<SharedFunctionInfo> shared_;
   Handle<Script> script_;
   Handle<Context> context_;
@@ -201,9 +199,6 @@ class ParseInfo {
   void SetFlag(Flag f) { flags_ |= f; }
   void SetFlag(Flag f, bool v) { flags_ = v ? flags_ | f : flags_ & ~f; }
   bool GetFlag(Flag f) const { return (flags_ & f) != 0; }
-
-  void set_shared_info(Handle<SharedFunctionInfo> shared) { shared_ = shared; }
-  void set_closure(Handle<JSFunction> closure) { closure_ = closure; }
 };
 
 class FunctionEntry BASE_EMBEDDED {

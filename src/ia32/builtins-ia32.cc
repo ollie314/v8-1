@@ -186,16 +186,9 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
     __ j(greater_equal, &loop);
 
     // Call the function.
-    if (is_api_function) {
-      __ mov(esi, FieldOperand(edi, JSFunction::kContextOffset));
-      Handle<Code> code =
-          masm->isolate()->builtins()->HandleApiCallConstruct();
-      __ call(code, RelocInfo::CODE_TARGET);
-    } else {
-      ParameterCount actual(eax);
-      __ InvokeFunction(edi, edx, actual, CALL_FUNCTION,
-                        CheckDebugStepCallWrapper());
-    }
+    ParameterCount actual(eax);
+    __ InvokeFunction(edi, edx, actual, CALL_FUNCTION,
+                      CheckDebugStepCallWrapper());
 
     // Store offset of return address for deoptimizer.
     if (create_implicit_receiver && !is_api_function) {
@@ -554,10 +547,9 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   __ push(edi);  // Callee's JS function.
   __ push(edx);  // Callee's new target.
 
-  // Get the bytecode array from the function object and load the pointer to the
-  // first entry into edi (InterpreterBytecodeRegister).
+  // Get the bytecode array from the function object (or from the DebugInfo if
+  // it is present) and load it into kInterpreterBytecodeArrayRegister.
   __ mov(eax, FieldOperand(edi, JSFunction::kSharedFunctionInfoOffset));
-
   Label load_debug_bytecode_array, bytecode_array_loaded;
   __ cmp(FieldOperand(eax, SharedFunctionInfo::kDebugInfoOffset),
          Immediate(DebugInfo::uninitialized()));
@@ -566,8 +558,12 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
          FieldOperand(eax, SharedFunctionInfo::kFunctionDataOffset));
   __ bind(&bytecode_array_loaded);
 
+  // Check function data field is actually a BytecodeArray object.
+  Label bytecode_array_not_present;
+  __ CompareRoot(kInterpreterBytecodeArrayRegister,
+                 Heap::kUndefinedValueRootIndex);
+  __ j(equal, &bytecode_array_not_present);
   if (FLAG_debug_code) {
-    // Check function data field is actually a BytecodeArray object.
     __ AssertNotSmi(kInterpreterBytecodeArrayRegister);
     __ CmpObjectType(kInterpreterBytecodeArrayRegister, BYTECODE_ARRAY_TYPE,
                      eax);
@@ -576,8 +572,8 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
 
   // Push bytecode array.
   __ push(kInterpreterBytecodeArrayRegister);
-  // Push zero for bytecode array offset.
-  __ push(Immediate(0));
+  // Push Smi tagged initial bytecode array offset.
+  __ push(Immediate(Smi::FromInt(BytecodeArray::kHeaderSize - kHeapObjectTag)));
 
   // Allocate the local and temporary register file on the stack.
   {
@@ -610,11 +606,8 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
     __ j(greater_equal, &loop_header);
   }
 
-  // Load accumulator, register file, bytecode offset, dispatch table into
-  // registers.
+  // Load accumulator, bytecode offset and dispatch table into registers.
   __ LoadRoot(kInterpreterAccumulatorRegister, Heap::kUndefinedValueRootIndex);
-  __ mov(edx, ebp);
-  __ add(edx, Immediate(InterpreterFrameConstants::kRegisterFileFromFp));
   __ mov(kInterpreterBytecodeOffsetRegister,
          Immediate(BytecodeArray::kHeaderSize - kHeapObjectTag));
   __ mov(kInterpreterDispatchTableRegister,
@@ -638,6 +631,21 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   __ mov(kInterpreterBytecodeArrayRegister,
          FieldOperand(debug_info, DebugInfo::kAbstractCodeIndex));
   __ jmp(&bytecode_array_loaded);
+
+  // If the bytecode array is no longer present, then the underlying function
+  // has been switched to a different kind of code and we heal the closure by
+  // switching the code entry field over to the new code object as well.
+  __ bind(&bytecode_array_not_present);
+  __ pop(edx);  // Callee's new target.
+  __ pop(edi);  // Callee's JS function.
+  __ pop(esi);  // Callee's context.
+  __ leave();   // Leave the frame so we can tail call.
+  __ mov(ecx, FieldOperand(edi, JSFunction::kSharedFunctionInfoOffset));
+  __ mov(ecx, FieldOperand(ecx, SharedFunctionInfo::kCodeOffset));
+  __ lea(ecx, FieldOperand(ecx, Code::kHeaderSize));
+  __ mov(FieldOperand(edi, JSFunction::kCodeEntryOffset), ecx);
+  __ RecordWriteCodeEntryField(edi, ecx, ebx);
+  __ jmp(ecx);
 }
 
 
@@ -979,6 +987,9 @@ void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
   GenerateTailCallToReturnedCode(masm, Runtime::kCompileLazy);
 }
 
+void Builtins::Generate_CompileBaseline(MacroAssembler* masm) {
+  GenerateTailCallToReturnedCode(masm, Runtime::kCompileBaseline);
+}
 
 void Builtins::Generate_CompileOptimized(MacroAssembler* masm) {
   GenerateTailCallToReturnedCode(masm,
@@ -1199,29 +1210,6 @@ void Builtins::Generate_DatePrototype_GetField(MacroAssembler* masm,
     __ EnterFrame(StackFrame::INTERNAL);
     __ CallRuntime(Runtime::kThrowNotDateError);
   }
-}
-
-// static
-void Builtins::Generate_FunctionHasInstance(MacroAssembler* masm) {
-  // ----------- S t a t e -------------
-  //  -- eax    : argc
-  //  -- esp[0] : return address
-  //  -- esp[4] : first argument (left-hand side)
-  //  -- esp[8] : receiver (right-hand side)
-  // -----------------------------------
-
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-    __ mov(InstanceOfDescriptor::LeftRegister(),
-           Operand(ebp, 2 * kPointerSize));  // Load left-hand side.
-    __ mov(InstanceOfDescriptor::RightRegister(),
-           Operand(ebp, 3 * kPointerSize));  // Load right-hand side.
-    InstanceOfStub stub(masm->isolate(), true);
-    __ CallStub(&stub);
-  }
-
-  // Pop the argument and the receiver.
-  __ ret(2 * kPointerSize);
 }
 
 // static
@@ -2604,6 +2592,34 @@ void Builtins::Generate_Construct(MacroAssembler* masm) {
           RelocInfo::CODE_TARGET);
 }
 
+// static
+void Builtins::Generate_AllocateInNewSpace(MacroAssembler* masm) {
+  // ----------- S t a t e -------------
+  //  -- edx    : requested object size (untagged)
+  //  -- esp[0] : return address
+  // -----------------------------------
+  __ SmiTag(edx);
+  __ PopReturnAddressTo(ecx);
+  __ Push(edx);
+  __ PushReturnAddressFrom(ecx);
+  __ Move(esi, Smi::FromInt(0));
+  __ TailCallRuntime(Runtime::kAllocateInNewSpace);
+}
+
+// static
+void Builtins::Generate_AllocateInOldSpace(MacroAssembler* masm) {
+  // ----------- S t a t e -------------
+  //  -- edx    : requested object size (untagged)
+  //  -- esp[0] : return address
+  // -----------------------------------
+  __ SmiTag(edx);
+  __ PopReturnAddressTo(ecx);
+  __ Push(edx);
+  __ Push(Smi::FromInt(AllocateTargetSpace::encode(OLD_SPACE)));
+  __ PushReturnAddressFrom(ecx);
+  __ Move(esi, Smi::FromInt(0));
+  __ TailCallRuntime(Runtime::kAllocateInTargetSpace);
+}
 
 void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
   // ----------- S t a t e -------------

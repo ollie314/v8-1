@@ -1898,7 +1898,7 @@ void Debug::CallEventCallback(v8::DebugEvent event,
                               exec_state,
                               event_data,
                               event_listener_data_ };
-    Handle<JSReceiver> global(isolate_->global_proxy());
+    Handle<JSReceiver> global = isolate_->global_proxy();
     Execution::TryCall(isolate_, Handle<JSFunction>::cast(event_listener_),
                        global, arraysize(argv), argv);
   }
@@ -2159,7 +2159,7 @@ void Debug::EnqueueCommandMessage(Vector<const uint16_t> command,
       client_data);
   isolate_->logger()->DebugTag("Put command on command_queue.");
   command_queue_.Put(message);
-  command_received_.Signal();
+  command_received_.Signal("Debug::EnqueueCommandMessage");
 
   // Set the debug command break flag to have the command processed.
   if (!in_debug_scope()) isolate_->stack_guard()->RequestDebugCommand();
@@ -2258,8 +2258,10 @@ void Debug::PrintBreakLocation() {
     Handle<Script> script = Handle<Script>::cast(script_obj);
     Handle<String> source(String::cast(script->source()));
     Script::InitLineEnds(script);
-    int line = Script::GetLineNumber(script, source_position);
-    int column = Script::GetColumnNumber(script, source_position);
+    int line =
+        Script::GetLineNumber(script, source_position) - script->line_offset();
+    int column = Script::GetColumnNumber(script, source_position) -
+                 (line == 0 ? script->column_offset() : 0);
     Handle<FixedArray> line_ends(FixedArray::cast(script->line_ends()));
     int line_start =
         line == 0 ? 0 : Smi::cast(line_ends->get(line - 1))->value() + 1;

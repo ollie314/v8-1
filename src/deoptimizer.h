@@ -410,16 +410,20 @@ class Deoptimizer : public Malloced {
   static const char* GetDeoptReason(DeoptReason deopt_reason);
 
   struct DeoptInfo {
-    DeoptInfo(SourcePosition position, const char* m, DeoptReason d)
-        : position(position), mnemonic(m), deopt_reason(d), inlining_id(0) {}
+    DeoptInfo(SourcePosition position, DeoptReason deopt_reason, int deopt_id)
+        : position(position), deopt_reason(deopt_reason), deopt_id(deopt_id) {}
 
     SourcePosition position;
-    const char* mnemonic;
     DeoptReason deopt_reason;
-    int inlining_id;
+    int deopt_id;
+
+    static const int kNoDeoptId = -1;
   };
 
   static DeoptInfo GetDeoptInfo(Code* code, byte* from);
+
+  static int ComputeSourcePosition(SharedFunctionInfo* shared,
+                                   BailoutId node_id);
 
   struct JumpTableEntry : public ZoneObject {
     inline JumpTableEntry(Address entry, const DeoptInfo& deopt_info,

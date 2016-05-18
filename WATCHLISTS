@@ -62,7 +62,10 @@
     },
     'merges': {
       'filepath': '.',
-    }
+    },
+    'gypfiles': {
+      'filepath': 'gypfiles/',
+    },
   },
 
   'WATCHLISTS': {
@@ -96,6 +99,9 @@
     'merges': [
       # Only enabled on branches created with tools/release/create_release.py
       # 'v8-merges@googlegroups.com',
+    ],
+    'gypfiles': [
+      'machenbach@chromium.org',
     ],
   },
 }

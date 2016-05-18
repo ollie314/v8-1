@@ -13,7 +13,7 @@
 #include "include/v8.h"
 #include "src/allocation.h"
 #include "src/assert-scope.h"
-#include "src/atomic-utils.h"
+#include "src/base/atomic-utils.h"
 #include "src/globals.h"
 #include "src/heap-symbols.h"
 // TODO(mstarzinger): Two more includes to kill!
@@ -78,6 +78,7 @@ using v8::MemoryPressureLevel;
   V(Oddball, exception, Exception)                                             \
   V(Oddball, termination_exception, TerminationException)                      \
   V(Oddball, optimized_out, OptimizedOut)                                      \
+  V(Oddball, stale_register, StaleRegister)                                    \
   V(FixedArray, number_string_cache, NumberStringCache)                        \
   V(Object, instanceof_cache_function, InstanceofCacheFunction)                \
   V(Object, instanceof_cache_map, InstanceofCacheMap)                          \
@@ -152,6 +153,7 @@ using v8::MemoryPressureLevel;
   V(Map, exception_map, ExceptionMap)                                          \
   V(Map, termination_exception_map, TerminationExceptionMap)                   \
   V(Map, optimized_out_map, OptimizedOutMap)                                   \
+  V(Map, stale_register_map, StaleRegisterMap)                                 \
   V(Map, message_object_map, JSMessageObjectMap)                               \
   V(Map, foreign_map, ForeignMap)                                              \
   V(Map, neander_map, NeanderMap)                                              \
@@ -174,7 +176,6 @@ using v8::MemoryPressureLevel;
   V(NameDictionary, intrinsic_function_names, IntrinsicFunctionNames)          \
   V(NameDictionary, empty_properties_dictionary, EmptyPropertiesDictionary)    \
   V(Cell, undefined_cell, UndefinedCell)                                       \
-  V(JSObject, observation_state, ObservationState)                             \
   V(Object, symbol_registry, SymbolRegistry)                                   \
   V(Object, script_list, ScriptList)                                           \
   V(SeededNumberDictionary, empty_slow_element_dictionary,                     \
@@ -187,12 +188,14 @@ using v8::MemoryPressureLevel;
   V(ArrayList, retained_maps, RetainedMaps)                                    \
   V(WeakHashTable, weak_object_to_code_table, WeakObjectToCodeTable)           \
   V(PropertyCell, array_protector, ArrayProtector)                             \
+  V(Cell, is_concat_spreadable_protector, IsConcatSpreadableProtector)         \
   V(PropertyCell, empty_property_cell, EmptyPropertyCell)                      \
   V(Object, weak_stack_trace_list, WeakStackTraceList)                         \
   V(Object, noscript_shared_function_infos, NoScriptSharedFunctionInfos)       \
   V(Map, bytecode_array_map, BytecodeArrayMap)                                 \
   V(WeakCell, empty_weak_cell, EmptyWeakCell)                                  \
-  V(PropertyCell, species_protector, SpeciesProtector)
+  V(PropertyCell, has_instance_protector, HasInstanceProtector)                \
+  V(Cell, species_protector, SpeciesProtector)
 
 // Entries in this list are limited to Smis and are not visited during GC.
 #define SMI_ROOT_LIST(V)                                                   \
@@ -323,7 +326,7 @@ class PromotionQueue {
   }
 
   Page* GetHeadPage() {
-    return Page::FromAllocationTop(reinterpret_cast<Address>(rear_));
+    return Page::FromAllocationAreaAddress(reinterpret_cast<Address>(rear_));
   }
 
   void SetNewLimit(Address limit) {
@@ -331,7 +334,7 @@ class PromotionQueue {
     if (emergency_stack_) return;
 
     // If the limit is not on the same page, we can ignore it.
-    if (Page::FromAllocationTop(limit) != GetHeadPage()) return;
+    if (Page::FromAllocationAreaAddress(limit) != GetHeadPage()) return;
 
     limit_ = reinterpret_cast<struct Entry*>(limit);
 
@@ -778,11 +781,6 @@ class Heap {
   void IncrementDeferredCount(v8::Isolate::UseCounterFeature feature);
 
   inline bool OldGenerationAllocationLimitReached();
-
-  void QueueMemoryChunkForFree(MemoryChunk* chunk);
-  void FreeQueuedChunks(MemoryChunk* list_head);
-  void FreeQueuedChunks();
-  void WaitUntilUnmappingOfFreeChunksCompleted();
 
   // Completely clear the Instanceof cache (to stop it keeping objects alive
   // around a GC).
@@ -1257,8 +1255,13 @@ class Heap {
     return static_cast<intptr_t>(total);
   }
 
-  inline void UpdateNewSpaceAllocationCounter();
-  inline size_t NewSpaceAllocationCounter();
+  void UpdateNewSpaceAllocationCounter() {
+    new_space_allocation_counter_ = NewSpaceAllocationCounter();
+  }
+
+  size_t NewSpaceAllocationCounter() {
+    return new_space_allocation_counter_ + new_space()->AllocatedSinceLastGC();
+  }
 
   // This should be used only for testing.
   void set_new_space_allocation_counter(size_t new_value) {
@@ -1391,7 +1394,6 @@ class Heap {
 
  private:
   class PretenuringScope;
-  class UnmapFreeMemoryTask;
 
   // External strings table is a place where all external strings are
   // registered.  We need to keep track of such strings to properly
@@ -2003,11 +2005,11 @@ class Heap {
 
   // This is not the depth of nested AlwaysAllocateScope's but rather a single
   // count, as scopes can be acquired from multiple tasks (read: threads).
-  AtomicNumber<size_t> always_allocate_scope_count_;
+  base::AtomicNumber<size_t> always_allocate_scope_count_;
 
   // Stores the memory pressure level that set by MemoryPressureNotification
   // and reset by a mark-compact garbage collection.
-  AtomicValue<MemoryPressureLevel> memory_pressure_level_;
+  base::AtomicValue<MemoryPressureLevel> memory_pressure_level_;
 
   // For keeping track of context disposals.
   int contexts_disposed_;
@@ -2208,12 +2210,6 @@ class Heap {
   GCCallbackFlags current_gc_callback_flags_;
 
   ExternalStringTable external_string_table_;
-
-  MemoryChunk* chunks_queued_for_free_;
-
-  size_t concurrent_unmapping_tasks_active_;
-
-  base::Semaphore pending_unmapping_tasks_semaphore_;
 
   base::Mutex relocation_mutex_;
 

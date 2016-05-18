@@ -22,6 +22,7 @@
 #include "src/heap/heap-inl.h"
 #include "src/heap/heap.h"
 #include "src/isolate.h"
+#include "src/isolate-inl.h"
 #include "src/layout-descriptor-inl.h"
 #include "src/lookup.h"
 #include "src/objects.h"
@@ -1909,6 +1910,13 @@ InterceptorInfo* Map::GetIndexedInterceptor() {
       constructor->shared()->get_api_func_data()->indexed_property_handler());
 }
 
+double Oddball::to_number_raw() const {
+  return READ_DOUBLE_FIELD(this, kToNumberRawOffset);
+}
+
+void Oddball::set_to_number_raw(double value) {
+  WRITE_DOUBLE_FIELD(this, kToNumberRawOffset, value);
+}
 
 ACCESSORS(Oddball, to_string, String, kToStringOffset)
 ACCESSORS(Oddball, to_number, Object, kToNumberOffset)
@@ -2253,7 +2261,6 @@ void Struct::InitializeBody(int object_size) {
     WRITE_FIELD(this, offset, value);
   }
 }
-
 
 bool Object::ToArrayLength(uint32_t* index) { return Object::ToUint32(index); }
 
@@ -3899,7 +3906,6 @@ void StringCharacterStream::VisitTwoByteString(
 
 int ByteArray::Size() { return RoundUp(length() + kHeaderSize, kPointerSize); }
 
-
 byte ByteArray::get(int index) {
   DCHECK(index >= 0 && index < this->length());
   return READ_BYTE_FIELD(this, kHeaderSize + index * kCharSize);
@@ -3911,12 +3917,29 @@ void ByteArray::set(int index, byte value) {
   WRITE_BYTE_FIELD(this, kHeaderSize + index * kCharSize, value);
 }
 
+void ByteArray::copy_in(int index, const byte* buffer, int length) {
+  DCHECK(index >= 0 && length >= 0 && index + length >= index &&
+         index + length <= this->length());
+  byte* dst_addr = FIELD_ADDR(this, kHeaderSize + index * kCharSize);
+  memcpy(dst_addr, buffer, length);
+}
+
+void ByteArray::copy_out(int index, byte* buffer, int length) {
+  DCHECK(index >= 0 && length >= 0 && index + length >= index &&
+         index + length <= this->length());
+  const byte* src_addr = FIELD_ADDR(this, kHeaderSize + index * kCharSize);
+  memcpy(buffer, src_addr, length);
+}
 
 int ByteArray::get_int(int index) {
-  DCHECK(index >= 0 && (index * kIntSize) < this->length());
+  DCHECK(index >= 0 && index < this->length() / kIntSize);
   return READ_INT_FIELD(this, kHeaderSize + index * kIntSize);
 }
 
+void ByteArray::set_int(int index, int value) {
+  DCHECK(index >= 0 && index < this->length() / kIntSize);
+  WRITE_INT_FIELD(this, kHeaderSize + index * kIntSize, value);
+}
 
 ByteArray* ByteArray::FromDataStartAddress(Address address) {
   DCHECK_TAG_ALIGNED(address);
@@ -4442,11 +4465,6 @@ void Map::set_is_undetectable() {
 bool Map::is_undetectable() {
   return ((1 << kIsUndetectable) & bit_field()) != 0;
 }
-
-
-void Map::set_is_observed() { set_bit_field(bit_field() | (1 << kIsObserved)); }
-
-bool Map::is_observed() { return ((1 << kIsObserved) & bit_field()) != 0; }
 
 
 void Map::set_has_named_interceptor() {
@@ -5768,6 +5786,7 @@ BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, dont_crankshaft,
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, dont_flush, kDontFlush)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_arrow, kIsArrow)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_generator, kIsGenerator)
+BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_async, kIsAsyncFunction)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_concise_method,
                kIsConciseMethod)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_getter_function,
@@ -5776,6 +5795,10 @@ BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_setter_function,
                kIsSetterFunction)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_default_constructor,
                kIsDefaultConstructor)
+
+inline bool SharedFunctionInfo::is_resumable() const {
+  return is_generator() || is_async();
+}
 
 bool Script::HasValidSource() {
   Object* src = this->source();
@@ -5859,6 +5882,7 @@ bool SharedFunctionInfo::is_compiled() {
   Builtins* builtins = GetIsolate()->builtins();
   DCHECK(code() != builtins->builtin(Builtins::kCompileOptimizedConcurrent));
   DCHECK(code() != builtins->builtin(Builtins::kCompileOptimized));
+  DCHECK(code() != builtins->builtin(Builtins::kCompileBaseline));
   return code() != builtins->builtin(Builtins::kCompileLazy);
 }
 
@@ -5905,7 +5929,6 @@ void SharedFunctionInfo::set_api_func_data(FunctionTemplateInfo* data) {
 bool SharedFunctionInfo::HasBytecodeArray() {
   return function_data()->IsBytecodeArray();
 }
-
 
 BytecodeArray* SharedFunctionInfo::bytecode_array() {
   DCHECK(HasBytecodeArray());
@@ -6054,6 +6077,10 @@ bool JSFunction::IsOptimized() {
   return code()->kind() == Code::OPTIMIZED_FUNCTION;
 }
 
+bool JSFunction::IsMarkedForBaseline() {
+  return code() ==
+         GetIsolate()->builtins()->builtin(Builtins::kCompileBaseline);
+}
 
 bool JSFunction::IsMarkedForOptimization() {
   return code() == GetIsolate()->builtins()->builtin(
@@ -6219,6 +6246,7 @@ Object* JSFunction::prototype() {
 bool JSFunction::is_compiled() {
   Builtins* builtins = GetIsolate()->builtins();
   return code() != builtins->builtin(Builtins::kCompileLazy) &&
+         code() != builtins->builtin(Builtins::kCompileBaseline) &&
          code() != builtins->builtin(Builtins::kCompileOptimized) &&
          code() != builtins->builtin(Builtins::kCompileOptimizedConcurrent);
 }
@@ -7034,6 +7062,17 @@ MaybeHandle<Object> Object::GetPropertyOrElement(Handle<Object> object,
   return GetProperty(&it);
 }
 
+MaybeHandle<Object> Object::SetPropertyOrElement(Handle<Object> object,
+                                                 Handle<Name> name,
+                                                 Handle<Object> value,
+                                                 LanguageMode language_mode,
+                                                 StoreFromKeyed store_mode) {
+  LookupIterator it =
+      LookupIterator::PropertyOrElement(name->GetIsolate(), object, name);
+  MAYBE_RETURN_NULL(SetProperty(&it, value, language_mode, store_mode));
+  return value;
+}
+
 MaybeHandle<Object> Object::GetPropertyOrElement(Handle<Object> receiver,
                                                  Handle<Name> name,
                                                  Handle<JSReceiver> holder) {
@@ -7079,7 +7118,7 @@ Maybe<bool> JSReceiver::HasOwnProperty(Handle<JSReceiver> object,
                                        Handle<Name> name) {
   if (object->IsJSObject()) {  // Shortcut
     LookupIterator it = LookupIterator::PropertyOrElement(
-        object->GetIsolate(), object, name, object, LookupIterator::HIDDEN);
+        object->GetIsolate(), object, name, object, LookupIterator::OWN);
     return HasProperty(&it);
   }
 
@@ -7101,7 +7140,7 @@ Maybe<PropertyAttributes> JSReceiver::GetPropertyAttributes(
 Maybe<PropertyAttributes> JSReceiver::GetOwnPropertyAttributes(
     Handle<JSReceiver> object, Handle<Name> name) {
   LookupIterator it = LookupIterator::PropertyOrElement(
-      name->GetIsolate(), object, name, object, LookupIterator::HIDDEN);
+      name->GetIsolate(), object, name, object, LookupIterator::OWN);
   return GetPropertyAttributes(&it);
 }
 
@@ -7123,7 +7162,7 @@ Maybe<PropertyAttributes> JSReceiver::GetElementAttributes(
 Maybe<PropertyAttributes> JSReceiver::GetOwnElementAttributes(
     Handle<JSReceiver> object, uint32_t index) {
   Isolate* isolate = object->GetIsolate();
-  LookupIterator it(isolate, object, index, object, LookupIterator::HIDDEN);
+  LookupIterator it(isolate, object, index, object, LookupIterator::OWN);
   return GetPropertyAttributes(&it);
 }
 
@@ -7184,6 +7223,11 @@ void AccessorInfo::set_is_special_data_property(bool value) {
   set_flag(BooleanBit::set(flag(), kSpecialDataProperty, value));
 }
 
+bool AccessorInfo::is_sloppy() { return BooleanBit::get(flag(), kIsSloppy); }
+
+void AccessorInfo::set_is_sloppy(bool value) {
+  set_flag(BooleanBit::set(flag(), kIsSloppy, value));
+}
 
 PropertyAttributes AccessorInfo::property_attributes() {
   return AttributesField::decode(static_cast<uint32_t>(flag()));
@@ -7539,6 +7583,11 @@ void JSArray::SetContent(Handle<JSArray> array,
             Handle<FixedArray>::cast(storage)->ContainsOnlySmisOrHoles()))));
   array->set_elements(*storage);
   array->set_length(Smi::FromInt(storage->length()));
+}
+
+
+bool JSArray::HasArrayPrototype(Isolate* isolate) {
+  return map()->prototype() == *isolate->initial_array_prototype();
 }
 
 

@@ -30,14 +30,14 @@
     'v8_code': 1,
     'generated_file': '<(SHARED_INTERMEDIATE_DIR)/resources.cc',
   },
-  'includes': ['../../build/toolchain.gypi', '../../build/features.gypi'],
+  'includes': ['../../gypfiles/toolchain.gypi', '../../gypfiles/features.gypi'],
   'targets': [
     {
       'target_name': 'cctest',
       'type': 'executable',
       'dependencies': [
         'resources',
-        '../../tools/gyp/v8.gyp:v8_libplatform',
+        '../../src/v8.gyp:v8_libplatform',
       ],
       'include_dirs': [
         '../..',
@@ -51,7 +51,6 @@
         'compiler/graph-builder-tester.h',
         'compiler/test-basic-block-profiler.cc',
         'compiler/test-branch-combine.cc',
-        'compiler/test-changes-lowering.cc',
         'compiler/test-code-stub-assembler.cc',
         'compiler/test-gap-resolver.cc',
         'compiler/test-graph-visualizer.cc',
@@ -156,9 +155,7 @@
         'test-liveedit.cc',
         'test-lockers.cc',
         'test-log.cc',
-        'test-microtask-delivery.cc',
         'test-mementos.cc',
-        'test-object-observe.cc',
         'test-parsing.cc',
         'test-platform.cc',
         'test-profile-generator.cc',
@@ -179,7 +176,6 @@
         'test-transitions.cc',
         'test-typedarrays.cc',
         'test-types.cc',
-        'test-typing-reset.cc',
         'test-unbound-queue.cc',
         'test-unboxed-doubles.cc',
         'test-unique.cc',
@@ -191,10 +187,13 @@
         'trace-extension.cc',
         'wasm/test-run-wasm.cc',
         'wasm/test-run-wasm-64.cc',
+        'wasm/test-run-wasm-asmjs.cc',
         'wasm/test-run-wasm-js.cc',
         'wasm/test-run-wasm-module.cc',
         'wasm/test-signatures.h',
+        'wasm/test-wasm-function-name-table.cc',
         'wasm/test-wasm-stack.cc',
+        'wasm/test-wasm-trap-position.cc',
         'wasm/wasm-run-utils.h',
       ],
       'conditions': [
@@ -347,9 +346,9 @@
         ['component=="shared_library"', {
           # cctest can't be built against a shared library, so we need to
           # depend on the underlying static target in that case.
-          'dependencies': ['../../tools/gyp/v8.gyp:v8_maybe_snapshot'],
+          'dependencies': ['../../src/v8.gyp:v8_maybe_snapshot'],
         }, {
-          'dependencies': ['../../tools/gyp/v8.gyp:v8'],
+          'dependencies': ['../../src/v8.gyp:v8'],
         }],
       ],
     },
@@ -392,14 +391,14 @@
       'target_name': 'generate-bytecode-expectations',
       'type': 'executable',
       'dependencies': [
-        '../../tools/gyp/v8.gyp:v8_libplatform',
+        '../../src/v8.gyp:v8_libplatform',
       ],
       'conditions': [
         ['component=="shared_library"', {
           # Same as cctest, we need to depend on the underlying static target.
-          'dependencies': ['../../tools/gyp/v8.gyp:v8_maybe_snapshot'],
+          'dependencies': ['../../src/v8.gyp:v8_maybe_snapshot'],
         }, {
-          'dependencies': ['../../tools/gyp/v8.gyp:v8'],
+          'dependencies': ['../../src/v8.gyp:v8'],
         }],
       ],
       'include_dirs+': [
@@ -422,7 +421,7 @@
             'cctest',
           ],
           'includes': [
-            '../../build/isolate.gypi',
+            '../../gypfiles/isolate.gypi',
           ],
           'sources': [
             'cctest_exe.isolate',
@@ -435,7 +434,7 @@
             'cctest_exe_run',
           ],
           'includes': [
-            '../../build/isolate.gypi',
+            '../../gypfiles/isolate.gypi',
           ],
           'sources': [
             'cctest.isolate',

@@ -19,6 +19,7 @@ const Register kReturnRegister1 = {Register::kCode_r4};
 const Register kReturnRegister2 = {Register::kCode_r5};
 const Register kJSFunctionRegister = {Register::kCode_r4};
 const Register kContextRegister = {Register::kCode_r30};
+const Register kAllocateSizeRegister = {Register::kCode_r4};
 const Register kInterpreterAccumulatorRegister = {Register::kCode_r3};
 const Register kInterpreterBytecodeOffsetRegister = {Register::kCode_r15};
 const Register kInterpreterBytecodeArrayRegister = {Register::kCode_r16};
@@ -72,10 +73,8 @@ bool AreAliased(Register reg1, Register reg2, Register reg3 = no_reg,
 
 // These exist to provide portability between 32 and 64bit
 #if V8_TARGET_ARCH_PPC64
-#define LoadPU ldu
 #define LoadPX ldx
 #define LoadPUX ldux
-#define StorePU stdu
 #define StorePX stdx
 #define StorePUX stdux
 #define ShiftLeftImm sldi
@@ -89,10 +88,8 @@ bool AreAliased(Register reg1, Register reg2, Register reg3 = no_reg,
 #define Mul mulld
 #define Div divd
 #else
-#define LoadPU lwzu
 #define LoadPX lwzx
 #define LoadPUX lwzux
-#define StorePU stwu
 #define StorePX stwx
 #define StorePUX stwux
 #define ShiftLeftImm slwi
@@ -514,8 +511,25 @@ class MacroAssembler : public Assembler {
   void StoreRepresentation(Register src, const MemOperand& mem,
                            Representation r, Register scratch = no_reg);
 
-  void LoadDouble(DoubleRegister dst, const MemOperand& mem, Register scratch);
-  void StoreDouble(DoubleRegister src, const MemOperand& mem, Register scratch);
+  void LoadDouble(DoubleRegister dst, const MemOperand& mem,
+                  Register scratch = no_reg);
+  void LoadDoubleU(DoubleRegister dst, const MemOperand& mem,
+                  Register scratch = no_reg);
+
+  void LoadSingle(DoubleRegister dst, const MemOperand& mem,
+                  Register scratch = no_reg);
+  void LoadSingleU(DoubleRegister dst, const MemOperand& mem,
+                   Register scratch = no_reg);
+
+  void StoreDouble(DoubleRegister src, const MemOperand& mem,
+                   Register scratch = no_reg);
+  void StoreDoubleU(DoubleRegister src, const MemOperand& mem,
+                   Register scratch = no_reg);
+
+  void StoreSingle(DoubleRegister src, const MemOperand& mem,
+                   Register scratch = no_reg);
+  void StoreSingleU(DoubleRegister src, const MemOperand& mem,
+                    Register scratch = no_reg);
 
   // Move values between integer and floating point registers.
   void MovIntToDouble(DoubleRegister dst, Register src, Register scratch);
@@ -572,7 +586,9 @@ class MacroAssembler : public Assembler {
 
   // These exist to provide portability between 32 and 64bit
   void LoadP(Register dst, const MemOperand& mem, Register scratch = no_reg);
+  void LoadPU(Register dst, const MemOperand& mem, Register scratch = no_reg);
   void StoreP(Register src, const MemOperand& mem, Register scratch = no_reg);
+  void StorePU(Register src, const MemOperand& mem, Register scratch = no_reg);
 
   // ---------------------------------------------------------------------------
   // JavaScript invokes
@@ -695,6 +711,15 @@ class MacroAssembler : public Assembler {
   void Allocate(Register object_size, Register result, Register result_end,
                 Register scratch, Label* gc_required, AllocationFlags flags);
 
+  // FastAllocate is right now only used for folded allocations. It just
+  // increments the top pointer without checking against limit. This can only
+  // be done if it was proved earlier that the allocation will succeed.
+  void FastAllocate(int object_size, Register result, Register scratch1,
+                    Register scratch2, AllocationFlags flags);
+
+  void FastAllocate(Register object_size, Register result, Register result_end,
+                    Register scratch, AllocationFlags flags);
+
   void AllocateTwoByteString(Register result, Register length,
                              Register scratch1, Register scratch2,
                              Register scratch3, Label* gc_required);
@@ -719,7 +744,6 @@ class MacroAssembler : public Assembler {
   // when control continues at the gc_required label.
   void AllocateHeapNumber(Register result, Register scratch1, Register scratch2,
                           Register heap_number_map, Label* gc_required,
-                          TaggingMode tagging_mode = TAG_RESULT,
                           MutableMode mode = IMMUTABLE);
   void AllocateHeapNumberWithValue(Register result, DoubleRegister value,
                                    Register scratch1, Register scratch2,

@@ -14,6 +14,15 @@ namespace compiler {
 #define CACHED(name, expr) \
   cached_nodes_[name] ? cached_nodes_[name] : (cached_nodes_[name] = (expr))
 
+Node* JSGraph::AllocateInNewSpaceStubConstant() {
+  return CACHED(kAllocateInNewSpaceStubConstant,
+                HeapConstant(isolate()->builtins()->AllocateInNewSpace()));
+}
+
+Node* JSGraph::AllocateInOldSpaceStubConstant() {
+  return CACHED(kAllocateInOldSpaceStubConstant,
+                HeapConstant(isolate()->builtins()->AllocateInOldSpace()));
+}
 
 Node* JSGraph::CEntryStubConstant(int result_size) {
   if (result_size == 1) {
@@ -37,6 +46,11 @@ Node* JSGraph::HeapNumberMapConstant() {
 Node* JSGraph::OptimizedOutConstant() {
   return CACHED(kOptimizedOutConstant,
                 HeapConstant(factory()->optimized_out()));
+}
+
+Node* JSGraph::StaleRegisterConstant() {
+  return CACHED(kStaleRegisterConstant,
+                HeapConstant(factory()->stale_register()));
 }
 
 Node* JSGraph::UndefinedConstant() {
@@ -81,9 +95,6 @@ Node* JSGraph::NaNConstant() {
 
 
 Node* JSGraph::HeapConstant(Handle<HeapObject> value) {
-  if (value->IsConsString()) {
-    value = String::Flatten(Handle<String>::cast(value), TENURED);
-  }
   Node** loc = cache_.FindHeapConstant(value);
   if (*loc == nullptr) {
     *loc = graph()->NewNode(common()->HeapConstant(value));

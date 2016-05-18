@@ -156,12 +156,14 @@ Handle<Code> CodeGenerator::GenerateCode() {
         }
       }
 
+      CodeGenResult result;
       if (FLAG_enable_embedded_constant_pool && !block->needs_frame()) {
         ConstantPoolUnavailableScope constant_pool_unavailable(masm());
-        AssembleBlock(block);
+        result = AssembleBlock(block);
       } else {
-        AssembleBlock(block);
+        result = AssembleBlock(block);
       }
+      if (result != kSuccess) return Handle<Code>();
     }
   }
 
@@ -304,15 +306,18 @@ bool CodeGenerator::IsMaterializableFromRoot(
   return false;
 }
 
-void CodeGenerator::AssembleBlock(const InstructionBlock* block) {
+CodeGenerator::CodeGenResult CodeGenerator::AssembleBlock(
+    const InstructionBlock* block) {
   for (int i = block->code_start(); i < block->code_end(); ++i) {
     Instruction* instr = code()->InstructionAt(i);
-    AssembleInstruction(instr, block);
+    CodeGenResult result = AssembleInstruction(instr, block);
+    if (result != kSuccess) return result;
   }
+  return kSuccess;
 }
 
-void CodeGenerator::AssembleInstruction(Instruction* instr,
-                                        const InstructionBlock* block) {
+CodeGenerator::CodeGenResult CodeGenerator::AssembleInstruction(
+    Instruction* instr, const InstructionBlock* block) {
   AssembleGaps(instr);
   DCHECK_IMPLIES(
       block->must_deconstruct_frame(),
@@ -323,7 +328,8 @@ void CodeGenerator::AssembleInstruction(Instruction* instr,
   }
   AssembleSourcePosition(instr);
   // Assemble architecture-specific code for the instruction.
-  AssembleArchInstruction(instr);
+  CodeGenResult result = AssembleArchInstruction(instr);
+  if (result != kSuccess) return result;
 
   FlagsMode mode = FlagsModeField::decode(instr->opcode());
   FlagsCondition condition = FlagsConditionField::decode(instr->opcode());
@@ -339,7 +345,7 @@ void CodeGenerator::AssembleInstruction(Instruction* instr,
         if (!IsNextInAssemblyOrder(true_rpo)) {
           AssembleArchJump(true_rpo);
         }
-        return;
+        return kSuccess;
       }
       if (IsNextInAssemblyOrder(true_rpo)) {
         // true block is next, can fall through if condition negated.
@@ -381,6 +387,7 @@ void CodeGenerator::AssembleInstruction(Instruction* instr,
       break;
     }
   }
+  return kSuccess;
 }
 
 
@@ -500,10 +507,6 @@ void CodeGenerator::RecordCallPosition(Instruction* instr) {
     handlers_.push_back({caught, GetLabel(handler_rpo), masm()->pc_offset()});
   }
 
-  if (flags & CallDescriptor::kNeedsNopAfterCall) {
-    AddNopForSmiCodeInlining();
-  }
-
   if (needs_frame_state) {
     MarkLazyDeoptSite();
     // If the frame state is present, it starts at argument 1 (just after the
@@ -530,7 +533,7 @@ void CodeGenerator::RecordCallPosition(Instruction* instr) {
     // by calls.)
     for (size_t i = 0; i < descriptor->GetSize(); i++) {
       InstructionOperand* op = instr->InputAt(frame_state_offset + 1 + i);
-      CHECK(op->IsStackSlot() || op->IsDoubleStackSlot() || op->IsImmediate());
+      CHECK(op->IsStackSlot() || op->IsFPStackSlot() || op->IsImmediate());
     }
 #endif
     safepoints()->RecordLazyDeoptimizationIndex(deopt_state_id);
@@ -712,7 +715,7 @@ void CodeGenerator::AddTranslationForOperand(Translation* translation,
     } else {
       CHECK(false);
     }
-  } else if (op->IsDoubleStackSlot()) {
+  } else if (op->IsFPStackSlot()) {
     DCHECK(IsFloatingPoint(type.representation()));
     translation->StoreDoubleStackSlot(LocationOperand::cast(op)->index());
   } else if (op->IsRegister()) {
@@ -730,7 +733,7 @@ void CodeGenerator::AddTranslationForOperand(Translation* translation,
     } else {
       CHECK(false);
     }
-  } else if (op->IsDoubleRegister()) {
+  } else if (op->IsFPRegister()) {
     DCHECK(IsFloatingPoint(type.representation()));
     InstructionOperandConverter converter(this, instr);
     translation->StoreDoubleRegister(converter.ToDoubleRegister(op));

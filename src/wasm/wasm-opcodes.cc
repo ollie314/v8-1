@@ -25,6 +25,18 @@ const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
   return "Unknown";
 }
 
+const char* WasmOpcodes::ShortOpcodeName(WasmOpcode opcode) {
+  switch (opcode) {
+#define DECLARE_NAME_CASE(name, opcode, sig) \
+  case kExpr##name:                          \
+    return #name;
+    FOREACH_OPCODE(DECLARE_NAME_CASE)
+#undef DECLARE_NAME_CASE
+    default:
+      break;
+  }
+  return "Unknown";
+}
 
 std::ostream& operator<<(std::ostream& os, const FunctionSig& sig) {
   if (sig.return_count() == 0) os << "v";
@@ -39,12 +51,9 @@ std::ostream& operator<<(std::ostream& os, const FunctionSig& sig) {
   return os;
 }
 
-
 #define DECLARE_SIG_ENUM(name, ...) kSigEnum_##name,
 
-
 enum WasmOpcodeSig { FOREACH_SIGNATURE(DECLARE_SIG_ENUM) };
-
 
 // TODO(titzer): not static-initializer safe. Wrap in LazyInstance.
 #define DECLARE_SIG(name, ...)                      \
@@ -61,7 +70,6 @@ static const FunctionSig* kSimpleExprSigs[] = {
 
 static byte kSimpleExprSigTable[256];
 
-
 // Initialize the signature table.
 static void InitSigTable() {
 #define SET_SIG_TABLE(name, opcode, sig) \
@@ -71,14 +79,23 @@ static void InitSigTable() {
 #undef SET_SIG_TABLE
 }
 
+class SigTable {
+ public:
+  SigTable() {
+    // TODO(ahaas): Move {InitSigTable} into the class.
+    InitSigTable();
+  }
+  FunctionSig* Signature(WasmOpcode opcode) const {
+    return const_cast<FunctionSig*>(
+        kSimpleExprSigs[kSimpleExprSigTable[static_cast<byte>(opcode)]]);
+  }
+};
+
+static base::LazyInstance<SigTable>::type sig_table = LAZY_INSTANCE_INITIALIZER;
 
 FunctionSig* WasmOpcodes::Signature(WasmOpcode opcode) {
-  // TODO(titzer): use LazyInstance to make this thread safe.
-  if (kSimpleExprSigTable[kExprI32Add] == 0) InitSigTable();
-  return const_cast<FunctionSig*>(
-      kSimpleExprSigs[kSimpleExprSigTable[static_cast<byte>(opcode)]]);
+  return sig_table.Get().Signature(opcode);
 }
-
 
 // TODO(titzer): pull WASM_64 up to a common header.
 #if !V8_TARGET_ARCH_32_BIT || V8_TARGET_ARCH_X64
@@ -86,66 +103,6 @@ FunctionSig* WasmOpcodes::Signature(WasmOpcode opcode) {
 #else
 #define WASM_64 0
 #endif
-
-
-bool WasmOpcodes::IsSupported(WasmOpcode opcode) {
-#if !WASM_64
-  switch (opcode) {
-    // Opcodes not supported on 32-bit platforms.
-    case kExprI64Add:
-    case kExprI64Sub:
-    case kExprI64Mul:
-    case kExprI64DivS:
-    case kExprI64DivU:
-    case kExprI64RemS:
-    case kExprI64RemU:
-    case kExprI64And:
-    case kExprI64Ior:
-    case kExprI64Xor:
-    case kExprI64Shl:
-    case kExprI64ShrU:
-    case kExprI64ShrS:
-    case kExprI64Ror:
-    case kExprI64Rol:
-    case kExprI64Eq:
-    case kExprI64Ne:
-    case kExprI64LtS:
-    case kExprI64LeS:
-    case kExprI64LtU:
-    case kExprI64LeU:
-    case kExprI64GtS:
-    case kExprI64GeS:
-    case kExprI64GtU:
-    case kExprI64GeU:
-
-    case kExprI32ConvertI64:
-    case kExprI64SConvertI32:
-    case kExprI64UConvertI32:
-
-    case kExprF64ReinterpretI64:
-    case kExprI64ReinterpretF64:
-
-    case kExprI64Clz:
-    case kExprI64Ctz:
-    case kExprI64Popcnt:
-
-    case kExprF32SConvertI64:
-    case kExprF32UConvertI64:
-    case kExprF64SConvertI64:
-    case kExprF64UConvertI64:
-    case kExprI64SConvertF32:
-    case kExprI64SConvertF64:
-    case kExprI64UConvertF32:
-    case kExprI64UConvertF64:
-
-      return false;
-    default:
-      return true;
-  }
-#else
-  return true;
-#endif
-}
 
 int WasmOpcodes::TrapReasonToMessageId(TrapReason reason) {
   switch (reason) {

@@ -50,6 +50,13 @@ class InterpreterAssembler : public CodeStubAssembler {
   compiler::Node* GetContext();
   void SetContext(compiler::Node* value);
 
+  // Number of registers.
+  compiler::Node* RegisterCount();
+
+  // Backup/restore register file to/from a fixed array of the correct length.
+  compiler::Node* ExportRegisterFile(compiler::Node* array);
+  compiler::Node* ImportRegisterFile(compiler::Node* array);
+
   // Loads from and stores to the interpreter register file.
   compiler::Node* LoadRegister(Register reg);
   compiler::Node* LoadRegister(compiler::Node* reg_index);
@@ -66,9 +73,6 @@ class InterpreterAssembler : public CodeStubAssembler {
 
   // Load constant at |index| in the constant pool.
   compiler::Node* LoadConstantPoolEntry(compiler::Node* index);
-
-  // Load a field from an object on the heap.
-  compiler::Node* LoadObjectField(compiler::Node* object, int offset);
 
   // Load |slot_index| from |context|.
   compiler::Node* LoadContextSlot(compiler::Node* context, int slot_index);
@@ -108,12 +112,7 @@ class InterpreterAssembler : public CodeStubAssembler {
                                compiler::Node* arg_count, int return_size = 1);
 
   // Jump relative to the current bytecode by |jump_offset|.
-  void Jump(compiler::Node* jump_offset);
-
-  // Jump relative to the current bytecode by |jump_offset| if the
-  // |condition| is true. Helper function for JumpIfWordEqual and
-  // JumpIfWordNotEqual.
-  void JumpConditional(compiler::Node* condition, compiler::Node* jump_offset);
+  compiler::Node* Jump(compiler::Node* jump_offset);
 
   // Jump relative to the current bytecode by |jump_offset| if the
   // word values |lhs| and |rhs| are equal.
@@ -125,18 +124,18 @@ class InterpreterAssembler : public CodeStubAssembler {
   void JumpIfWordNotEqual(compiler::Node* lhs, compiler::Node* rhs,
                           compiler::Node* jump_offset);
 
-  // Perform a stack guard check.
-  void StackCheck();
+  // Returns true if the stack guard check triggers an interrupt.
+  compiler::Node* StackCheckTriggeredInterrupt();
 
   // Returns from the function.
-  void InterpreterReturn();
+  compiler::Node* InterpreterReturn();
 
   // Dispatch to the bytecode.
-  void Dispatch();
+  compiler::Node* Dispatch();
 
   // Dispatch to bytecode handler.
-  void DispatchToBytecodeHandler(compiler::Node* handler) {
-    DispatchToBytecodeHandler(handler, BytecodeOffset());
+  compiler::Node* DispatchToBytecodeHandler(compiler::Node* handler) {
+    return DispatchToBytecodeHandler(handler, BytecodeOffset());
   }
 
   // Dispatch bytecode as wide operand variant.
@@ -144,6 +143,8 @@ class InterpreterAssembler : public CodeStubAssembler {
 
   // Abort with the given bailout reason.
   void Abort(BailoutReason bailout_reason);
+  void AbortIfWordNotEqual(compiler::Node* lhs, compiler::Node* rhs,
+                           BailoutReason bailout_reason);
 
  protected:
   Bytecode bytecode() const { return bytecode_; }
@@ -203,25 +204,26 @@ class InterpreterAssembler : public CodeStubAssembler {
   compiler::Node* BytecodeUnsignedOperand(int operand_index,
                                           OperandSize operand_size);
 
+  // Jump relative to the current bytecode by |jump_offset| if the
+  // |condition| is true. Helper function for JumpIfWordEqual and
+  // JumpIfWordNotEqual.
+  void JumpConditional(compiler::Node* condition, compiler::Node* jump_offset);
+
   // Returns BytecodeOffset() advanced by delta bytecodes. Note: this does not
   // update BytecodeOffset() itself.
   compiler::Node* Advance(int delta);
   compiler::Node* Advance(compiler::Node* delta);
 
   // Starts next instruction dispatch at |new_bytecode_offset|.
-  void DispatchTo(compiler::Node* new_bytecode_offset);
+  compiler::Node* DispatchTo(compiler::Node* new_bytecode_offset);
 
   // Dispatch to the bytecode handler with code offset |handler|.
-  void DispatchToBytecodeHandler(compiler::Node* handler,
-                                 compiler::Node* bytecode_offset);
+  compiler::Node* DispatchToBytecodeHandler(compiler::Node* handler,
+                                            compiler::Node* bytecode_offset);
 
   // Dispatch to the bytecode handler with code entry point |handler_entry|.
-  void DispatchToBytecodeHandlerEntry(compiler::Node* handler_entry,
-                                      compiler::Node* bytecode_offset);
-
-  // Abort operations for debug code.
-  void AbortIfWordNotEqual(compiler::Node* lhs, compiler::Node* rhs,
-                           BailoutReason bailout_reason);
+  compiler::Node* DispatchToBytecodeHandlerEntry(
+      compiler::Node* handler_entry, compiler::Node* bytecode_offset);
 
   OperandScale operand_scale() const { return operand_scale_; }
 

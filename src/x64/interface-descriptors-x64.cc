@@ -46,10 +46,6 @@ const Register StoreGlobalViaContextDescriptor::SlotRegister() { return rbx; }
 const Register StoreGlobalViaContextDescriptor::ValueRegister() { return rax; }
 
 
-const Register InstanceOfDescriptor::LeftRegister() { return rdx; }
-const Register InstanceOfDescriptor::RightRegister() { return rax; }
-
-
 const Register StringCompareDescriptor::LeftRegister() { return rdx; }
 const Register StringCompareDescriptor::RightRegister() { return rax; }
 
@@ -67,6 +63,8 @@ const Register MathPowIntegerDescriptor::exponent() {
 const Register GrowArrayElementsDescriptor::ObjectRegister() { return rax; }
 const Register GrowArrayElementsDescriptor::KeyRegister() { return rbx; }
 
+const Register HasPropertyDescriptor::ObjectRegister() { return rax; }
+const Register HasPropertyDescriptor::KeyRegister() { return rbx; }
 
 void FastNewClosureDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
@@ -242,12 +240,15 @@ void AllocateHeapNumberDescriptor::InitializePlatformSpecific(
 SIMD128_TYPES(SIMD128_ALLOC_DESC)
 #undef SIMD128_ALLOC_DESC
 
-void AllocateDescriptor::InitializePlatformSpecific(
+void ArrayNoArgumentConstructorDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
-  Register registers[] = {rax};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
+  // register state
+  // rax -- number of arguments
+  // rdi -- function
+  // rbx -- allocation site with elements kind
+  Register registers[] = {rdi, rbx, rax};
+  data->InitializePlatformSpecific(arraysize(registers), registers, NULL);
 }
-
 
 void ArrayConstructorConstantArgCountDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
@@ -312,6 +313,11 @@ void BinaryOpWithAllocationSiteDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
+void CountOpDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  Register registers[] = {rax};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
 
 void StringAddDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {

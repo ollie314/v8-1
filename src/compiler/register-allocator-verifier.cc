@@ -224,7 +224,7 @@ void RegisterAllocatorVerifier::CheckConstraint(
       CHECK(op->IsRegister());
       return;
     case kDoubleRegister:
-      CHECK(op->IsDoubleRegister());
+      CHECK(op->IsFPRegister());
       return;
     case kExplicit:
       CHECK(op->IsExplicit());
@@ -236,7 +236,7 @@ void RegisterAllocatorVerifier::CheckConstraint(
                constraint->value_);
       return;
     case kFixedDoubleRegister:
-      CHECK(op->IsDoubleRegister());
+      CHECK(op->IsFPRegister());
       CHECK_EQ(LocationOperand::cast(op)->GetDoubleRegister().code(),
                constraint->value_);
       return;
@@ -248,13 +248,13 @@ void RegisterAllocatorVerifier::CheckConstraint(
       CHECK(op->IsStackSlot());
       return;
     case kDoubleSlot:
-      CHECK(op->IsDoubleStackSlot());
+      CHECK(op->IsFPStackSlot());
       return;
     case kNone:
       CHECK(op->IsRegister() || op->IsStackSlot());
       return;
     case kNoneDouble:
-      CHECK(op->IsDoubleRegister() || op->IsDoubleStackSlot());
+      CHECK(op->IsFPRegister() || op->IsFPStackSlot());
       return;
     case kSameAsFirst:
       CHECK(false);
@@ -416,7 +416,7 @@ void RegisterAllocatorVerifier::ValidatePendingAssessment(
         case Pending: {
           // This happens if we have a diamond feeding into another one, and
           // the inner one never being used - other than for carrying the value.
-          PendingAssessment* next = PendingAssessment::cast(contribution);
+          const PendingAssessment* next = PendingAssessment::cast(contribution);
           if (seen.find(pred) == seen.end()) {
             worklist.push({next, expected});
             seen.insert(pred);

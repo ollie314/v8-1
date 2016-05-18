@@ -34,11 +34,11 @@ Semaphore::~Semaphore() {
   USE(result);
 }
 
-
-void Semaphore::Signal() {
+void Semaphore::Signal(const char* caller) {
   kern_return_t result = semaphore_signal(native_handle_);
   DCHECK_EQ(KERN_SUCCESS, result);
   USE(result);
+  USE(caller);
 }
 
 
@@ -74,6 +74,19 @@ bool Semaphore::WaitFor(const TimeDelta& rel_time) {
 #elif V8_OS_POSIX
 
 Semaphore::Semaphore(int count) {
+  // The sem_init() does not check for alignment of the native handle.
+  // Unaligned native handle can later cause a failure in semaphore signal.
+  // Check the alignment here to catch the failure earlier.
+  // Context: crbug.com/605349.
+#if V8_OS_AIX
+  // On aix sem_t is of type int
+  const uintptr_t kSemaphoreAlignmentMask = sizeof(int) - 1;
+#else
+  const uintptr_t kSemaphoreAlignmentMask = sizeof(void*) - 1;
+#endif
+  CHECK_EQ(
+      0, reinterpret_cast<uintptr_t>(&native_handle_) &
+      kSemaphoreAlignmentMask);
   DCHECK(count >= 0);
 #if V8_LIBC_GLIBC
   // sem_init in glibc prior to 2.1 does not zero out semaphores.
@@ -91,10 +104,12 @@ Semaphore::~Semaphore() {
   USE(result);
 }
 
-
-void Semaphore::Signal() {
+void Semaphore::Signal(const char* caller) {
   int result = sem_post(&native_handle_);
-  CHECK_EQ(0, result);
+  if (result != 0) {
+    V8_Fatal(__FILE__, __LINE__,
+             "Semaphore signal failure: %d called by '%s'\n", errno, caller);
+  }
 }
 
 
@@ -162,12 +177,12 @@ Semaphore::~Semaphore() {
   USE(result);
 }
 
-
-void Semaphore::Signal() {
+void Semaphore::Signal(const char* caller) {
   LONG dummy;
   BOOL result = ReleaseSemaphore(native_handle_, 1, &dummy);
   DCHECK(result);
   USE(result);
+  USE(caller);
 }
 
 

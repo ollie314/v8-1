@@ -52,7 +52,11 @@ class Schedule;
   V(Int32LessThanOrEqual)                        \
   V(IntPtrLessThan)                              \
   V(IntPtrLessThanOrEqual)                       \
+  V(IntPtrGreaterThan)                           \
+  V(IntPtrGreaterThanOrEqual)                    \
+  V(IntPtrEqual)                                 \
   V(Uint32LessThan)                              \
+  V(UintPtrLessThan)                             \
   V(UintPtrGreaterThanOrEqual)                   \
   V(WordEqual)                                   \
   V(WordNotEqual)                                \
@@ -106,12 +110,15 @@ class Schedule;
   V(Float64Sqrt)                        \
   V(Float64ExtractLowWord32)            \
   V(Float64ExtractHighWord32)           \
+  V(BitcastWordToTagged)                \
+  V(TruncateFloat64ToWord32)            \
   V(TruncateInt64ToInt32)               \
   V(ChangeFloat64ToUint32)              \
   V(ChangeInt32ToFloat64)               \
   V(ChangeInt32ToInt64)                 \
   V(ChangeUint32ToFloat64)              \
   V(ChangeUint32ToUint64)               \
+  V(RoundFloat64ToInt32)                \
   V(Float64RoundDown)                   \
   V(Float64RoundUp)                     \
   V(Float64RoundTruncate)               \
@@ -191,13 +198,7 @@ class CodeAssembler {
   Node* BooleanConstant(bool value);
   Node* ExternalConstant(ExternalReference address);
   Node* Float64Constant(double value);
-  Node* BooleanMapConstant();
-  Node* EmptyStringConstant();
-  Node* HeapNumberMapConstant();
   Node* NaNConstant();
-  Node* NoContextConstant();
-  Node* NullConstant();
-  Node* UndefinedConstant();
 
   Node* Parameter(int value);
   void Return(Node* value);
@@ -223,12 +224,20 @@ class CodeAssembler {
   Node* Load(MachineType rep, Node* base, Node* index);
   Node* AtomicLoad(MachineType rep, Node* base, Node* index);
 
+  // Load a value from the root array.
+  Node* LoadRoot(Heap::RootListIndex root_index);
+
   // Store value to raw memory location.
   Node* Store(MachineRepresentation rep, Node* base, Node* value);
   Node* Store(MachineRepresentation rep, Node* base, Node* index, Node* value);
   Node* StoreNoWriteBarrier(MachineRepresentation rep, Node* base, Node* value);
   Node* StoreNoWriteBarrier(MachineRepresentation rep, Node* base, Node* index,
                             Node* value);
+  Node* AtomicStore(MachineRepresentation rep, Node* base, Node* index,
+                    Node* value);
+
+  // Store a value to the root array.
+  Node* StoreRoot(Heap::RootListIndex root_index, Node* value);
 
 // Basic arithmetic operations.
 #define DECLARE_CODE_ASSEMBLER_BINARY_OP(name) Node* name(Node* a, Node* b);
@@ -236,16 +245,17 @@ class CodeAssembler {
 #undef DECLARE_CODE_ASSEMBLER_BINARY_OP
 
   Node* WordShl(Node* value, int shift);
+  Node* WordShr(Node* value, int shift);
 
 // Unary
 #define DECLARE_CODE_ASSEMBLER_UNARY_OP(name) Node* name(Node* a);
   CODE_ASSEMBLER_UNARY_OP_LIST(DECLARE_CODE_ASSEMBLER_UNARY_OP)
 #undef DECLARE_CODE_ASSEMBLER_UNARY_OP
 
-  Node* TruncateFloat64ToInt32RoundToZero(Node* a);
-  Node* TruncateFloat64ToInt32JavaScript(Node* a);
   // No-op on 32-bit, otherwise zero extend.
   Node* ChangeUint32ToWord(Node* value);
+  // No-op on 32-bit, otherwise sign extend.
+  Node* ChangeInt32ToIntPtr(Node* value);
 
   // Projections
   Node* Projection(int index, Node* value);
@@ -307,22 +317,6 @@ class CodeAssembler {
   Node* TailCallBytecodeDispatch(const CallInterfaceDescriptor& descriptor,
                                  Node* code_target_address, Node** args);
 
-  // ===========================================================================
-  // Macros
-  // ===========================================================================
-
-  // Tag a Word as a Smi value.
-  Node* SmiTag(Node* value);
-  // Untag a Smi value as a Word.
-  Node* SmiUntag(Node* value);
-
-  // Load a value from the root array.
-  Node* LoadRoot(Heap::RootListIndex root_index);
-
-  // Allocate an object of the given size.
-  Node* Allocate(int size, AllocationFlags flags = kNone);
-  Node* InnerAllocate(Node* previous, int offset);
-
   // Branching helpers.
   void BranchIf(Node* condition, Label* if_true, Label* if_false);
 
@@ -356,11 +350,6 @@ class CodeAssembler {
 
   Node* CallN(CallDescriptor* descriptor, Node* code_target, Node** args);
   Node* TailCallN(CallDescriptor* descriptor, Node* code_target, Node** args);
-
-  Node* AllocateRawAligned(Node* size_in_bytes, AllocationFlags flags,
-                           Node* top_address, Node* limit_address);
-  Node* AllocateRawUnaligned(Node* size_in_bytes, AllocationFlags flags,
-                             Node* top_adddress, Node* limit_address);
 
   base::SmartPointer<RawMachineAssembler> raw_assembler_;
   Code::Flags flags_;

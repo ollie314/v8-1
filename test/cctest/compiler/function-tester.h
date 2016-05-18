@@ -188,14 +188,14 @@ class FunctionTester : public InitializedHandleScope {
     if (flags_ & CompilationInfo::kInliningEnabled) {
       info.MarkAsInliningEnabled();
     }
-    if (function->shared()->HasBytecodeArray()) {
+    if (FLAG_turbo_from_bytecode && function->shared()->HasBytecodeArray()) {
       info.MarkAsOptimizeFromBytecode();
+    } else {
+      CHECK(Compiler::Analyze(info.parse_info()));
+      CHECK(Compiler::EnsureDeoptimizationSupport(&info));
     }
-    CHECK(Compiler::Analyze(info.parse_info()));
-    CHECK(Compiler::EnsureDeoptimizationSupport(&info));
 
-    Pipeline pipeline(&info);
-    Handle<Code> code = pipeline.GenerateCode();
+    Handle<Code> code = Pipeline::GenerateCodeForTesting(&info);
     CHECK(!code.is_null());
     info.dependencies()->Commit(code);
     info.context()->native_context()->AddOptimizedCode(*code);
@@ -230,8 +230,6 @@ class FunctionTester : public InitializedHandleScope {
 
     CHECK(Parser::ParseStatic(info.parse_info()));
     info.SetOptimizing();
-    CHECK(Compiler::Analyze(info.parse_info()));
-    CHECK(Compiler::EnsureDeoptimizationSupport(&info));
 
     Handle<Code> code = Pipeline::GenerateCodeForTesting(&info, graph);
     CHECK(!code.is_null());

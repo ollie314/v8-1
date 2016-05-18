@@ -1383,11 +1383,6 @@ TEST(InterpreterStrictNotEqual) {
 
 TEST(InterpreterInstanceOf) {
   HandleAndZoneScope handles;
-  // TODO(4447): The new ES6 'instanceof' operator is fully desugared in the
-  // parser and the Token::INSTANCEOF is not needed anymore. This test only
-  // makes sense with --no-harmony-instanceof and can be removed once we
-  // deprecate the ability to switch to old skool ES5 'instanceof' for good.
-  FLAG_harmony_instanceof = false;
   i::Factory* factory = handles.main_isolate()->factory();
   Handle<i::String> name = factory->NewStringFromAsciiChecked("cons");
   Handle<i::JSFunction> func = factory->NewFunction(name);
@@ -2259,6 +2254,8 @@ TEST(InterpreterCreateArguments) {
       std::make_pair("function f(a, b, c, d) {"
                      "  'use strict'; c = b; return arguments[2]; }",
                      2),
+      // Check arguments for duplicate parameters in sloppy mode.
+      std::make_pair("function f(a, a, b) { return arguments[1]; }", 1),
       // check rest parameters
       std::make_pair("function f(...restArray) { return restArray[0]; }", 0),
       std::make_pair("function f(a, ...restArray) { return restArray[0]; }", 1),

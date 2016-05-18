@@ -21,6 +21,10 @@ class Isolate;
 class Callable;
 class CompilationInfo;
 
+namespace compiler {
+class Node;
+}  // namespace compiler
+
 namespace interpreter {
 
 class InterpreterAssembler;
@@ -49,14 +53,14 @@ class Interpreter {
   void TraceCodegen(Handle<Code> code);
   const char* LookupNameOfBytecodeHandler(Code* code);
 
-  void WriteDispatchCounters();
+  Local<v8::Object> GetDispatchCountersObject();
 
   Address dispatch_table_address() {
     return reinterpret_cast<Address>(&dispatch_table_[0]);
   }
 
-  uintptr_t* bytecode_dispatch_count_table() {
-    return bytecode_dispatch_count_table_.get();
+  Address bytecode_dispatch_counters_table() {
+    return reinterpret_cast<Address>(bytecode_dispatch_counters_table_.get());
   }
 
  private:
@@ -73,9 +77,12 @@ class Interpreter {
   void DoBinaryOp(Runtime::FunctionId function_id,
                   InterpreterAssembler* assembler);
 
-  // Generates code to perform the count operations via |function_id|.
-  void DoCountOp(Runtime::FunctionId function_id,
-                 InterpreterAssembler* assembler);
+  // Generates code to perform the binary operations via |Generator|.
+  template <class Generator>
+  void DoBinaryOp(InterpreterAssembler* assembler);
+
+  // Generates code to perform the count operations via |callable|.
+  void DoCountOp(Callable callable, InterpreterAssembler* assembler);
 
   // Generates code to perform the comparison operation associated with
   // |compare_op|.
@@ -120,9 +127,8 @@ class Interpreter {
   // Generates code to perform a type conversion.
   void DoTypeConversionOp(Callable callable, InterpreterAssembler* assembler);
 
-  // Generates code ro create a literal via |function_id|.
-  void DoCreateLiteral(Runtime::FunctionId function_id,
-                       InterpreterAssembler* assembler);
+  // Generates code to perform logical-not on boolean |value|.
+  void DoLogicalNotOp(compiler::Node* value, InterpreterAssembler* assembler);
 
   // Generates code to perform delete via function_id.
   void DoDelete(Runtime::FunctionId function_id,
@@ -136,6 +142,8 @@ class Interpreter {
   void DoStoreLookupSlot(LanguageMode language_mode,
                          InterpreterAssembler* assembler);
 
+  uintptr_t GetDispatchCounter(Bytecode from, Bytecode to) const;
+
   // Get dispatch table index of bytecode.
   static size_t GetDispatchTableIndex(Bytecode bytecode,
                                       OperandScale operand_scale);
@@ -144,10 +152,11 @@ class Interpreter {
 
   static const int kNumberOfWideVariants = 3;
   static const int kDispatchTableSize = kNumberOfWideVariants * (kMaxUInt8 + 1);
+  static const int kNumberOfBytecodes = static_cast<int>(Bytecode::kLast) + 1;
 
   Isolate* isolate_;
   Address dispatch_table_[kDispatchTableSize];
-  v8::base::SmartArrayPointer<uintptr_t> bytecode_dispatch_count_table_;
+  v8::base::SmartArrayPointer<uintptr_t> bytecode_dispatch_counters_table_;
 
   DISALLOW_COPY_AND_ASSIGN(Interpreter);
 };

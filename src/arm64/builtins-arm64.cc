@@ -605,16 +605,9 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
     // x0: number of arguments
     // x1: constructor function
     // x3: new target
-    if (is_api_function) {
-      __ Ldr(cp, FieldMemOperand(constructor, JSFunction::kContextOffset));
-      Handle<Code> code =
-          masm->isolate()->builtins()->HandleApiCallConstruct();
-      __ Call(code, RelocInfo::CODE_TARGET);
-    } else {
-      ParameterCount actual(argc);
-      __ InvokeFunction(constructor, new_target, actual, CALL_FUNCTION,
-                        CheckDebugStepCallWrapper());
-    }
+    ParameterCount actual(argc);
+    __ InvokeFunction(constructor, new_target, actual, CALL_FUNCTION,
+                      CheckDebugStepCallWrapper());
 
     // Store offset of return address for deoptimizer.
     if (create_implicit_receiver && !is_api_function) {
@@ -996,8 +989,8 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   __ Push(lr, fp, cp, x1);
   __ Add(fp, jssp, StandardFrameConstants::kFixedFrameSizeFromFp);
 
-  // Get the bytecode array from the function object and load the pointer to the
-  // first entry into kInterpreterBytecodeRegister.
+  // Get the bytecode array from the function object (or from the DebugInfo if
+  // it is present) and load it into kInterpreterBytecodeArrayRegister.
   __ Ldr(x0, FieldMemOperand(x1, JSFunction::kSharedFunctionInfoOffset));
   Register debug_info = kInterpreterBytecodeArrayRegister;
   Label load_debug_bytecode_array, bytecode_array_loaded;
@@ -1009,8 +1002,12 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
          FieldMemOperand(x0, SharedFunctionInfo::kFunctionDataOffset));
   __ Bind(&bytecode_array_loaded);
 
+  // Check function data field is actually a BytecodeArray object.
+  Label bytecode_array_not_present;
+  __ CompareRoot(kInterpreterBytecodeArrayRegister,
+                 Heap::kUndefinedValueRootIndex);
+  __ B(eq, &bytecode_array_not_present);
   if (FLAG_debug_code) {
-    // Check function data field is actually a BytecodeArray object.
     __ AssertNotSmi(kInterpreterBytecodeArrayRegister,
                     kFunctionDataShouldBeBytecodeArrayOnInterpreterEntry);
     __ CompareObjectType(kInterpreterBytecodeArrayRegister, x0, x0,
@@ -1018,8 +1015,12 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
     __ Assert(eq, kFunctionDataShouldBeBytecodeArrayOnInterpreterEntry);
   }
 
-  // Push new.target, bytecode array and zero for bytecode array offset.
-  __ Mov(x0, Operand(0));
+  // Load the initial bytecode offset.
+  __ Mov(kInterpreterBytecodeOffsetRegister,
+         Operand(BytecodeArray::kHeaderSize - kHeapObjectTag));
+
+  // Push new.target, bytecode array and Smi tagged bytecode array offset.
+  __ SmiTag(x0, kInterpreterBytecodeOffsetRegister);
   __ Push(x3, kInterpreterBytecodeArrayRegister, x0);
 
   // Allocate the local and temporary register file on the stack.
@@ -1049,12 +1050,8 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
     __ Bind(&loop_header);
   }
 
-  // Load accumulator, register file, bytecode offset, dispatch table into
-  // registers.
+  // Load accumulator and dispatch table into registers.
   __ LoadRoot(kInterpreterAccumulatorRegister, Heap::kUndefinedValueRootIndex);
-  __ Add(x18, fp, Operand(InterpreterFrameConstants::kRegisterFileFromFp));
-  __ Mov(kInterpreterBytecodeOffsetRegister,
-         Operand(BytecodeArray::kHeaderSize - kHeapObjectTag));
   __ Mov(kInterpreterDispatchTableRegister,
          Operand(ExternalReference::interpreter_dispatch_table_address(
              masm->isolate())));
@@ -1074,6 +1071,18 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   __ Ldr(kInterpreterBytecodeArrayRegister,
          FieldMemOperand(debug_info, DebugInfo::kAbstractCodeIndex));
   __ B(&bytecode_array_loaded);
+
+  // If the bytecode array is no longer present, then the underlying function
+  // has been switched to a different kind of code and we heal the closure by
+  // switching the code entry field over to the new code object as well.
+  __ Bind(&bytecode_array_not_present);
+  __ LeaveFrame(StackFrame::JAVA_SCRIPT);
+  __ Ldr(x7, FieldMemOperand(x1, JSFunction::kSharedFunctionInfoOffset));
+  __ Ldr(x7, FieldMemOperand(x7, SharedFunctionInfo::kCodeOffset));
+  __ Add(x7, x7, Operand(Code::kHeaderSize - kHeapObjectTag));
+  __ Str(x7, FieldMemOperand(x1, JSFunction::kCodeEntryOffset));
+  __ RecordWriteCodeEntryField(x1, x7, x5);
+  __ Jump(x7);
 }
 
 
@@ -1185,7 +1194,6 @@ void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
   Label loop_top, loop_bottom;
 
   Register closure = x1;
-  Register new_target = x3;
   Register map = x13;
   Register index = x2;
   __ Ldr(map, FieldMemOperand(closure, JSFunction::kSharedFunctionInfoOffset));
@@ -1308,6 +1316,9 @@ void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
   GenerateTailCallToReturnedCode(masm, Runtime::kCompileLazy);
 }
 
+void Builtins::Generate_CompileBaseline(MacroAssembler* masm) {
+  GenerateTailCallToReturnedCode(masm, Runtime::kCompileBaseline);
+}
 
 void Builtins::Generate_CompileOptimized(MacroAssembler* masm) {
   GenerateTailCallToReturnedCode(masm,
@@ -1669,30 +1680,6 @@ void Builtins::Generate_DatePrototype_GetField(MacroAssembler* masm,
   // 3. Raise a TypeError if the receiver is not a date.
   __ Bind(&receiver_not_date);
   __ TailCallRuntime(Runtime::kThrowNotDateError);
-}
-
-// static
-void Builtins::Generate_FunctionHasInstance(MacroAssembler* masm) {
-  // ----------- S t a t e -------------
-  //  -- x0      : argc
-  //  -- jssp[0] : first argument (left-hand side)
-  //  -- jssp[8] : receiver (right-hand side)
-  // -----------------------------------
-  ASM_LOCATION("Builtins::Generate_FunctionHasInstance");
-
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-    __ Ldr(InstanceOfDescriptor::LeftRegister(),
-           MemOperand(fp, 2 * kPointerSize));  // Load left-hand side.
-    __ Ldr(InstanceOfDescriptor::RightRegister(),
-           MemOperand(fp, 3 * kPointerSize));  // Load right-hand side.
-    InstanceOfStub stub(masm->isolate(), true);
-    __ CallStub(&stub);
-  }
-
-  // Pop the argument and the receiver.
-  __ Drop(2);
-  __ Ret();
 }
 
 // static
@@ -2740,6 +2727,32 @@ void Builtins::Generate_InterpreterPushArgsAndConstruct(MacroAssembler* masm) {
   __ Jump(masm->isolate()->builtins()->Construct(), RelocInfo::CODE_TARGET);
 }
 
+// static
+void Builtins::Generate_AllocateInNewSpace(MacroAssembler* masm) {
+  ASM_LOCATION("Builtins::Generate_AllocateInNewSpace");
+  // ----------- S t a t e -------------
+  //  -- x1 : requested object size (untagged)
+  //  -- lr : return address
+  // -----------------------------------
+  __ SmiTag(x1);
+  __ Push(x1);
+  __ Move(cp, Smi::FromInt(0));
+  __ TailCallRuntime(Runtime::kAllocateInNewSpace);
+}
+
+// static
+void Builtins::Generate_AllocateInOldSpace(MacroAssembler* masm) {
+  ASM_LOCATION("Builtins::Generate_AllocateInOldSpace");
+  // ----------- S t a t e -------------
+  //  -- x1 : requested object size (untagged)
+  //  -- lr : return address
+  // -----------------------------------
+  __ SmiTag(x1);
+  __ Move(x2, Smi::FromInt(AllocateTargetSpace::encode(OLD_SPACE)));
+  __ Push(x1, x2);
+  __ Move(cp, Smi::FromInt(0));
+  __ TailCallRuntime(Runtime::kAllocateInTargetSpace);
+}
 
 void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
   ASM_LOCATION("Builtins::Generate_ArgumentsAdaptorTrampoline");

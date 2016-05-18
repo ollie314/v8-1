@@ -11,6 +11,9 @@
 
 namespace v8 {
 namespace internal {
+
+class CompilationInfo;
+
 namespace interpreter {
 
 class LoopBuilder;
@@ -109,6 +112,11 @@ class BytecodeGenerator final : public AstVisitor {
   void BuildHoleCheckForVariableLoad(VariableMode mode, Handle<String> name);
   void BuildHoleCheckForVariableAssignment(Variable* variable, Token::Value op);
 
+  // Build jump to targets[value], where
+  // start_index <= value < start_index + size.
+  void BuildIndexedJump(Register value, size_t start_index, size_t size,
+                        ZoneVector<BytecodeLabel>& targets);
+
   void VisitGeneratorPrologue();
 
   void VisitArgumentsObject(Variable* variable);
@@ -135,7 +143,9 @@ class BytecodeGenerator final : public AstVisitor {
                                   Register value_out);
   void VisitForInAssignment(Expression* expr, FeedbackVectorSlot slot);
 
-  // Visit the body of a loop iteration.
+  // Visit the header/body of a loop iteration.
+  void VisitIterationHeader(IterationStatement* stmt,
+                            LoopBuilder* loop_builder);
   void VisitIterationBody(IterationStatement* stmt, LoopBuilder* loop_builder);
 
   // Visit a statement and switch scopes, the context is in the accumulator.
@@ -202,9 +212,9 @@ class BytecodeGenerator final : public AstVisitor {
   ExpressionResultScope* execution_result_;
   RegisterAllocationScope* register_allocator_;
   ZoneVector<BytecodeLabel> generator_resume_points_;
+  Register generator_state_;
   int try_catch_nesting_level_;
   int try_finally_nesting_level_;
-  int generator_yields_seen_;
 };
 
 }  // namespace interpreter

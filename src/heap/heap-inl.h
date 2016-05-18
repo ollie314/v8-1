@@ -395,7 +395,7 @@ bool Heap::OldGenerationAllocationLimitReached() {
 
 
 bool Heap::ShouldBePromoted(Address old_address, int object_size) {
-  NewSpacePage* page = NewSpacePage::FromAddress(old_address);
+  Page* page = Page::FromAddress(old_address);
   Address age_mark = new_space_.age_mark();
   return page->IsFlagSet(MemoryChunk::NEW_SPACE_BELOW_AGE_MARK) &&
          (!page->ContainsLimit(age_mark) || old_address < age_mark);
@@ -460,14 +460,6 @@ void Heap::CopyBlock(Address dst, Address src, int byte_size) {
             static_cast<size_t>(byte_size / kPointerSize));
 }
 
-void Heap::UpdateNewSpaceAllocationCounter() {
-  new_space_allocation_counter_ = NewSpaceAllocationCounter();
-}
-
-size_t Heap::NewSpaceAllocationCounter() {
-  return new_space_allocation_counter_ + new_space()->AllocatedSinceLastGC();
-}
-
 template <Heap::FindMementoMode mode>
 AllocationMemento* Heap::FindAllocationMemento(HeapObject* object) {
   // Check if there is potentially a memento behind the object. If
@@ -476,7 +468,7 @@ AllocationMemento* Heap::FindAllocationMemento(HeapObject* object) {
   Address object_address = object->address();
   Address memento_address = object_address + object->Size();
   Address last_memento_word_address = memento_address + kPointerSize;
-  if (!NewSpacePage::OnSamePage(object_address, last_memento_word_address)) {
+  if (!Page::OnSamePage(object_address, last_memento_word_address)) {
     return nullptr;
   }
   HeapObject* candidate = HeapObject::FromAddress(memento_address);
@@ -504,7 +496,7 @@ AllocationMemento* Heap::FindAllocationMemento(HeapObject* object) {
       top = NewSpaceTop();
       DCHECK(memento_address == top ||
              memento_address + HeapObject::kHeaderSize <= top ||
-             !NewSpacePage::OnSamePage(memento_address, top - 1));
+             !Page::OnSamePage(memento_address, top - 1));
       if ((memento_address != top) && memento_candidate->IsValid()) {
         return memento_candidate;
       }

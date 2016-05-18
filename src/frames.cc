@@ -16,6 +16,7 @@
 #include "src/safepoint-table.h"
 #include "src/string-stream.h"
 #include "src/vm-state-inl.h"
+#include "src/wasm/wasm-module.h"
 
 namespace v8 {
 namespace internal {
@@ -617,20 +618,6 @@ void ExitFrame::FillState(Address fp, Address sp, State* state) {
   state->constant_pool_address = NULL;
 }
 
-void StandardFrame::Summarize(List<FrameSummary>* functions) const {
-  DCHECK(functions->length() == 0);
-  // default implementation: no summary added
-}
-
-JSFunction* StandardFrame::function() const {
-  // this default implementation is overridden by JS and WASM frames
-  return nullptr;
-}
-
-Object* StandardFrame::receiver() const {
-  return isolate()->heap()->undefined_value();
-}
-
 Address StandardFrame::GetExpressionAddress(int n) const {
   const int offset = StandardFrameConstants::kExpressionsOffset;
   return fp() + offset - n * kPointerSize;
@@ -717,7 +704,8 @@ void StandardFrame::IterateCompiledFrame(ObjectVisitor* v) const {
       (frame_header_size + StandardFrameConstants::kFixedFrameSizeAboveFp);
 
   Object** frame_header_base = &Memory::Object_at(fp() - frame_header_size);
-  Object** frame_header_limit = &Memory::Object_at(fp());
+  Object** frame_header_limit =
+      &Memory::Object_at(fp() - StandardFrameConstants::kCPSlotSize);
   Object** parameters_base = &Memory::Object_at(sp());
   Object** parameters_limit = frame_header_base - slot_space / kPointerSize;
 
@@ -860,13 +848,14 @@ void JavaScriptFrame::GetFunctions(List<JSFunction*>* functions) const {
   functions->Add(function());
 }
 
-void JavaScriptFrame::Summarize(List<FrameSummary>* functions) const {
+void JavaScriptFrame::Summarize(List<FrameSummary>* functions,
+                                FrameSummary::Mode mode) const {
   DCHECK(functions->length() == 0);
   Code* code = LookupCode();
   int offset = static_cast<int>(pc() - code->instruction_start());
   AbstractCode* abstract_code = AbstractCode::cast(code);
   FrameSummary summary(receiver(), function(), abstract_code, offset,
-                       IsConstructor());
+                       IsConstructor(), mode);
   functions->Add(summary);
 }
 
@@ -966,7 +955,7 @@ bool CannotDeoptFromAsmCode(Code* code, JSFunction* function) {
 
 FrameSummary::FrameSummary(Object* receiver, JSFunction* function,
                            AbstractCode* abstract_code, int code_offset,
-                           bool is_constructor)
+                           bool is_constructor, Mode mode)
     : receiver_(receiver, function->GetIsolate()),
       function_(function),
       abstract_code_(abstract_code),
@@ -974,7 +963,8 @@ FrameSummary::FrameSummary(Object* receiver, JSFunction* function,
       is_constructor_(is_constructor) {
   DCHECK(abstract_code->IsBytecodeArray() ||
          Code::cast(abstract_code)->kind() != Code::OPTIMIZED_FUNCTION ||
-         CannotDeoptFromAsmCode(Code::cast(abstract_code), function));
+         CannotDeoptFromAsmCode(Code::cast(abstract_code), function) ||
+         mode == kApproximateSummary);
 }
 
 FrameSummary FrameSummary::GetFirst(JavaScriptFrame* frame) {
@@ -994,8 +984,12 @@ void FrameSummary::Print() {
     Code* code = abstract_code_->GetCode();
     if (code->kind() == Code::FUNCTION) PrintF(" UNOPT ");
     if (code->kind() == Code::OPTIMIZED_FUNCTION) {
-      DCHECK(CannotDeoptFromAsmCode(code, *function()));
-      PrintF(" ASM ");
+      if (function()->shared()->asm_function()) {
+        DCHECK(CannotDeoptFromAsmCode(code, *function()));
+        PrintF(" ASM ");
+      } else {
+        PrintF(" OPT (approximate)");
+      }
     }
   } else {
     PrintF(" BYTECODE ");
@@ -1003,7 +997,8 @@ void FrameSummary::Print() {
   PrintF("\npc: %d\n", code_offset_);
 }
 
-void OptimizedFrame::Summarize(List<FrameSummary>* frames) const {
+void OptimizedFrame::Summarize(List<FrameSummary>* frames,
+                               FrameSummary::Mode mode) const {
   DCHECK(frames->length() == 0);
   DCHECK(is_optimized());
 
@@ -1018,6 +1013,13 @@ void OptimizedFrame::Summarize(List<FrameSummary>* frames) const {
   DisallowHeapAllocation no_gc;
   int deopt_index = Safepoint::kNoDeoptimizationIndex;
   DeoptimizationInputData* const data = GetDeoptimizationData(&deopt_index);
+  if (deopt_index == Safepoint::kNoDeoptimizationIndex) {
+    DCHECK(data == nullptr);
+    if (mode == FrameSummary::kApproximateSummary) {
+      return JavaScriptFrame::Summarize(frames, mode);
+    }
+    FATAL("Missing deoptimization information for OptimizedFrame::Summarize.");
+  }
   FixedArray* const literal_array = data->LiteralArray();
 
   TranslationIterator it(data->TranslationByteArray(),
@@ -1140,9 +1142,10 @@ DeoptimizationInputData* OptimizedFrame::GetDeoptimizationData(
 
   SafepointEntry safepoint_entry = code->GetSafepointEntry(pc());
   *deopt_index = safepoint_entry.deoptimization_index();
-  DCHECK(*deopt_index != Safepoint::kNoDeoptimizationIndex);
-
-  return DeoptimizationInputData::cast(code->deoptimization_data());
+  if (*deopt_index != Safepoint::kNoDeoptimizationIndex) {
+    return DeoptimizationInputData::cast(code->deoptimization_data());
+  }
+  return nullptr;
 }
 
 
@@ -1161,6 +1164,8 @@ void OptimizedFrame::GetFunctions(List<JSFunction*>* functions) const {
   DisallowHeapAllocation no_gc;
   int deopt_index = Safepoint::kNoDeoptimizationIndex;
   DeoptimizationInputData* const data = GetDeoptimizationData(&deopt_index);
+  DCHECK_NOT_NULL(data);
+  DCHECK_NE(Safepoint::kNoDeoptimizationIndex, deopt_index);
   FixedArray* const literal_array = data->LiteralArray();
 
   TranslationIterator it(data->TranslationByteArray(),
@@ -1267,7 +1272,8 @@ void InterpretedFrame::WriteInterpreterRegister(int register_index,
   return SetExpression(index + register_index, value);
 }
 
-void InterpretedFrame::Summarize(List<FrameSummary>* functions) const {
+void InterpretedFrame::Summarize(List<FrameSummary>* functions,
+                                 FrameSummary::Mode mode) const {
   DCHECK(functions->length() == 0);
   AbstractCode* abstract_code =
       AbstractCode::cast(function()->shared()->bytecode_array());
@@ -1324,29 +1330,36 @@ Code* WasmFrame::unchecked_code() const {
   return static_cast<Code*>(isolate()->FindCodeObject(pc()));
 }
 
-JSFunction* WasmFrame::function() const {
-  // TODO(clemensh): generate the right JSFunctions once per wasm function and
-  // cache them
-  Factory* factory = isolate()->factory();
-  Handle<JSFunction> fun =
-      factory->NewFunction(factory->NewStringFromAsciiChecked("<WASM>"));
-  return *fun;
-}
-
-void WasmFrame::Summarize(List<FrameSummary>* functions) const {
-  DCHECK(functions->length() == 0);
-  Code* code = LookupCode();
-  int offset = static_cast<int>(pc() - code->instruction_start());
-  AbstractCode* abstract_code = AbstractCode::cast(code);
-  Handle<JSFunction> fun(function(), isolate());
-  FrameSummary summary(receiver(), *fun, abstract_code, offset, false);
-  functions->Add(summary);
-}
-
 void WasmFrame::Iterate(ObjectVisitor* v) const { IterateCompiledFrame(v); }
 
 Address WasmFrame::GetCallerStackPointer() const {
   return fp() + ExitFrameConstants::kCallerSPOffset;
+}
+
+Object* WasmFrame::wasm_obj() {
+  FixedArray* deopt_data = LookupCode()->deoptimization_data();
+  DCHECK(deopt_data->length() == 2);
+  return deopt_data->get(0);
+}
+
+uint32_t WasmFrame::function_index() {
+  FixedArray* deopt_data = LookupCode()->deoptimization_data();
+  DCHECK(deopt_data->length() == 2);
+  Object* func_index_obj = deopt_data->get(1);
+  if (func_index_obj->IsUndefined()) return static_cast<uint32_t>(-1);
+  if (func_index_obj->IsSmi()) return Smi::cast(func_index_obj)->value();
+  DCHECK(func_index_obj->IsHeapNumber());
+  uint32_t val = static_cast<uint32_t>(-1);
+  func_index_obj->ToUint32(&val);
+  DCHECK(val != static_cast<uint32_t>(-1));
+  return val;
+}
+
+Object* WasmFrame::function_name() {
+  Object* wasm_object = wasm_obj();
+  if (wasm_object->IsUndefined()) return wasm_object;
+  Handle<JSObject> wasm = handle(JSObject::cast(wasm_object));
+  return *wasm::GetWasmFunctionName(wasm, function_index());
 }
 
 namespace {
@@ -1398,14 +1411,20 @@ void JavaScriptFrame::Print(StringStream* accumulator,
       int offset = static_cast<int>(pc - code->instruction_start());
       int source_pos = code->SourcePosition(offset);
       int line = script->GetLineNumber(source_pos) + 1;
-      accumulator->Add(":%d", line);
+      accumulator->Add(":%d] [pc=%p]", line, pc);
+    } else if (is_interpreted()) {
+      const InterpretedFrame* iframe =
+          reinterpret_cast<const InterpretedFrame*>(this);
+      BytecodeArray* bytecodes = iframe->GetBytecodeArray();
+      int offset = iframe->GetBytecodeOffset();
+      int source_pos = bytecodes->SourcePosition(offset);
+      int line = script->GetLineNumber(source_pos) + 1;
+      accumulator->Add(":%d] [bytecode=%p offset=%d]", line, bytecodes, offset);
     } else {
       int function_start_pos = shared->start_position();
       int line = script->GetLineNumber(function_start_pos) + 1;
-      accumulator->Add(":~%d", line);
+      accumulator->Add(":~%d] [pc=%p]", line, pc);
     }
-
-    accumulator->Add("] [pc=%p] ", pc);
   }
 
   accumulator->Add("(this=%o", receiver);

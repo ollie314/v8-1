@@ -27,7 +27,8 @@ InterpreterAssembler::InterpreterAssembler(Isolate* isolate, Zone* zone,
                                            OperandScale operand_scale)
     : CodeStubAssembler(isolate, zone, InterpreterDispatchDescriptor(isolate),
                         Code::ComputeFlags(Code::BYTECODE_HANDLER),
-                        Bytecodes::ToString(bytecode), 0),
+                        Bytecodes::ToString(bytecode),
+                        Bytecodes::ReturnCount(bytecode)),
       bytecode_(bytecode),
       operand_scale_(operand_scale),
       accumulator_(this, MachineRepresentation::kTagged),
@@ -600,7 +601,7 @@ void InterpreterAssembler::DispatchWide(OperandScale operand_scale) {
   DispatchToBytecodeHandlerEntry(target_code_entry, next_bytecode_offset);
 }
 
-compiler::Node* InterpreterAssembler::InterpreterReturn() {
+void InterpreterAssembler::UpdateInterruptBudgetOnReturn() {
   // TODO(rmcilroy): Investigate whether it is worth supporting self
   // optimization of primitive functions like FullCodegen.
 
@@ -610,10 +611,6 @@ compiler::Node* InterpreterAssembler::InterpreterReturn() {
       Int32Sub(Int32Constant(kHeapObjectTag + BytecodeArray::kHeaderSize),
                BytecodeOffset());
   UpdateInterruptBudget(profiling_weight);
-
-  Node* exit_trampoline_code_object =
-      HeapConstant(isolate()->builtins()->InterpreterExitTrampoline());
-  return DispatchToBytecodeHandler(exit_trampoline_code_object);
 }
 
 Node* InterpreterAssembler::StackCheckTriggeredInterrupt() {
@@ -723,7 +720,7 @@ Node* InterpreterAssembler::ExportRegisterFile(Node* array) {
         Int32Sub(Int32Constant(Register(0).ToOperand()), index);
     Node* value = LoadRegister(ChangeInt32ToIntPtr(reg_index));
 
-    StoreFixedArrayElementInt32Index(array, index, value);
+    StoreFixedArrayElement(array, index, value);
 
     var_index.Bind(Int32Add(index, Int32Constant(1)));
     Goto(&loop);
@@ -753,13 +750,13 @@ Node* InterpreterAssembler::ImportRegisterFile(Node* array) {
     Node* condition = Int32LessThan(index, RegisterCount());
     GotoUnless(condition, &done_loop);
 
-    Node* value = LoadFixedArrayElementInt32Index(array, index);
+    Node* value = LoadFixedArrayElement(array, index);
 
     Node* reg_index =
         Int32Sub(Int32Constant(Register(0).ToOperand()), index);
     StoreRegister(value, ChangeInt32ToIntPtr(reg_index));
 
-    StoreFixedArrayElementInt32Index(array, index, StaleRegisterConstant());
+    StoreFixedArrayElement(array, index, StaleRegisterConstant());
 
     var_index.Bind(Int32Add(index, Int32Constant(1)));
     Goto(&loop);

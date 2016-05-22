@@ -719,14 +719,9 @@ MaybeHandle<FixedArray> Object::CreateListFromArrayLike(
   }
   // 4. Let len be ? ToLength(? Get(obj, "length")).
   Handle<JSReceiver> receiver = Handle<JSReceiver>::cast(object);
-  Handle<Object> raw_length_obj;
-  ASSIGN_RETURN_ON_EXCEPTION(
-      isolate, raw_length_obj,
-      JSReceiver::GetProperty(receiver, isolate->factory()->length_string()),
-      FixedArray);
   Handle<Object> raw_length_number;
   ASSIGN_RETURN_ON_EXCEPTION(isolate, raw_length_number,
-                             Object::ToLength(isolate, raw_length_obj),
+                             Object::GetLengthFromArrayLike(isolate, receiver),
                              FixedArray);
   uint32_t len;
   if (!raw_length_number->ToUint32(&len) ||
@@ -771,6 +766,16 @@ MaybeHandle<FixedArray> Object::CreateListFromArrayLike(
   return list;
 }
 
+
+// static
+MaybeHandle<Object> Object::GetLengthFromArrayLike(Isolate* isolate,
+                                                   Handle<Object> object) {
+  Handle<Object> val;
+  Handle<Object> key = isolate->factory()->length_string();
+  ASSIGN_RETURN_ON_EXCEPTION(
+      isolate, val, Runtime::GetObjectProperty(isolate, object, key), Object);
+  return Object::ToLength(isolate, val);
+}
 
 // static
 Maybe<bool> JSReceiver::HasProperty(LookupIterator* it) {
@@ -8152,16 +8157,6 @@ int Map::NextFreePropertyIndex() {
 }
 
 
-static bool ContainsOnlyValidKeys(Handle<FixedArray> array) {
-  int len = array->length();
-  for (int i = 0; i < len; i++) {
-    Object* e = array->get(i);
-    if (!(e->IsName() || e->IsNumber())) return false;
-  }
-  return true;
-}
-
-
 bool Map::OnlyHasSimpleProperties() {
   // Wrapped string elements aren't explicitly stored in the elements backing
   // store, but are loaded indirectly from the underlying string.
@@ -8175,15 +8170,8 @@ MaybeHandle<FixedArray> JSReceiver::GetKeys(Handle<JSReceiver> object,
                                             PropertyFilter filter,
                                             GetKeysConversion keys_conversion,
                                             bool filter_proxy_keys) {
-  USE(ContainsOnlyValidKeys);
-  Isolate* isolate = object->GetIsolate();
-  KeyAccumulator accumulator(isolate, type, filter);
-  accumulator.set_filter_proxy_keys(filter_proxy_keys);
-  MAYBE_RETURN(accumulator.CollectKeys(object, object),
-               MaybeHandle<FixedArray>());
-  Handle<FixedArray> keys = accumulator.GetKeys(keys_conversion);
-  DCHECK(ContainsOnlyValidKeys(keys));
-  return keys;
+  return KeyAccumulator::GetKeys(object, type, filter, keys_conversion,
+                                 filter_proxy_keys);
 }
 
 MUST_USE_RESULT Maybe<bool> FastGetOwnValuesOrEntries(
@@ -8280,7 +8268,6 @@ MaybeHandle<FixedArray> GetOwnValuesOrEntries(Isolate* isolate,
   MAYBE_RETURN(accumulator.CollectKeys(object, object),
                MaybeHandle<FixedArray>());
   Handle<FixedArray> keys = accumulator.GetKeys(CONVERT_TO_STRING);
-  DCHECK(ContainsOnlyValidKeys(keys));
 
   values_or_entries = isolate->factory()->NewFixedArray(keys->length());
   int length = 0;
@@ -11907,8 +11894,13 @@ void JSFunction::SetPrototype(Handle<JSFunction> function,
     new_map->SetConstructor(*value);
     new_map->set_non_instance_prototype(true);
     Isolate* isolate = new_map->GetIsolate();
+
     construct_prototype = handle(
-        function->context()->native_context()->initial_object_prototype(),
+        IsGeneratorFunction(function->shared()->kind())
+            ? function->context()
+                  ->native_context()
+                  ->initial_generator_prototype()
+            : function->context()->native_context()->initial_object_prototype(),
         isolate);
   } else {
     function->map()->set_non_instance_prototype(false);
@@ -12894,7 +12886,7 @@ void SharedFunctionInfo::ResetForNewContext(int new_ic_age) {
     }
     set_opt_count(0);
     set_deopt_count(0);
-  } else if (code()->is_interpreter_entry_trampoline()) {
+  } else if (code()->is_interpreter_trampoline_builtin()) {
     set_profiler_ticks(0);
     if (optimization_disabled() && opt_count() >= FLAG_max_opt_count) {
       // Re-enable optimizations if they were disabled due to opt_count limit.
@@ -12978,63 +12970,66 @@ const char* const VisitorSynchronization::kTagNames[
 
 void ObjectVisitor::VisitCodeTarget(RelocInfo* rinfo) {
   DCHECK(RelocInfo::IsCodeTarget(rinfo->rmode()));
-  Object* target = Code::GetCodeFromTargetAddress(rinfo->target_address());
-  Object* old_target = target;
-  VisitPointer(&target);
-  CHECK_EQ(target, old_target);  // VisitPointer doesn't change Code* *target.
+  Object* old_pointer = Code::GetCodeFromTargetAddress(rinfo->target_address());
+  Object* new_pointer = old_pointer;
+  VisitPointer(&new_pointer);
+  DCHECK_EQ(old_pointer, new_pointer);
 }
 
 
 void ObjectVisitor::VisitCodeAgeSequence(RelocInfo* rinfo) {
   DCHECK(RelocInfo::IsCodeAgeSequence(rinfo->rmode()));
-  Object* stub = rinfo->code_age_stub();
-  if (stub) {
-    VisitPointer(&stub);
+  Object* old_pointer = rinfo->code_age_stub();
+  Object* new_pointer = old_pointer;
+  if (old_pointer != nullptr) {
+    VisitPointer(&new_pointer);
+    DCHECK_EQ(old_pointer, new_pointer);
   }
 }
 
 
 void ObjectVisitor::VisitCodeEntry(Address entry_address) {
-  Object* code = Code::GetObjectFromEntryAddress(entry_address);
-  Object* old_code = code;
-  VisitPointer(&code);
-  if (code != old_code) {
-    Memory::Address_at(entry_address) = reinterpret_cast<Code*>(code)->entry();
-  }
+  Object* old_pointer = Code::GetObjectFromEntryAddress(entry_address);
+  Object* new_pointer = old_pointer;
+  VisitPointer(&new_pointer);
+  DCHECK_EQ(old_pointer, new_pointer);
 }
 
 
 void ObjectVisitor::VisitCell(RelocInfo* rinfo) {
   DCHECK(rinfo->rmode() == RelocInfo::CELL);
-  Object* cell = rinfo->target_cell();
-  Object* old_cell = cell;
-  VisitPointer(&cell);
-  if (cell != old_cell) {
-    rinfo->set_target_cell(reinterpret_cast<Cell*>(cell));
-  }
+  Object* old_pointer = rinfo->target_cell();
+  Object* new_pointer = old_pointer;
+  VisitPointer(&new_pointer);
+  DCHECK_EQ(old_pointer, new_pointer);
 }
 
 
 void ObjectVisitor::VisitDebugTarget(RelocInfo* rinfo) {
   DCHECK(RelocInfo::IsDebugBreakSlot(rinfo->rmode()) &&
          rinfo->IsPatchedDebugBreakSlotSequence());
-  Object* target = Code::GetCodeFromTargetAddress(rinfo->debug_call_address());
-  Object* old_target = target;
-  VisitPointer(&target);
-  CHECK_EQ(target, old_target);  // VisitPointer doesn't change Code* *target.
+  Object* old_pointer =
+      Code::GetCodeFromTargetAddress(rinfo->debug_call_address());
+  Object* new_pointer = old_pointer;
+  VisitPointer(&new_pointer);
+  DCHECK_EQ(old_pointer, new_pointer);
 }
 
 
 void ObjectVisitor::VisitEmbeddedPointer(RelocInfo* rinfo) {
   DCHECK(rinfo->rmode() == RelocInfo::EMBEDDED_OBJECT);
-  Object* p = rinfo->target_object();
-  VisitPointer(&p);
+  Object* old_pointer = rinfo->target_object();
+  Object* new_pointer = old_pointer;
+  VisitPointer(&new_pointer);
+  DCHECK_EQ(old_pointer, new_pointer);
 }
 
 
 void ObjectVisitor::VisitExternalReference(RelocInfo* rinfo) {
-  Address p = rinfo->target_external_reference();
-  VisitExternalReference(&p);
+  Address old_reference = rinfo->target_external_reference();
+  Address new_reference = old_reference;
+  VisitExternalReference(&new_reference);
+  DCHECK_EQ(old_reference, new_reference);
 }
 
 
@@ -13738,8 +13733,9 @@ void DeoptimizationOutputData::DeoptimizationOutputDataPrint(
     int pc_and_state = this->PcAndState(i)->value();
     os << std::setw(6) << this->AstId(i).ToInt() << "  " << std::setw(8)
        << FullCodeGenerator::PcField::decode(pc_and_state) << "  "
-       << FullCodeGenerator::State2String(
-              FullCodeGenerator::StateField::decode(pc_and_state)) << "\n";
+       << Deoptimizer::BailoutStateToString(
+              FullCodeGenerator::BailoutStateField::decode(pc_and_state))
+       << "\n";
   }
 }
 
@@ -15245,8 +15241,12 @@ bool JSObject::WasConstructedFromApiFunction() {
 
 MaybeHandle<String> Object::ObjectProtoToString(Isolate* isolate,
                                                 Handle<Object> object) {
-  if (object->IsUndefined()) return isolate->factory()->undefined_to_string();
-  if (object->IsNull()) return isolate->factory()->null_to_string();
+  if (*object == isolate->heap()->undefined_value()) {
+    return isolate->factory()->undefined_to_string();
+  }
+  if (*object == isolate->heap()->null_value()) {
+    return isolate->factory()->null_to_string();
+  }
 
   Handle<JSReceiver> receiver =
       Object::ToObject(isolate, object).ToHandleChecked();
@@ -15267,6 +15267,18 @@ MaybeHandle<String> Object::ObjectProtoToString(Isolate* isolate,
                                JSReceiver::BuiltinStringTag(receiver), String);
   }
 
+  if (*tag == isolate->heap()->Object_string()) {
+    return isolate->factory()->object_to_string();
+  }
+  if (*tag == isolate->heap()->String_string()) {
+    return isolate->factory()->string_to_string();
+  }
+  if (*tag == isolate->heap()->Array_string()) {
+    return isolate->factory()->array_to_string();
+  }
+  if (*tag == isolate->heap()->Function_string()) {
+    return isolate->factory()->function_to_string();
+  }
   IncrementalStringBuilder builder(isolate);
   builder.AppendCString("[object ");
   builder.AppendString(tag);

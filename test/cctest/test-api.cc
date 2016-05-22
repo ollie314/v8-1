@@ -51,7 +51,7 @@
 #include "src/utils.h"
 #include "src/vm-state.h"
 #include "test/cctest/heap/heap-tester.h"
-#include "test/cctest/heap/utils-inl.h"
+#include "test/cctest/heap/heap-utils.h"
 
 static const bool kLogThreading = false;
 
@@ -634,7 +634,7 @@ TEST(MakingExternalUnalignedOneByteString) {
       "slice('abcdefghijklmnopqrstuvwxyz');"));
 
   // Trigger GCs so that the newly allocated string moves to old gen.
-  SimulateFullSpace(CcTest::heap()->old_space());
+  i::heap::SimulateFullSpace(CcTest::heap()->old_space());
   CcTest::heap()->CollectGarbage(i::NEW_SPACE);  // in survivor space now
   CcTest::heap()->CollectGarbage(i::NEW_SPACE);  // in old gen now
 
@@ -14798,8 +14798,8 @@ UNINITIALIZED_TEST(SetJitCodeEventHandler) {
     for (int i = 0; i < kIterations; ++i) {
       LocalContext env(isolate);
       i::AlwaysAllocateScope always_allocate(i_isolate);
-      SimulateFullSpace(i::FLAG_ignition ? heap->old_space()
-                                         : heap->code_space());
+      i::heap::SimulateFullSpace(i::FLAG_ignition ? heap->old_space()
+                                                  : heap->code_space());
       CompileRun(script);
 
       // Keep a strong reference to the code object in the handle scope.
@@ -19001,7 +19001,7 @@ void PrologueCallbackAlloc(v8::Isolate* isolate,
   ++prologue_call_count_alloc;
 
   // Simulate full heap to see if we will reenter this callback
-  SimulateFullSpace(CcTest::heap()->new_space());
+  i::heap::SimulateFullSpace(CcTest::heap()->new_space());
 
   Local<Object> obj = Object::New(isolate);
   CHECK(!obj.IsEmpty());
@@ -19021,7 +19021,7 @@ void EpilogueCallbackAlloc(v8::Isolate* isolate,
   ++epilogue_call_count_alloc;
 
   // Simulate full heap to see if we will reenter this callback
-  SimulateFullSpace(CcTest::heap()->new_space());
+  i::heap::SimulateFullSpace(CcTest::heap()->new_space());
 
   Local<Object> obj = Object::New(isolate);
   CHECK(!obj.IsEmpty());
@@ -22046,6 +22046,20 @@ THREADED_TEST(JSONStringifyObject) {
       v8::JSON::Stringify(context.local(), obj).ToLocalChecked();
   v8::String::Utf8Value utf8(json);
   ExpectString("JSON.stringify(obj)", *utf8);
+}
+
+THREADED_TEST(JSONStringifyObjectWithGap) {
+  LocalContext context;
+  HandleScope scope(context->GetIsolate());
+  Local<Value> value =
+      v8::JSON::Parse(context.local(), v8_str("{\"x\":42}")).ToLocalChecked();
+  Local<Object> obj = value->ToObject(context.local()).ToLocalChecked();
+  Local<Object> global = context->Global();
+  global->Set(context.local(), v8_str("obj"), obj).FromJust();
+  Local<String> json =
+      v8::JSON::Stringify(context.local(), obj, v8_str("*")).ToLocalChecked();
+  v8::String::Utf8Value utf8(json);
+  ExpectString("JSON.stringify(obj, null,  '*')", *utf8);
 }
 
 #if V8_OS_POSIX && !V8_OS_NACL

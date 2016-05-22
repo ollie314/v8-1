@@ -526,17 +526,26 @@ struct MachineOperatorGlobalCache {
   AtomicStore##Type##Operator kAtomicStore##Type;
   ATOMIC_REPRESENTATION_LIST(ATOMIC_STORE)
 #undef STORE
+
+  struct DebugBreakOperator : public Operator {
+    DebugBreakOperator()
+        : Operator(IrOpcode::kDebugBreak, Operator::kNoThrow, "DebugBreak", 0,
+                   0, 0, 0, 0, 0) {}
+  };
+  DebugBreakOperator kDebugBreak;
 };
 
 
 static base::LazyInstance<MachineOperatorGlobalCache>::type kCache =
     LAZY_INSTANCE_INITIALIZER;
 
-
-MachineOperatorBuilder::MachineOperatorBuilder(Zone* zone,
-                                               MachineRepresentation word,
-                                               Flags flags)
-    : cache_(kCache.Get()), word_(word), flags_(flags) {
+MachineOperatorBuilder::MachineOperatorBuilder(
+    Zone* zone, MachineRepresentation word, Flags flags,
+    AlignmentRequirements alignmentRequirements)
+    : cache_(kCache.Get()),
+      word_(word),
+      flags_(flags),
+      alignment_requirements_(alignmentRequirements) {
   DCHECK(word == MachineRepresentation::kWord32 ||
          word == MachineRepresentation::kWord64);
 }
@@ -604,6 +613,9 @@ const Operator* MachineOperatorBuilder::Store(StoreRepresentation store_rep) {
   return nullptr;
 }
 
+const Operator* MachineOperatorBuilder::DebugBreak() {
+  return &cache_.kDebugBreak;
+}
 
 const Operator* MachineOperatorBuilder::CheckedLoad(
     CheckedLoadRepresentation rep) {

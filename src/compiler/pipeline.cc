@@ -1404,7 +1404,7 @@ bool PipelineImpl::CreateGraph() {
       RunPrintAndVerify("Loop peeled");
     }
 
-    if (FLAG_experimental_turbo_escape) {
+    if (FLAG_turbo_escape) {
       Run<EscapeAnalysisPhase>();
       RunPrintAndVerify("Escape Analysed");
     }
@@ -1496,9 +1496,11 @@ Handle<Code> Pipeline::GenerateCodeForCodeStub(Isolate* isolate,
   DCHECK_NOT_NULL(data.schedule());
 
   if (FLAG_trace_turbo) {
-    TurboJsonFile json_of(&info, std::ios_base::trunc);
-    json_of << "{\"function\":\"" << info.GetDebugName().get()
-            << "\", \"source\":\"\",\n\"phases\":[";
+    {
+      TurboJsonFile json_of(&info, std::ios_base::trunc);
+      json_of << "{\"function\":\"" << info.GetDebugName().get()
+              << "\", \"source\":\"\",\n\"phases\":[";
+    }
     pipeline.Run<PrintGraphPhase>("Machine");
   }
 

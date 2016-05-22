@@ -36,12 +36,10 @@ Handle<String> Bootstrapper::SourceLookup(int index) {
     Vector<const char> source = Source::GetScriptSource(index);
     NativesExternalStringResource* resource =
         new NativesExternalStringResource(source.start(), source.length());
-    // We do not expect this to throw an exception. Change this if it does.
-    Handle<String> source_code = isolate_->factory()
-                                     ->NewExternalStringFromOneByte(resource)
-                                     .ToHandleChecked();
+    Handle<ExternalOneByteString> source_code =
+        isolate_->factory()->NewNativeSourceString(resource);
     // Mark this external string with a special map.
-    source_code->set_map(isolate_->heap()->native_source_string_map());
+    DCHECK(source_code->is_short());
     Source::GetSourceCache(heap)->set(index, *source_code);
   }
   Handle<Object> cached_source(Source::GetSourceCache(heap)->get(index),
@@ -749,6 +747,8 @@ void Genesis::CreateIteratorMaps(Handle<JSFunction> empty) {
       factory()->NewJSObject(isolate()->object_function(), TENURED);
   Handle<JSObject> generator_object_prototype =
       factory()->NewJSObject(isolate()->object_function(), TENURED);
+  native_context()->set_initial_generator_prototype(
+      *generator_object_prototype);
   SetObjectPrototype(generator_object_prototype, iterator_prototype);
   Handle<JSObject> generator_function_prototype =
       factory()->NewJSObject(isolate()->object_function(), TENURED);
@@ -1320,6 +1320,10 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
       string_map->AppendDescriptor(&d);
     }
 
+    // Install the String.fromCharCode function.
+    SimpleInstallFunction(string_fun, "fromCharCode",
+                          Builtins::kStringFromCharCode, 1, false);
+
     // Create the %StringPrototype%
     Handle<JSValue> prototype =
         Handle<JSValue>::cast(factory->NewJSObject(string_fun, TENURED));
@@ -1587,7 +1591,6 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     Handle<JSFunction> cons = factory->NewFunction(name);
     JSFunction::SetInstancePrototype(cons,
         Handle<Object>(native_context()->initial_object_prototype(), isolate));
-    cons->shared()->set_instance_class_name(*name);
     Handle<JSObject> json_object = factory->NewJSObject(cons, TENURED);
     DCHECK(json_object->IsJSObject());
     JSObject::AddProperty(global, name, json_object, DONT_ENUM);
@@ -1599,7 +1602,6 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     JSFunction::SetInstancePrototype(
         cons,
         Handle<Object>(native_context()->initial_object_prototype(), isolate));
-    cons->shared()->set_instance_class_name(*name);
     Handle<JSObject> math = factory->NewJSObject(cons, TENURED);
     DCHECK(math->IsJSObject());
     JSObject::AddProperty(global, name, math, DONT_ENUM);
@@ -2464,12 +2466,12 @@ void Bootstrapper::ExportFromRuntime(Isolate* isolate,
 
       Handle<JSFunction> async_function_next =
           SimpleInstallFunction(container, "AsyncFunctionNext",
-                                Builtins::kGeneratorPrototypeNext, 2, false);
+                                Builtins::kGeneratorPrototypeNext, 1, true);
       Handle<JSFunction> async_function_throw =
           SimpleInstallFunction(container, "AsyncFunctionThrow",
-                                Builtins::kGeneratorPrototypeThrow, 2, false);
-      async_function_next->shared()->set_native(true);
-      async_function_throw->shared()->set_native(true);
+                                Builtins::kGeneratorPrototypeThrow, 1, true);
+      async_function_next->shared()->set_native(false);
+      async_function_throw->shared()->set_native(false);
     }
   }
 }

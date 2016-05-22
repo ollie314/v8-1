@@ -39,7 +39,7 @@
 #include "src/v8.h"
 #include "src/version.h"
 #include "src/vm-state-inl.h"
-
+#include "src/wasm/wasm-module.h"
 
 namespace v8 {
 namespace internal {
@@ -616,11 +616,17 @@ class CaptureStackTraceHelper {
         factory()->NewJSObject(isolate_->object_function());
 
     if (!function_key_.is_null()) {
-      Handle<Object> fun_name = handle(frame->function_name(), isolate_);
-      if (fun_name->IsUndefined())
-        fun_name = isolate_->factory()->InternalizeUtf8String(
-            Vector<const char>("<WASM>"));
-      JSObject::AddProperty(stack_frame, function_key_, fun_name, NONE);
+      Object* wasm_object = frame->wasm_obj();
+      Handle<String> name;
+      if (!wasm_object->IsUndefined()) {
+        Handle<JSObject> wasm = handle(JSObject::cast(wasm_object));
+        wasm::GetWasmFunctionName(wasm, frame->function_index())
+            .ToHandle(&name);
+      }
+      if (name.is_null()) {
+        name = isolate_->factory()->NewStringFromStaticChars("<WASM UNNAMED>");
+      }
+      JSObject::AddProperty(stack_frame, function_key_, name, NONE);
     }
     // Encode the function index as line number.
     if (!line_key_.is_null()) {
@@ -1877,6 +1883,7 @@ Isolate::Isolate(bool enable_serializer)
       // TODO(bmeurer) Initialized lazily because it depends on flags; can
       // be fixed once the default isolate cleanup is done.
       random_number_generator_(NULL),
+      rail_mode_(PERFORMANCE_DEFAULT),
       serializer_enabled_(enable_serializer),
       has_fatal_error_(false),
       initialized_from_snapshot_(false),
@@ -3020,6 +3027,12 @@ void Isolate::CheckDetachedContextsAfterGC() {
   }
 }
 
+void Isolate::SetRAILMode(RAILMode rail_mode) {
+  rail_mode_ = rail_mode;
+  if (FLAG_trace_rail) {
+    PrintIsolate(this, "RAIL mode: %s\n", RAILModeName(rail_mode_));
+  }
+}
 
 bool StackLimitCheck::JsHasOverflowed(uintptr_t gap) const {
   StackGuard* stack_guard = isolate_->stack_guard();

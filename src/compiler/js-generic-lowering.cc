@@ -679,9 +679,17 @@ void JSGenericLowering::LowerJSStoreMessage(Node* node) {
   NodeProperties::ChangeOp(node, machine()->Store(representation));
 }
 
+void JSGenericLowering::LowerJSGeneratorStore(Node* node) {
+  UNREACHABLE();  // Eliminated in typed lowering.
+}
 
-void JSGenericLowering::LowerJSYield(Node* node) { UNIMPLEMENTED(); }
+void JSGenericLowering::LowerJSGeneratorRestoreContinuation(Node* node) {
+  UNREACHABLE();  // Eliminated in typed lowering.
+}
 
+void JSGenericLowering::LowerJSGeneratorRestoreRegister(Node* node) {
+  UNREACHABLE();  // Eliminated in typed lowering.
+}
 
 void JSGenericLowering::LowerJSStackCheck(Node* node) {
   Node* effect = NodeProperties::GetEffectInput(node);

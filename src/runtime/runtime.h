@@ -230,13 +230,9 @@ namespace internal {
   F(GeneratorGetFunction, 1, 1)         \
   F(GeneratorGetReceiver, 1, 1)         \
   F(GeneratorGetInput, 1, 1)            \
-  F(GeneratorSetContext, 1, 1)          \
   F(GeneratorGetContinuation, 1, 1)     \
-  F(GeneratorSetContinuation, 2, 1)     \
   F(GeneratorGetSourcePosition, 1, 1)   \
-  F(GeneratorGetResumeMode, 1, 1)       \
-  F(GeneratorLoadRegister, 2, 1)        \
-  F(GeneratorStoreRegister, 3, 1)
+  F(GeneratorGetResumeMode, 1, 1)
 
 #ifdef V8_I18N_SUPPORT
 #define FOR_EACH_INTRINSIC_I18N(F)           \
@@ -265,7 +261,8 @@ namespace internal {
   F(BreakIteratorBreakType, 1, 1)            \
   F(StringToLowerCaseI18N, 1, 1)             \
   F(StringToUpperCaseI18N, 1, 1)             \
-  F(StringLocaleConvertCase, 3, 1)
+  F(StringLocaleConvertCase, 3, 1)           \
+  F(DateCacheVersion, 0, 1)
 #else
 #define FOR_EACH_INTRINSIC_I18N(F)
 #endif
@@ -320,14 +317,12 @@ namespace internal {
   F(GetAndResetRuntimeCallStats, -1 /* <= 2 */, 1)  \
   F(EnqueueMicrotask, 1, 1)                         \
   F(RunMicrotasks, 0, 1)                            \
-  F(WasmGetFunctionName, 2, 1)                      \
   F(OrdinaryHasInstance, 2, 1)
 
 #define FOR_EACH_INTRINSIC_JSON(F) \
   F(QuoteJSONString, 1, 1)         \
-  F(BasicJSONStringify, 1, 1)      \
+  F(BasicJSONStringify, 2, 1)      \
   F(ParseJson, 1, 1)
-
 
 #define FOR_EACH_INTRINSIC_LITERALS(F) \
   F(CreateRegExpLiteral, 4, 1)         \
@@ -1095,7 +1090,7 @@ class Runtime : public AllStatic {
       Isolate* isolate, Handle<Object> object, Handle<Object> key);
 
   MUST_USE_RESULT static MaybeHandle<Object> BasicJsonStringify(
-      Isolate* isolate, Handle<Object> object);
+      Isolate* isolate, Handle<Object> object, Handle<String> gap);
 
   MUST_USE_RESULT static MaybeHandle<Object> BasicJsonStringifyString(
       Isolate* isolate, Handle<String> string);

@@ -8,11 +8,11 @@ vars = {
 
 deps = {
   "v8/build":
-    Var("git_url") + "/chromium/src/build.git" + "@" + "01ca9403e7d6ba63e9a4b6df1cb5cb8397ff7b92",
+    Var("git_url") + "/chromium/src/build.git" + "@" + "298aeabfe2aa544f7be8cab05a133428bca7dea3",
   "v8/tools/gyp":
     Var("git_url") + "/external/gyp.git" + "@" + "bce1c7793010574d88d7915e2d55395213ac63d1",
   "v8/third_party/icu":
-    Var("git_url") + "/chromium/deps/icu.git" + "@" + "c291cde264469b20ca969ce8832088acb21e0c48",
+    Var("git_url") + "/chromium/deps/icu.git" + "@" + "54f86bb1d1d02968576d21c16d7134ec35c30fbc",
   "v8/buildtools":
     Var("git_url") + "/chromium/buildtools.git" + "@" + "06e80a0e17319868d4a9b13f9bb6a248dc8d8b20",
   "v8/base/trace_event/common":
@@ -27,17 +27,17 @@ deps = {
     Var("git_url") + "/v8/deps/third_party/benchmarks.git" + "@" + "05d7188267b4560491ff9155c5ee13e207ecd65f",
   "v8/test/mozilla/data":
     Var("git_url") + "/v8/deps/third_party/mozilla-tests.git" + "@" + "f6c578a10ea707b1a8ab0b88943fe5115ce2b9be",
-  "v8/test/simdjs/data": Var("git_url") + "/external/github.com/tc39/ecmascript_simd.git" + "@" + "c8ef63c728283debc25891123eb00482fee4b8cd",
+  "v8/test/simdjs/data": Var("git_url") + "/external/github.com/tc39/ecmascript_simd.git" + "@" + "baf493985cb9ea7cdbd0d68704860a8156de9556",
   "v8/test/test262/data":
     Var("git_url") + "/external/github.com/tc39/test262.git" + "@" + "9c45e2ac684bae64614d8eb55789cae97323a7e7",
   "v8/tools/clang":
-    Var("git_url") + "/chromium/src/tools/clang.git" + "@" + "18b63c680a59a7125514b1e05ca42cdfb89a19c7",
+    Var("git_url") + "/chromium/src/tools/clang.git" + "@" + "996bab489f816e51dde704bd215fb3403919f07e",
 }
 
 deps_os = {
   "android": {
     "v8/third_party/android_tools":
-      Var("git_url") + "/android_tools.git" + "@" + "adfd31794011488cd0fc716b53558b2d8a67af8b",
+      Var("git_url") + "/android_tools.git" + "@" + "5b5f2f60b78198eaef25d442ac60f823142a8a6e",
   },
   "win": {
     "v8/third_party/cygwin":

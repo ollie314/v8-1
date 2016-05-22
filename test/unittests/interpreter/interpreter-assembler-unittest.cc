@@ -382,32 +382,6 @@ TARGET_TEST_F(InterpreterAssemblerTest, Jump) {
   }
 }
 
-TARGET_TEST_F(InterpreterAssemblerTest, InterpreterReturn) {
-  // If debug code is enabled we emit extra code in InterpreterReturn.
-  if (FLAG_debug_code) return;
-
-  TRACED_FOREACH(interpreter::Bytecode, bytecode, kBytecodes) {
-    InterpreterAssemblerForTest m(this, bytecode);
-    Node* tail_call_node = m.InterpreterReturn();
-
-    Handle<HeapObject> exit_trampoline =
-        isolate()->builtins()->InterpreterExitTrampoline();
-    Matcher<Node*> exit_trampoline_entry_matcher =
-        IsIntPtrAdd(IsHeapConstant(exit_trampoline),
-                    IsIntPtrConstant(Code::kHeaderSize - kHeapObjectTag));
-    EXPECT_THAT(
-        tail_call_node,
-        IsTailCall(
-            _, exit_trampoline_entry_matcher,
-            IsParameter(InterpreterDispatchDescriptor::kAccumulatorParameter),
-            IsParameter(
-                InterpreterDispatchDescriptor::kBytecodeOffsetParameter),
-            _,
-            IsParameter(InterpreterDispatchDescriptor::kDispatchTableParameter),
-            _, _));
-  }
-}
-
 TARGET_TEST_F(InterpreterAssemblerTest, BytecodeOperand) {
   static const OperandScale kOperandScales[] = {
       OperandScale::kSingle, OperandScale::kDouble, OperandScale::kQuadruple};
@@ -546,9 +520,9 @@ TARGET_TEST_F(InterpreterAssemblerTest, SmiTag) {
   TRACED_FOREACH(interpreter::Bytecode, bytecode, kBytecodes) {
     InterpreterAssemblerForTest m(this, bytecode);
     Node* value = m.Int32Constant(44);
-    EXPECT_THAT(
-        m.SmiTag(value),
-        IsWordShl(value, IsIntPtrConstant(kSmiShiftSize + kSmiTagSize)));
+    EXPECT_THAT(m.SmiTag(value),
+                IsIntPtrConstant(static_cast<intptr_t>(44)
+                                 << (kSmiShiftSize + kSmiTagSize)));
     EXPECT_THAT(
         m.SmiUntag(value),
         IsWordSar(value, IsIntPtrConstant(kSmiShiftSize + kSmiTagSize)));

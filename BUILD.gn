@@ -611,7 +611,7 @@ action("run_mksnapshot") {
   visibility = [ ":*" ]  # Only targets in this file can depend on this.
 
   deps = [
-    ":mksnapshot($snapshot_toolchain)",
+    ":mksnapshot($v8_snapshot_toolchain)",
   ]
 
   script = "tools/run.py"
@@ -621,7 +621,7 @@ action("run_mksnapshot") {
   ]
 
   args = [
-    "./" + rebase_path(get_label_info(":mksnapshot($snapshot_toolchain)",
+    "./" + rebase_path(get_label_info(":mksnapshot($v8_snapshot_toolchain)",
                                       "root_out_dir") + "/mksnapshot",
                        root_build_dir),
     "--startup_src",
@@ -1734,10 +1734,10 @@ v8_source_set("v8_base") {
     ]
   } else if (v8_target_arch == "mips64el") {
     sources += [
-      "compiler/mips64/code-generator-mips64.cc",
-      "compiler/mips64/instruction-codes-mips64.h",
-      "compiler/mips64/instruction-scheduler-mips64.cc",
-      "compiler/mips64/instruction-selector-mips64.cc",
+      "src/compiler/mips64/code-generator-mips64.cc",
+      "src/compiler/mips64/instruction-codes-mips64.h",
+      "src/compiler/mips64/instruction-scheduler-mips64.cc",
+      "src/compiler/mips64/instruction-selector-mips64.cc",
       "src/crankshaft/mips64/lithium-codegen-mips64.cc",
       "src/crankshaft/mips64/lithium-codegen-mips64.h",
       "src/crankshaft/mips64/lithium-gap-resolver-mips64.cc",
@@ -1835,9 +1835,6 @@ v8_source_set("v8_base") {
     if (is_win) {
       deps += [ "//third_party/icu:icudata" ]
     }
-
-    # TODO(jochen): Add support for icu_use_data_file_flag
-    defines += [ "ICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_FILE" ]
   } else {
     sources -= [
       "src/i18n.cc",
@@ -2003,7 +2000,7 @@ v8_source_set("fuzzer_support") {
 # Executables
 #
 
-if (current_toolchain == snapshot_toolchain) {
+if (current_toolchain == v8_snapshot_toolchain) {
   executable("mksnapshot") {
     visibility = [ ":*" ]  # Only targets in this file can depend on this.
 
@@ -2105,7 +2102,7 @@ executable("d8") {
   }
 }
 
-if ((current_toolchain == host_toolchain && v8_toolset_for_shell == "host") || (current_toolchain == snapshot_toolchain && v8_toolset_for_shell == "host") || (current_toolchain != host_toolchain && v8_toolset_for_shell == "target")) {
+if ((current_toolchain == host_toolchain && v8_toolset_for_shell == "host") || (current_toolchain == v8_snapshot_toolchain && v8_toolset_for_shell == "host") || (current_toolchain != host_toolchain && v8_toolset_for_shell == "target")) {
   executable("v8_shell") {
     sources = [
       "samples/shell.cc",

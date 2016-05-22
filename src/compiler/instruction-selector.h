@@ -139,6 +139,8 @@ class InstructionSelector final {
   // TODO(sigurds) This should take a CpuFeatures argument.
   static MachineOperatorBuilder::Flags SupportedMachineOperatorFlags();
 
+  static MachineOperatorBuilder::AlignmentRequirements AlignmentRequirements();
+
   // ===========================================================================
   // ============ Architecture-independent graph covering methods. =============
   // ===========================================================================
@@ -263,6 +265,7 @@ class InstructionSelector final {
   void VisitDeoptimize(DeoptimizeKind kind, Node* value);
   void VisitReturn(Node* ret);
   void VisitThrow(Node* value);
+  void VisitDebugBreak();
 
   void EmitPrepareArguments(ZoneVector<compiler::PushParameter>* arguments,
                             const CallDescriptor* descriptor, Node* node);

@@ -47,7 +47,7 @@
   V(Select)              \
   V(Phi)                 \
   V(EffectPhi)           \
-  V(CheckPoint)          \
+  V(Checkpoint)          \
   V(BeginRegion)         \
   V(FinishRegion)        \
   V(FrameState)          \
@@ -177,6 +177,8 @@
   SIMPLIFIED_COMPARE_BINOP_LIST(V) \
   V(BooleanNot)                    \
   V(BooleanToNumber)               \
+  V(SpeculativeNumberAdd)          \
+  V(SpeculativeNumberSubtract)     \
   V(NumberAdd)                     \
   V(NumberSubtract)                \
   V(NumberMultiply)                \
@@ -192,11 +194,13 @@
   V(NumberClz32)                   \
   V(NumberCeil)                    \
   V(NumberFloor)                   \
+  V(NumberLog)                     \
   V(NumberRound)                   \
   V(NumberTrunc)                   \
   V(NumberToInt32)                 \
   V(NumberToUint32)                \
   V(NumberIsHoleNaN)               \
+  V(StringFromCharCode)            \
   V(StringToNumber)                \
   V(ChangeTaggedSignedToInt32)     \
   V(ChangeTaggedToInt32)           \
@@ -208,7 +212,13 @@
   V(ChangeFloat64ToTagged)         \
   V(ChangeTaggedToBit)             \
   V(ChangeBitToTagged)             \
+  V(CheckedUint32ToInt32)          \
+  V(CheckedFloat64ToInt32)         \
+  V(CheckedTaggedToInt32)          \
+  V(CheckedTaggedToFloat64)        \
+  V(CheckIf)                       \
   V(TruncateTaggedToWord32)        \
+  V(TruncateTaggedToFloat64)       \
   V(Allocate)                      \
   V(LoadField)                     \
   V(LoadBuffer)                    \
@@ -246,6 +256,7 @@
 #define MACHINE_OP_LIST(V)      \
   MACHINE_COMPARE_BINOP_LIST(V) \
   V(DebugBreak)                 \
+  V(Comment)                    \
   V(Load)                       \
   V(Store)                      \
   V(StackSlot)                  \
@@ -323,6 +334,7 @@
   V(Float32Add)                 \
   V(Float32Sub)                 \
   V(Float32SubPreserveNan)      \
+  V(Float32Neg)                 \
   V(Float32Mul)                 \
   V(Float32Div)                 \
   V(Float32Max)                 \
@@ -333,12 +345,14 @@
   V(Float64Add)                 \
   V(Float64Sub)                 \
   V(Float64SubPreserveNan)      \
+  V(Float64Neg)                 \
   V(Float64Mul)                 \
   V(Float64Div)                 \
   V(Float64Mod)                 \
   V(Float64Max)                 \
   V(Float64Min)                 \
   V(Float64Abs)                 \
+  V(Float64Log)                 \
   V(Float64Sqrt)                \
   V(Float64RoundDown)           \
   V(Float32RoundUp)             \
@@ -513,19 +527,7 @@
   V(Bool8x16Swizzle)                        \
   V(Bool8x16Shuffle)                        \
   V(Bool8x16Equal)                          \
-  V(Bool8x16NotEqual)                       \
-  V(Simd128Load)                            \
-  V(Simd128Load1)                           \
-  V(Simd128Load2)                           \
-  V(Simd128Load3)                           \
-  V(Simd128Store)                           \
-  V(Simd128Store1)                          \
-  V(Simd128Store2)                          \
-  V(Simd128Store3)                          \
-  V(Simd128And)                             \
-  V(Simd128Or)                              \
-  V(Simd128Xor)                             \
-  V(Simd128Not)
+  V(Bool8x16NotEqual)
 
 #define MACHINE_SIMD_RETURN_NUM_OP_LIST(V) \
   V(Float32x4ExtractLane)                  \
@@ -544,10 +546,25 @@
   V(Bool8x16AnyTrue)                        \
   V(Bool8x16AllTrue)
 
+#define MACHINE_SIMD_GENERIC_OP_LIST(V) \
+  V(Simd128Load)                        \
+  V(Simd128Load1)                       \
+  V(Simd128Load2)                       \
+  V(Simd128Load3)                       \
+  V(Simd128Store)                       \
+  V(Simd128Store1)                      \
+  V(Simd128Store2)                      \
+  V(Simd128Store3)                      \
+  V(Simd128And)                         \
+  V(Simd128Or)                          \
+  V(Simd128Xor)                         \
+  V(Simd128Not)
+
 #define MACHINE_SIMD_OP_LIST(V)       \
   MACHINE_SIMD_RETURN_SIMD_OP_LIST(V) \
   MACHINE_SIMD_RETURN_NUM_OP_LIST(V)  \
-  MACHINE_SIMD_RETURN_BOOL_OP_LIST(V)
+  MACHINE_SIMD_RETURN_BOOL_OP_LIST(V) \
+  MACHINE_SIMD_GENERIC_OP_LIST(V)
 
 #define VALUE_OP_LIST(V)  \
   COMMON_OP_LIST(V)       \

@@ -51,11 +51,6 @@ static void InitializeInternalArrayConstructorDescriptor(
   }
 }
 
-void ArraySingleArgumentConstructorStub::InitializeDescriptor(
-    CodeStubDescriptor* descriptor) {
-  InitializeArrayConstructorDescriptor(isolate(), descriptor, 1);
-}
-
 void ArrayNArgumentsConstructorStub::InitializeDescriptor(
     CodeStubDescriptor* descriptor) {
   InitializeArrayConstructorDescriptor(isolate(), descriptor, -1);
@@ -66,9 +61,10 @@ void FastArrayPushStub::InitializeDescriptor(CodeStubDescriptor* descriptor) {
   descriptor->Initialize(r2, deopt_handler, -1, JS_FUNCTION_STUB_MODE);
 }
 
-void InternalArraySingleArgumentConstructorStub::InitializeDescriptor(
+void FastFunctionBindStub::InitializeDescriptor(
     CodeStubDescriptor* descriptor) {
-  InitializeInternalArrayConstructorDescriptor(isolate(), descriptor, 1);
+  Address deopt_handler = Runtime::FunctionForId(Runtime::kFunctionBind)->entry;
+  descriptor->Initialize(r2, deopt_handler, -1, JS_FUNCTION_STUB_MODE);
 }
 
 void InternalArrayNArgumentsConstructorStub::InitializeDescriptor(
@@ -1401,7 +1397,6 @@ void LoadIndexedStringStub::Generate(MacroAssembler* masm) {
                                           &miss,  // When not a string.
                                           &miss,  // When not a number.
                                           &miss,  // When index out of range.
-                                          STRING_INDEX_IS_ARRAY_INDEX,
                                           RECEIVER_IS_STRING);
   char_at_generator.GenerateFast(masm);
   __ Ret();
@@ -1864,11 +1859,14 @@ static void GenerateRecordCallTarget(MacroAssembler* masm) {
   // r4 : feedback vector
   // r5 : slot in feedback vector (Smi)
   Label initialize, done, miss, megamorphic, not_array_function;
+  Label done_initialize_count, done_increment_count;
 
   DCHECK_EQ(*TypeFeedbackVector::MegamorphicSentinel(masm->isolate()),
             masm->isolate()->heap()->megamorphic_symbol());
   DCHECK_EQ(*TypeFeedbackVector::UninitializedSentinel(masm->isolate()),
             masm->isolate()->heap()->uninitialized_symbol());
+
+  const int count_offset = FixedArray::kHeaderSize + kPointerSize;
 
   // Load the cache state into r7.
   __ SmiToPtrArrayOffset(r7, r5);
@@ -1884,9 +1882,9 @@ static void GenerateRecordCallTarget(MacroAssembler* masm) {
   Register weak_value = r9;
   __ LoadP(weak_value, FieldMemOperand(r7, WeakCell::kValueOffset));
   __ CmpP(r3, weak_value);
-  __ beq(&done);
+  __ beq(&done_increment_count, Label::kNear);
   __ CompareRoot(r7, Heap::kmegamorphic_symbolRootIndex);
-  __ beq(&done);
+  __ beq(&done, Label::kNear);
   __ LoadP(feedback_map, FieldMemOperand(r7, HeapObject::kMapOffset));
   __ CompareRoot(feedback_map, Heap::kWeakCellMapRootIndex);
   __ bne(&check_allocation_site);
@@ -1907,7 +1905,7 @@ static void GenerateRecordCallTarget(MacroAssembler* masm) {
   __ LoadNativeContextSlot(Context::ARRAY_FUNCTION_INDEX, r7);
   __ CmpP(r3, r7);
   __ bne(&megamorphic);
-  __ b(&done);
+  __ b(&done_increment_count, Label::kNear);
 
   __ bind(&miss);
 
@@ -1937,12 +1935,31 @@ static void GenerateRecordCallTarget(MacroAssembler* masm) {
   // slot.
   CreateAllocationSiteStub create_stub(masm->isolate());
   CallStubInRecordCallTarget(masm, &create_stub);
-  __ b(&done);
+  __ b(&done_initialize_count, Label::kNear);
 
   __ bind(&not_array_function);
 
   CreateWeakCellStub weak_cell_stub(masm->isolate());
   CallStubInRecordCallTarget(masm, &weak_cell_stub);
+
+  __ bind(&done_initialize_count);
+  // Initialize the call counter.
+  __ LoadSmiLiteral(r7, Smi::FromInt(1));
+  __ SmiToPtrArrayOffset(r6, r5);
+  __ AddP(r6, r4, r6);
+  __ StoreP(r7, FieldMemOperand(r6, count_offset), r0);
+  __ b(&done, Label::kNear);
+
+  __ bind(&done_increment_count);
+
+  // Increment the call count for monomorphic function calls.
+  __ SmiToPtrArrayOffset(r7, r5);
+  __ AddP(r7, r4, r7);
+
+  __ LoadP(r6, FieldMemOperand(r7, count_offset));
+  __ AddSmiLiteral(r6, r6, Smi::FromInt(1), r0);
+  __ StoreP(r6, FieldMemOperand(r7, count_offset), r0);
+
   __ bind(&done);
 }
 
@@ -2005,7 +2022,7 @@ void CallICStub::HandleArrayCase(MacroAssembler* masm, Label* miss) {
   __ SmiToPtrArrayOffset(r7, r5);
   __ AddP(r4, r4, r7);
   __ LoadP(r5, FieldMemOperand(r4, count_offset));
-  __ AddSmiLiteral(r5, r5, Smi::FromInt(CallICNexus::kCallCountIncrement), r0);
+  __ AddSmiLiteral(r5, r5, Smi::FromInt(1), r0);
   __ StoreP(r5, FieldMemOperand(r4, count_offset), r0);
 
   __ LoadRR(r4, r6);
@@ -2052,7 +2069,7 @@ void CallICStub::Generate(MacroAssembler* masm) {
   // Increment the call count for monomorphic function calls.
   const int count_offset = FixedArray::kHeaderSize + kPointerSize;
   __ LoadP(r5, FieldMemOperand(r8, count_offset));
-  __ AddSmiLiteral(r5, r5, Smi::FromInt(CallICNexus::kCallCountIncrement), r0);
+  __ AddSmiLiteral(r5, r5, Smi::FromInt(1), r0);
   __ StoreP(r5, FieldMemOperand(r8, count_offset), r0);
 
   __ bind(&call_function);
@@ -2122,7 +2139,7 @@ void CallICStub::Generate(MacroAssembler* masm) {
   __ bne(&miss);
 
   // Initialize the call counter.
-  __ LoadSmiLiteral(r7, Smi::FromInt(CallICNexus::kCallCountIncrement));
+  __ LoadSmiLiteral(r7, Smi::FromInt(1));
   __ StoreP(r7, FieldMemOperand(r8, count_offset), r0);
 
   // Store the function. Use a stub since we need a frame for allocation.
@@ -2211,13 +2228,7 @@ void StringCharCodeAtGenerator::GenerateSlow(
     // index_ is consumed by runtime conversion function.
     __ Push(object_, index_);
   }
-  if (index_flags_ == STRING_INDEX_IS_NUMBER) {
-    __ CallRuntime(Runtime::kNumberToIntegerMapMinusZero);
-  } else {
-    DCHECK(index_flags_ == STRING_INDEX_IS_ARRAY_INDEX);
-    // NumberToSmi discards numbers that are not exact integers.
-    __ CallRuntime(Runtime::kNumberToSmi);
-  }
+  __ CallRuntime(Runtime::kNumberToSmi);
   // Save the conversion result before the pop instructions below
   // have a chance to overwrite it.
   __ Move(index_, r2);
@@ -2548,7 +2559,7 @@ void SubStringStub::Generate(MacroAssembler* masm) {
   // r5: from index (untagged)
   __ SmiTag(r5, r5);
   StringCharAtGenerator generator(r2, r5, r4, r2, &runtime, &runtime, &runtime,
-                                  STRING_INDEX_IS_NUMBER, RECEIVER_IS_STRING);
+                                  RECEIVER_IS_STRING);
   generator.GenerateFast(masm);
   __ Drop(3);
   __ Ret();
@@ -2788,7 +2799,7 @@ void BinaryOpICWithAllocationSiteStub::Generate(MacroAssembler* masm) {
   // Load r4 with the allocation site.  We stick an undefined dummy value here
   // and replace it with the real allocation site later when we instantiate this
   // stub in BinaryOpICWithAllocationSiteStub::GetCodeCopyFromTemplate().
-  __ Move(r4, handle(isolate()->heap()->undefined_value()));
+  __ Move(r4, isolate()->factory()->undefined_value());
 
   // Make sure that we actually patched the allocation site.
   if (FLAG_debug_code) {

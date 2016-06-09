@@ -713,6 +713,12 @@ void InstructionSelector::VisitBlock(BasicBlock* block) {
     SetEffectLevel(node, effect_level);
   }
 
+  // We visit the control first, then the nodes in the block, so the block's
+  // control input should be on the same effect level as the last node.
+  if (block->control_input() != nullptr) {
+    SetEffectLevel(block->control_input(), effect_level);
+  }
+
   // Generate code for the block control "top down", but schedule the code
   // "bottom up".
   VisitControl(block);
@@ -901,7 +907,10 @@ void InstructionSelector::VisitNode(Node* node) {
     case IrOpcode::kObjectState:
       return;
     case IrOpcode::kDebugBreak:
-      VisitDebugBreak();
+      VisitDebugBreak(node);
+      return;
+    case IrOpcode::kComment:
+      VisitComment(node);
       return;
     case IrOpcode::kLoad: {
       LoadRepresentation type = LoadRepresentationOf(node->op());
@@ -1078,6 +1087,8 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsFloat32(node), VisitFloat32Sub(node);
     case IrOpcode::kFloat32SubPreserveNan:
       return MarkAsFloat32(node), VisitFloat32SubPreserveNan(node);
+    case IrOpcode::kFloat32Neg:
+      return MarkAsFloat32(node), VisitFloat32Neg(node);
     case IrOpcode::kFloat32Mul:
       return MarkAsFloat32(node), VisitFloat32Mul(node);
     case IrOpcode::kFloat32Div:
@@ -1102,6 +1113,8 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsFloat64(node), VisitFloat64Sub(node);
     case IrOpcode::kFloat64SubPreserveNan:
       return MarkAsFloat64(node), VisitFloat64SubPreserveNan(node);
+    case IrOpcode::kFloat64Neg:
+      return MarkAsFloat64(node), VisitFloat64Neg(node);
     case IrOpcode::kFloat64Mul:
       return MarkAsFloat64(node), VisitFloat64Mul(node);
     case IrOpcode::kFloat64Div:
@@ -1114,6 +1127,8 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsFloat64(node), VisitFloat64Max(node);
     case IrOpcode::kFloat64Abs:
       return MarkAsFloat64(node), VisitFloat64Abs(node);
+    case IrOpcode::kFloat64Log:
+      return MarkAsFloat64(node), VisitFloat64Log(node);
     case IrOpcode::kFloat64Sqrt:
       return MarkAsFloat64(node), VisitFloat64Sqrt(node);
     case IrOpcode::kFloat64Equal:
@@ -1788,9 +1803,15 @@ void InstructionSelector::VisitThrow(Node* value) {
   Emit(kArchThrowTerminator, g.NoOutput());
 }
 
-void InstructionSelector::VisitDebugBreak() {
+void InstructionSelector::VisitDebugBreak(Node* node) {
   OperandGenerator g(this);
   Emit(kArchDebugBreak, g.NoOutput());
+}
+
+void InstructionSelector::VisitComment(Node* node) {
+  OperandGenerator g(this);
+  InstructionOperand operand(g.UseImmediate(node));
+  Emit(kArchComment, 0, nullptr, 1, &operand);
 }
 
 FrameStateDescriptor* InstructionSelector::GetFrameStateDescriptor(

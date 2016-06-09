@@ -407,22 +407,19 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
   __ mov(edi, FieldOperand(ebx, JSGeneratorObject::kFunctionOffset));
 
   // Flood function if we are stepping.
-  Label skip_flooding;
+  Label prepare_step_in_if_stepping, prepare_step_in_suspended_generator;
+  Label stepping_prepared;
   ExternalReference step_in_enabled =
       ExternalReference::debug_step_in_enabled_address(masm->isolate());
   __ cmpb(Operand::StaticVariable(step_in_enabled), Immediate(0));
-  __ j(equal, &skip_flooding);
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-    __ Push(ebx);
-    __ Push(edx);
-    __ Push(edi);
-    __ CallRuntime(Runtime::kDebugPrepareStepInIfStepping);
-    __ Pop(edx);
-    __ Pop(ebx);
-    __ mov(edi, FieldOperand(ebx, JSGeneratorObject::kFunctionOffset));
-  }
-  __ bind(&skip_flooding);
+  __ j(not_equal, &prepare_step_in_if_stepping);
+
+  // Flood function if we need to continue stepping in the suspended generator.
+  ExternalReference debug_suspended_generator =
+      ExternalReference::debug_suspended_generator_address(masm->isolate());
+  __ cmp(ebx, Operand::StaticVariable(debug_suspended_generator));
+  __ j(equal, &prepare_step_in_suspended_generator);
+  __ bind(&stepping_prepared);
 
   // Pop return address.
   __ PopReturnAddressTo(eax);
@@ -518,6 +515,31 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
     __ mov(eax, ebx);  // Continuation expects generator object in eax.
     __ jmp(edx);
   }
+
+  __ bind(&prepare_step_in_if_stepping);
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+    __ Push(ebx);
+    __ Push(edx);
+    __ Push(edi);
+    __ CallRuntime(Runtime::kDebugPrepareStepInIfStepping);
+    __ Pop(edx);
+    __ Pop(ebx);
+    __ mov(edi, FieldOperand(ebx, JSGeneratorObject::kFunctionOffset));
+  }
+  __ jmp(&stepping_prepared);
+
+  __ bind(&prepare_step_in_suspended_generator);
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+    __ Push(ebx);
+    __ Push(edx);
+    __ CallRuntime(Runtime::kDebugPrepareStepInSuspendedGenerator);
+    __ Pop(edx);
+    __ Pop(ebx);
+    __ mov(edi, FieldOperand(ebx, JSGeneratorObject::kFunctionOffset));
+  }
+  __ jmp(&stepping_prepared);
 }
 
 static void LeaveInterpreterFrame(MacroAssembler* masm, Register scratch1,
@@ -874,13 +896,30 @@ void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
   const int bailout_id = BailoutId::None().ToInt();
   __ cmp(temp, Immediate(Smi::FromInt(bailout_id)));
   __ j(not_equal, &loop_bottom);
+
   // Literals available?
+  Label got_literals, maybe_cleared_weakcell;
   __ mov(temp, FieldOperand(map, index, times_half_pointer_size,
                             SharedFunctionInfo::kOffsetToPreviousLiterals));
+
+  // temp contains either a WeakCell pointing to the literals array or the
+  // literals array directly.
+  STATIC_ASSERT(WeakCell::kValueOffset == FixedArray::kLengthOffset);
+  __ JumpIfSmi(FieldOperand(temp, WeakCell::kValueOffset),
+               &maybe_cleared_weakcell);
+  // The WeakCell value is a pointer, therefore it's a valid literals array.
   __ mov(temp, FieldOperand(temp, WeakCell::kValueOffset));
-  __ JumpIfSmi(temp, &gotta_call_runtime);
+  __ jmp(&got_literals);
+
+  // We have a smi. If it's 0, then we are looking at a cleared WeakCell
+  // around the literals array, and we should visit the runtime. If it's > 0,
+  // then temp already contains the literals array.
+  __ bind(&maybe_cleared_weakcell);
+  __ cmp(FieldOperand(temp, WeakCell::kValueOffset), Immediate(0));
+  __ j(equal, &gotta_call_runtime);
 
   // Save the literals in the closure.
+  __ bind(&got_literals);
   __ mov(ecx, Operand(esp, 0));
   __ mov(FieldOperand(ecx, JSFunction::kLiteralsOffset), temp);
   __ push(index);
@@ -2607,6 +2646,27 @@ void Builtins::Generate_AllocateInOldSpace(MacroAssembler* masm) {
   __ PushReturnAddressFrom(ecx);
   __ Move(esi, Smi::FromInt(0));
   __ TailCallRuntime(Runtime::kAllocateInTargetSpace);
+}
+
+// static
+void Builtins::Generate_StringToNumber(MacroAssembler* masm) {
+  // The StringToNumber stub takes one argument in eax.
+  __ AssertString(eax);
+
+  // Check if string has a cached array index.
+  Label runtime;
+  __ test(FieldOperand(eax, String::kHashFieldOffset),
+          Immediate(String::kContainsCachedArrayIndexMask));
+  __ j(not_zero, &runtime, Label::kNear);
+  __ mov(eax, FieldOperand(eax, String::kHashFieldOffset));
+  __ IndexFromHash(eax, eax);
+  __ Ret();
+
+  __ bind(&runtime);
+  __ PopReturnAddressTo(ecx);     // Pop return address.
+  __ Push(eax);                   // Push argument.
+  __ PushReturnAddressFrom(ecx);  // Push return address.
+  __ TailCallRuntime(Runtime::kStringToNumber);
 }
 
 void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {

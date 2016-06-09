@@ -183,6 +183,8 @@ using v8::MemoryPressureLevel;
   V(FixedArray, materialized_objects, MaterializedObjects)                     \
   V(FixedArray, microtask_queue, MicrotaskQueue)                               \
   V(TypeFeedbackVector, dummy_vector, DummyVector)                             \
+  V(FixedArray, empty_literals_array, EmptyLiteralsArray)                      \
+  V(FixedArray, empty_sloppy_arguments_elements, EmptySloppyArgumentsElements) \
   V(FixedArray, cleared_optimized_code_map, ClearedOptimizedCodeMap)           \
   V(FixedArray, detached_contexts, DetachedContexts)                           \
   V(ArrayList, retained_maps, RetainedMaps)                                    \
@@ -300,6 +302,8 @@ class ObjectStats;
 class Scavenger;
 class ScavengeJob;
 class WeakObjectRetainer;
+
+enum PromotionMode { PROMOTE_MARKED, DEFAULT_PROMOTION };
 
 typedef void (*ObjectSlotCallback)(HeapObject** from, HeapObject* to);
 
@@ -774,7 +778,10 @@ class Heap {
 
   // An object should be promoted if the object has survived a
   // scavenge operation.
+  template <PromotionMode promotion_mode>
   inline bool ShouldBePromoted(Address old_address, int object_size);
+
+  inline PromotionMode CurrentPromotionMode();
 
   void ClearNormalizedMapCaches();
 
@@ -813,6 +820,16 @@ class Heap {
 
   void update_amount_of_external_allocated_memory(int64_t delta) {
     amount_of_external_allocated_memory_ += delta;
+  }
+
+  void update_amount_of_external_allocated_freed_memory(intptr_t freed) {
+    amount_of_external_allocated_memory_freed_.Increment(freed);
+  }
+
+  void account_amount_of_external_allocated_freed_memory() {
+    amount_of_external_allocated_memory_ -=
+        amount_of_external_allocated_memory_freed_.Value();
+    amount_of_external_allocated_memory_freed_.SetValue(0);
   }
 
   void DeoptMarkedAllocationSites();
@@ -1168,6 +1185,13 @@ class Heap {
                          const char** object_sub_type);
 
   // ===========================================================================
+  // Code statistics. ==========================================================
+  // ===========================================================================
+
+  // Collect code (Code and BytecodeArray objects) statistics.
+  void CollectCodeStatistics();
+
+  // ===========================================================================
   // GC statistics. ============================================================
   // ===========================================================================
 
@@ -1341,10 +1365,6 @@ class Heap {
 
   void RegisterNewArrayBuffer(JSArrayBuffer* buffer);
   void UnregisterArrayBuffer(JSArrayBuffer* buffer);
-
-  inline ArrayBufferTracker* array_buffer_tracker() {
-    return array_buffer_tracker_;
-  }
 
   // ===========================================================================
   // Allocation site tracking. =================================================
@@ -1686,7 +1706,8 @@ class Heap {
   // Performs a minor collection in new generation.
   void Scavenge();
 
-  Address DoScavenge(ObjectVisitor* scavenge_visitor, Address new_space_front);
+  Address DoScavenge(ObjectVisitor* scavenge_visitor, Address new_space_front,
+                     PromotionMode promotion_mode);
 
   void UpdateNewSpaceReferencesInExternalStringTable(
       ExternalStringTableUpdaterCallback updater_func);
@@ -1982,6 +2003,8 @@ class Heap {
   // Caches the amount of external memory registered at the last global gc.
   int64_t amount_of_external_allocated_memory_at_last_global_gc_;
 
+  base::AtomicNumber<intptr_t> amount_of_external_allocated_memory_freed_;
+
   // This can be calculated directly from a pointer to the heap; however, it is
   // more expedient to get at the isolate directly from within Heap methods.
   Isolate* isolate_;
@@ -2220,8 +2243,6 @@ class Heap {
 
   StrongRootsList* strong_roots_list_;
 
-  ArrayBufferTracker* array_buffer_tracker_;
-
   // The depth of HeapIterator nestings.
   int heap_iterator_depth_;
 
@@ -2239,7 +2260,7 @@ class Heap {
   friend class MarkCompactCollector;
   friend class MarkCompactMarkingVisitor;
   friend class NewSpace;
-  friend class ObjectStatsVisitor;
+  friend class ObjectStatsCollector;
   friend class Page;
   friend class Scavenger;
   friend class StoreBuffer;

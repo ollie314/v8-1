@@ -91,7 +91,7 @@ ExternalReferenceTable::ExternalReferenceTable(Isolate* isolate) {
   Add(ExternalReference::get_mark_code_as_executed_function(isolate).address(),
       "Code::MarkCodeAsExecuted");
   Add(ExternalReference::is_profiling_address(isolate).address(),
-      "CpuProfiler::is_profiling");
+      "Isolate::is_profiling");
   Add(ExternalReference::scheduled_exception_address(isolate).address(),
       "Isolate::scheduled_exception");
   Add(ExternalReference::invoke_function_callback(isolate).address(),
@@ -158,8 +158,6 @@ ExternalReferenceTable::ExternalReferenceTable(Isolate* isolate) {
       "f64_tan_wrapper");
   Add(ExternalReference::f64_exp_wrapper_function(isolate).address(),
       "f64_exp_wrapper");
-  Add(ExternalReference::f64_log_wrapper_function(isolate).address(),
-      "f64_log_wrapper");
   Add(ExternalReference::f64_pow_wrapper_function(isolate).address(),
       "f64_pow_wrapper");
   Add(ExternalReference::f64_atan2_wrapper_function(isolate).address(),
@@ -191,6 +189,8 @@ ExternalReferenceTable::ExternalReferenceTable(Isolate* isolate) {
       "Debug::is_active_address()");
   Add(ExternalReference::debug_step_in_enabled_address(isolate).address(),
       "Debug::step_in_enabled_address()");
+  Add(ExternalReference::debug_suspended_generator_address(isolate).address(),
+      "Debug::step_suspended_generator_address()");
 
 #ifndef V8_INTERPRETED_REGEXP
   Add(ExternalReference::re_case_insensitive_compare_uc16(isolate).address(),

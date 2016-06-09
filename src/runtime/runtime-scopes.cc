@@ -109,8 +109,8 @@ RUNTIME_FUNCTION(Runtime_DeclareGlobals) {
     // We have to declare a global const property. To capture we only
     // assign to it when evaluating the assignment for "const x =
     // <expr>" the initial value is the hole.
-    bool is_var = initial_value->IsUndefined();
-    bool is_const = initial_value->IsTheHole();
+    bool is_var = initial_value->IsUndefined(isolate);
+    bool is_const = initial_value->IsTheHole(isolate);
     bool is_function = initial_value->IsSharedFunctionInfo();
     DCHECK_EQ(1,
               BoolToInt(is_var) + BoolToInt(is_const) + BoolToInt(is_function));
@@ -149,32 +149,20 @@ RUNTIME_FUNCTION(Runtime_DeclareGlobals) {
 
 RUNTIME_FUNCTION(Runtime_InitializeVarGlobal) {
   HandleScope scope(isolate);
-  // args[0] == name
-  // args[1] == language_mode
-  // args[2] == value (optional)
-
-  // Determine if we need to assign to the variable if it already
-  // exists (based on the number of arguments).
-  RUNTIME_ASSERT(args.length() == 3);
-
+  DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, name, 0);
   CONVERT_LANGUAGE_MODE_ARG_CHECKED(language_mode, 1);
   CONVERT_ARG_HANDLE_CHECKED(Object, value, 2);
 
   Handle<JSGlobalObject> global(isolate->context()->global_object());
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result, Object::SetProperty(global, name, value, language_mode));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, Object::SetProperty(global, name, value, language_mode));
 }
 
 
 RUNTIME_FUNCTION(Runtime_InitializeConstGlobal) {
   HandleScope handle_scope(isolate);
-  // All constants are declared with an initial value. The name
-  // of the constant is the first argument and the initial value
-  // is the second.
-  RUNTIME_ASSERT(args.length() == 2);
+  DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, name, 0);
   CONVERT_ARG_HANDLE_CHECKED(Object, value, 1);
 
@@ -222,7 +210,7 @@ Object* DeclareLookupSlot(Isolate* isolate, Handle<String> name,
 
   // TODO(verwaest): Unify the encoding indicating "var" with DeclareGlobals.
   bool is_var = *initial_value == NULL;
-  bool is_const = initial_value->IsTheHole();
+  bool is_const = initial_value->IsTheHole(isolate);
   bool is_function = initial_value->IsJSFunction();
   DCHECK_EQ(1,
             BoolToInt(is_var) + BoolToInt(is_const) + BoolToInt(is_function));
@@ -777,7 +765,7 @@ RUNTIME_FUNCTION(Runtime_DeclareModules) {
     Handle<JSModule> module(context->module());
 
     for (int j = 0; j < description->length(); ++j) {
-      Handle<String> name(description->name(j));
+      Handle<String> name(description->name(j), isolate);
       VariableMode mode = description->mode(j);
       int index = description->index(j);
       switch (mode) {
@@ -791,7 +779,7 @@ RUNTIME_FUNCTION(Runtime_DeclareModules) {
               Accessors::MakeModuleExport(name, index, attr);
           Handle<Object> result =
               JSObject::SetAccessor(module, info).ToHandleChecked();
-          DCHECK(!result->IsUndefined());
+          DCHECK(!result->IsUndefined(isolate));
           USE(result);
           break;
         }
@@ -870,14 +858,14 @@ MaybeHandle<Object> LoadLookupSlot(Handle<String> name,
     // Check for uninitialized bindings.
     switch (flags) {
       case BINDING_CHECK_INITIALIZED:
-        if (value->IsTheHole()) {
+        if (value->IsTheHole(isolate)) {
           THROW_NEW_ERROR(isolate,
                           NewReferenceError(MessageTemplate::kNotDefined, name),
                           Object);
         }
       // FALLTHROUGH
       case BINDING_IS_INITIALIZED:
-        DCHECK(!value->IsTheHole());
+        DCHECK(!value->IsTheHole(isolate));
         if (receiver_return) *receiver_return = receiver;
         return value;
       case MISSING_BINDING:
@@ -923,10 +911,8 @@ RUNTIME_FUNCTION(Runtime_LoadLookupSlot) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, name, 0);
-  Handle<Object> value;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, value, LoadLookupSlot(name, Object::THROW_ON_ERROR));
-  return *value;
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           LoadLookupSlot(name, Object::THROW_ON_ERROR));
 }
 
 
@@ -934,10 +920,7 @@ RUNTIME_FUNCTION(Runtime_LoadLookupSlotInsideTypeof) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, name, 0);
-  Handle<Object> value;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, value, LoadLookupSlot(name, Object::DONT_THROW));
-  return *value;
+  RETURN_RESULT_OR_FAILURE(isolate, LoadLookupSlot(name, Object::DONT_THROW));
 }
 
 
@@ -1021,9 +1004,7 @@ RUNTIME_FUNCTION(Runtime_StoreLookupSlot_Sloppy) {
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, name, 0);
   CONVERT_ARG_HANDLE_CHECKED(Object, value, 1);
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, value,
-                                     StoreLookupSlot(name, value, SLOPPY));
-  return *value;
+  RETURN_RESULT_OR_FAILURE(isolate, StoreLookupSlot(name, value, SLOPPY));
 }
 
 
@@ -1032,9 +1013,7 @@ RUNTIME_FUNCTION(Runtime_StoreLookupSlot_Strict) {
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, name, 0);
   CONVERT_ARG_HANDLE_CHECKED(Object, value, 1);
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, value,
-                                     StoreLookupSlot(name, value, STRICT));
-  return *value;
+  RETURN_RESULT_OR_FAILURE(isolate, StoreLookupSlot(name, value, STRICT));
 }
 
 }  // namespace internal

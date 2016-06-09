@@ -512,8 +512,9 @@ void FullCodeGenerator::StackValueContext::Plug(Handle<Object> lit) const {
 void FullCodeGenerator::TestContext::Plug(Handle<Object> lit) const {
   codegen()->PrepareForBailoutBeforeSplit(condition(), true, true_label_,
                                           false_label_);
-  DCHECK(lit->IsNull() || lit->IsUndefined() || !lit->IsUndetectable());
-  if (lit->IsUndefined() || lit->IsNull() || lit->IsFalse()) {
+  DCHECK(lit->IsNull() || lit->IsUndefined(isolate()) ||
+         !lit->IsUndetectable());
+  if (lit->IsUndefined(isolate()) || lit->IsNull() || lit->IsFalse()) {
     if (false_label_ != fall_through_) __ b(false_label_);
   } else if (lit->IsTrue() || lit->IsJSObject()) {
     if (true_label_ != fall_through_) __ b(true_label_);
@@ -2828,68 +2829,6 @@ void FullCodeGenerator::EmitValueOf(CallRuntime* expr) {
   context()->Plug(r2);
 }
 
-void FullCodeGenerator::EmitOneByteSeqStringSetChar(CallRuntime* expr) {
-  ZoneList<Expression*>* args = expr->arguments();
-  DCHECK_EQ(3, args->length());
-
-  Register string = r2;
-  Register index = r3;
-  Register value = r4;
-
-  VisitForStackValue(args->at(0));        // index
-  VisitForStackValue(args->at(1));        // value
-  VisitForAccumulatorValue(args->at(2));  // string
-  PopOperands(index, value);
-
-  if (FLAG_debug_code) {
-    __ TestIfSmi(value);
-    __ Check(eq, kNonSmiValue, cr0);
-    __ TestIfSmi(index);
-    __ Check(eq, kNonSmiIndex, cr0);
-    __ SmiUntag(index);
-    static const uint32_t one_byte_seq_type = kSeqStringTag | kOneByteStringTag;
-    __ EmitSeqStringSetCharCheck(string, index, value, one_byte_seq_type);
-    __ SmiTag(index);
-  }
-
-  __ SmiUntag(value);
-  __ AddP(ip, string, Operand(SeqOneByteString::kHeaderSize - kHeapObjectTag));
-  __ SmiToByteArrayOffset(r1, index);
-  __ StoreByte(value, MemOperand(ip, r1));
-  context()->Plug(string);
-}
-
-void FullCodeGenerator::EmitTwoByteSeqStringSetChar(CallRuntime* expr) {
-  ZoneList<Expression*>* args = expr->arguments();
-  DCHECK_EQ(3, args->length());
-
-  Register string = r2;
-  Register index = r3;
-  Register value = r4;
-
-  VisitForStackValue(args->at(0));        // index
-  VisitForStackValue(args->at(1));        // value
-  VisitForAccumulatorValue(args->at(2));  // string
-  PopOperands(index, value);
-
-  if (FLAG_debug_code) {
-    __ TestIfSmi(value);
-    __ Check(eq, kNonSmiValue, cr0);
-    __ TestIfSmi(index);
-    __ Check(eq, kNonSmiIndex, cr0);
-    __ SmiUntag(index, index);
-    static const uint32_t two_byte_seq_type = kSeqStringTag | kTwoByteStringTag;
-    __ EmitSeqStringSetCharCheck(string, index, value, two_byte_seq_type);
-    __ SmiTag(index, index);
-  }
-
-  __ SmiUntag(value);
-  __ SmiToShortArrayOffset(r1, index);
-  __ StoreHalfWord(value, MemOperand(r1, string, SeqTwoByteString::kHeaderSize -
-                                                     kHeapObjectTag));
-  context()->Plug(string);
-}
-
 void FullCodeGenerator::EmitStringCharFromCode(CallRuntime* expr) {
   ZoneList<Expression*>* args = expr->arguments();
   DCHECK(args->length() == 1);
@@ -2923,8 +2862,7 @@ void FullCodeGenerator::EmitStringCharCodeAt(CallRuntime* expr) {
   Label index_out_of_range;
   Label done;
   StringCharCodeAtGenerator generator(object, index, result, &need_conversion,
-                                      &need_conversion, &index_out_of_range,
-                                      STRING_INDEX_IS_NUMBER);
+                                      &need_conversion, &index_out_of_range);
   generator.GenerateFast(masm_);
   __ b(&done);
 
@@ -2938,47 +2876,6 @@ void FullCodeGenerator::EmitStringCharCodeAt(CallRuntime* expr) {
   // Load the undefined value into the result register, which will
   // trigger conversion.
   __ LoadRoot(result, Heap::kUndefinedValueRootIndex);
-  __ b(&done);
-
-  NopRuntimeCallHelper call_helper;
-  generator.GenerateSlow(masm_, NOT_PART_OF_IC_HANDLER, call_helper);
-
-  __ bind(&done);
-  context()->Plug(result);
-}
-
-void FullCodeGenerator::EmitStringCharAt(CallRuntime* expr) {
-  ZoneList<Expression*>* args = expr->arguments();
-  DCHECK(args->length() == 2);
-  VisitForStackValue(args->at(0));
-  VisitForAccumulatorValue(args->at(1));
-
-  Register object = r3;
-  Register index = r2;
-  Register scratch = r5;
-  Register result = r2;
-
-  PopOperand(object);
-
-  Label need_conversion;
-  Label index_out_of_range;
-  Label done;
-  StringCharAtGenerator generator(object, index, scratch, result,
-                                  &need_conversion, &need_conversion,
-                                  &index_out_of_range, STRING_INDEX_IS_NUMBER);
-  generator.GenerateFast(masm_);
-  __ b(&done);
-
-  __ bind(&index_out_of_range);
-  // When the index is out of range, the spec requires us to return
-  // the empty string.
-  __ LoadRoot(result, Heap::kempty_stringRootIndex);
-  __ b(&done);
-
-  __ bind(&need_conversion);
-  // Move smi zero into the result register, which will trigger
-  // conversion.
-  __ LoadSmiLiteral(result, Smi::FromInt(0));
   __ b(&done);
 
   NopRuntimeCallHelper call_helper;

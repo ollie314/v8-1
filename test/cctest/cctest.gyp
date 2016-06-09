@@ -25,6 +25,8 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+# Please keep this file in sync with BUILD.gn.
+
 {
   'variables': {
     'v8_code': 1,
@@ -51,7 +53,6 @@
         'compiler/graph-builder-tester.h',
         'compiler/test-basic-block-profiler.cc',
         'compiler/test-branch-combine.cc',
-        'compiler/test-code-stub-assembler.cc',
         'compiler/test-gap-resolver.cc',
         'compiler/test-graph-visualizer.cc',
         'compiler/test-instruction.cc',
@@ -102,12 +103,14 @@
         'heap/heap-utils.cc',
         'heap/heap-utils.h',
         'heap/test-alloc.cc',
+        'heap/test-array-buffer-tracker.cc',
         'heap/test-compaction.cc',
         'heap/test-heap.cc',
         'heap/test-incremental-marking.cc',
         'heap/test-lab.cc',
         'heap/test-mark-compact.cc',
         'heap/test-spaces.cc',
+        'libsampler/test-sampler.cc',
         'print-extension.cc',
         'profiler-extension.cc',
         'test-accessors.cc',
@@ -125,6 +128,8 @@
         'test-bignum-dtoa.cc',
         'test-bit-vector.cc',
         'test-circular-queue.cc',
+        'test-code-cache.cc',
+        'test-code-stub-assembler.cc',
         'test-compiler.cc',
         'test-constantpool.cc',
         'test-conversions.cc',
@@ -189,6 +194,7 @@
         'wasm/test-run-wasm.cc',
         'wasm/test-run-wasm-64.cc',
         'wasm/test-run-wasm-asmjs.cc',
+        'wasm/test-run-wasm-interpreter.cc',
         'wasm/test-run-wasm-js.cc',
         'wasm/test-run-wasm-module.cc',
         'wasm/test-signatures.h',

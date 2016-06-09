@@ -47,6 +47,7 @@
 #include "src/futex-emulation.h"
 #include "src/objects.h"
 #include "src/parsing/parser.h"
+#include "src/profiler/cpu-profiler.h"
 #include "src/unicode-inl.h"
 #include "src/utils.h"
 #include "src/vm-state.h"
@@ -2827,16 +2828,15 @@ void GlobalProxyIdentityHash(bool set_in_js) {
   CHECK(env->Global()
             ->Set(env.local(), v8_str("global"), global_proxy)
             .FromJust());
-  i::Handle<i::Object> original_hash;
+  int32_t hash1;
   if (set_in_js) {
     CompileRun("var m = new Set(); m.add(global);");
-    original_hash = i::Handle<i::Object>(i_global_proxy->GetHash(), i_isolate);
+    i::Object* original_hash = i_global_proxy->GetHash();
+    CHECK(original_hash->IsSmi());
+    hash1 = i::Smi::cast(original_hash)->value();
   } else {
-    original_hash = i::Handle<i::Object>(
-        i::Object::GetOrCreateHash(i_isolate, i_global_proxy));
+    hash1 = i::Object::GetOrCreateHash(i_isolate, i_global_proxy)->value();
   }
-  CHECK(original_hash->IsSmi());
-  int32_t hash1 = i::Handle<i::Smi>::cast(original_hash)->value();
   // Hash should be retained after being detached.
   env->DetachGlobal();
   int hash2 = global_proxy->GetIdentityHash();
@@ -15072,18 +15072,39 @@ THREADED_TEST(DateAccess) {
   CHECK_EQ(1224744689038.0, date.As<v8::Date>()->ValueOf());
 }
 
+void CheckIsSymbolAt(v8::Isolate* isolate, v8::Local<v8::Array> properties,
+                     unsigned index, const char* name) {
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  v8::Local<v8::Value> value =
+      properties->Get(context, v8::Integer::New(isolate, index))
+          .ToLocalChecked();
+  CHECK(value->IsSymbol());
+  v8::String::Utf8Value symbol_name(Local<Symbol>::Cast(value)->Name());
+  CHECK_EQ(0, strcmp(name, *symbol_name));
+}
+
+void CheckStringArray(v8::Isolate* isolate, v8::Local<v8::Array> properties,
+                      unsigned length, const char* names[]) {
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  CHECK_EQ(length, properties->Length());
+  for (unsigned i = 0; i < length; i++) {
+    v8::Local<v8::Value> value =
+        properties->Get(context, v8::Integer::New(isolate, i)).ToLocalChecked();
+    if (names[i] == nullptr) {
+      DCHECK(value->IsSymbol());
+    } else {
+      v8::String::Utf8Value elm(value);
+      CHECK_EQ(0, strcmp(names[i], *elm));
+    }
+  }
+}
 
 void CheckProperties(v8::Isolate* isolate, v8::Local<v8::Value> val,
-                     unsigned elmc, const char* elmv[]) {
+                     unsigned length, const char* names[]) {
   v8::Local<v8::Context> context = isolate->GetCurrentContext();
   v8::Local<v8::Object> obj = val.As<v8::Object>();
   v8::Local<v8::Array> props = obj->GetPropertyNames(context).ToLocalChecked();
-  CHECK_EQ(elmc, props->Length());
-  for (unsigned i = 0; i < elmc; i++) {
-    v8::String::Utf8Value elm(
-        props->Get(context, v8::Integer::New(isolate, i)).ToLocalChecked());
-    CHECK_EQ(0, strcmp(elmv[i], *elm));
-  }
+  CheckStringArray(isolate, props, length, names);
 }
 
 
@@ -15194,6 +15215,97 @@ THREADED_TEST(PropertyEnumeration2) {
   }
 }
 
+THREADED_TEST(PropertyNames) {
+  LocalContext context;
+  v8::Isolate* isolate = context->GetIsolate();
+  v8::HandleScope scope(isolate);
+  v8::Local<v8::Value> result = CompileRun(
+      "var result = {0: 0, 1: 1, a: 2, b: 3};"
+      "result[Symbol('symbol')] = true;"
+      "result.__proto__ = {2: 4, 3: 5, c: 6, d: 7};"
+      "result;");
+  v8::Local<v8::Object> object = result.As<v8::Object>();
+  v8::PropertyFilter default_filter =
+      static_cast<v8::PropertyFilter>(v8::ONLY_ENUMERABLE | v8::SKIP_SYMBOLS);
+  v8::PropertyFilter include_symbols_filter = v8::ONLY_ENUMERABLE;
+
+  v8::Local<v8::Array> properties =
+      object->GetPropertyNames(context.local()).ToLocalChecked();
+  const char* expected_properties1[] = {"0", "1", "a", "b", "2", "3", "c", "d"};
+  CheckStringArray(isolate, properties, 8, expected_properties1);
+
+  properties =
+      object
+          ->GetPropertyNames(context.local(),
+                             v8::KeyCollectionMode::kIncludePrototypes,
+                             default_filter, v8::IndexFilter::kIncludeIndices)
+          .ToLocalChecked();
+  CheckStringArray(isolate, properties, 8, expected_properties1);
+
+  properties = object
+                   ->GetPropertyNames(context.local(),
+                                      v8::KeyCollectionMode::kIncludePrototypes,
+                                      include_symbols_filter,
+                                      v8::IndexFilter::kIncludeIndices)
+                   .ToLocalChecked();
+  const char* expected_properties1_1[] = {"0", "1", "a", "b", nullptr,
+                                          "2", "3", "c", "d"};
+  CheckStringArray(isolate, properties, 9, expected_properties1_1);
+  CheckIsSymbolAt(isolate, properties, 4, "symbol");
+
+  properties =
+      object
+          ->GetPropertyNames(context.local(),
+                             v8::KeyCollectionMode::kIncludePrototypes,
+                             default_filter, v8::IndexFilter::kSkipIndices)
+          .ToLocalChecked();
+  const char* expected_properties2[] = {"a", "b", "c", "d"};
+  CheckStringArray(isolate, properties, 4, expected_properties2);
+
+  properties = object
+                   ->GetPropertyNames(context.local(),
+                                      v8::KeyCollectionMode::kIncludePrototypes,
+                                      include_symbols_filter,
+                                      v8::IndexFilter::kSkipIndices)
+                   .ToLocalChecked();
+  const char* expected_properties2_1[] = {"a", "b", nullptr, "c", "d"};
+  CheckStringArray(isolate, properties, 5, expected_properties2_1);
+  CheckIsSymbolAt(isolate, properties, 2, "symbol");
+
+  properties =
+      object
+          ->GetPropertyNames(context.local(), v8::KeyCollectionMode::kOwnOnly,
+                             default_filter, v8::IndexFilter::kIncludeIndices)
+          .ToLocalChecked();
+  const char* expected_properties3[] = {"0", "1", "a", "b"};
+  CheckStringArray(isolate, properties, 4, expected_properties3);
+
+  properties = object
+                   ->GetPropertyNames(
+                       context.local(), v8::KeyCollectionMode::kOwnOnly,
+                       include_symbols_filter, v8::IndexFilter::kIncludeIndices)
+                   .ToLocalChecked();
+  const char* expected_properties3_1[] = {"0", "1", "a", "b", nullptr};
+  CheckStringArray(isolate, properties, 5, expected_properties3_1);
+  CheckIsSymbolAt(isolate, properties, 4, "symbol");
+
+  properties =
+      object
+          ->GetPropertyNames(context.local(), v8::KeyCollectionMode::kOwnOnly,
+                             default_filter, v8::IndexFilter::kSkipIndices)
+          .ToLocalChecked();
+  const char* expected_properties4[] = {"a", "b"};
+  CheckStringArray(isolate, properties, 2, expected_properties4);
+
+  properties = object
+                   ->GetPropertyNames(
+                       context.local(), v8::KeyCollectionMode::kOwnOnly,
+                       include_symbols_filter, v8::IndexFilter::kSkipIndices)
+                   .ToLocalChecked();
+  const char* expected_properties4_1[] = {"a", "b", nullptr};
+  CheckStringArray(isolate, properties, 3, expected_properties4_1);
+  CheckIsSymbolAt(isolate, properties, 2, "symbol");
+}
 
 THREADED_TEST(AccessChecksReenabledCorrectly) {
   LocalContext context;
@@ -21370,14 +21482,17 @@ TEST(ScopedMicrotasks) {
   env->GetIsolate()->SetMicrotasksPolicy(v8::MicrotasksPolicy::kAuto);
 }
 
-
 #ifdef ENABLE_DISASSEMBLER
-static int probes_counter = 0;
-static int misses_counter = 0;
-static int updates_counter = 0;
+// FLAG_test_primary_stub_cache and FLAG_test_secondary_stub_cache are read
+// only when ENABLE_DISASSEMBLER is not defined.
 
+namespace {
 
-static int* LookupCounter(const char* name) {
+int probes_counter = 0;
+int misses_counter = 0;
+int updates_counter = 0;
+
+int* LookupCounter(const char* name) {
   if (strcmp(name, "c:V8.MegamorphicStubCacheProbes") == 0) {
     return &probes_counter;
   } else if (strcmp(name, "c:V8.MegamorphicStubCacheMisses") == 0) {
@@ -21388,24 +21503,28 @@ static int* LookupCounter(const char* name) {
   return NULL;
 }
 
+const char* kMegamorphicTestProgram =
+    "function CreateClass(name) {\n"
+    "  var src = \n"
+    "    `  function ${name}() {};` +\n"
+    "    `  ${name}.prototype.foo = function() {};` +\n"
+    "    `  ${name};\\n`;\n"
+    "  return (0, eval)(src);\n"
+    "}\n"
+    "function fooify(obj) { obj.foo(); };\n"
+    "var objs = [];\n"
+    "for (var i = 0; i < 6; i++) {\n"
+    "  var Class = CreateClass('Class' + i);\n"
+    "  var obj = new Class();\n"
+    "  objs.push(obj);\n"
+    "}\n"
+    "for (var i = 0; i < 10000; i++) {\n"
+    "  for (var obj of objs) {\n"
+    "    fooify(obj);\n"
+    "  }\n"
+    "}\n";
 
-static const char* kMegamorphicTestProgram =
-    "function ClassA() { };"
-    "function ClassB() { };"
-    "ClassA.prototype.foo = function() { };"
-    "ClassB.prototype.foo = function() { };"
-    "function fooify(obj) { obj.foo(); };"
-    "var a = new ClassA();"
-    "var b = new ClassB();"
-    "for (var i = 0; i < 10000; i++) {"
-    "  fooify(a);"
-    "  fooify(b);"
-    "}";
-#endif
-
-
-static void StubCacheHelper(bool primary) {
-#ifdef ENABLE_DISASSEMBLER
+void StubCacheHelper(bool primary) {
   i::FLAG_native_code_counters = true;
   if (primary) {
     i::FLAG_test_primary_stub_cache = true;
@@ -21413,36 +21532,47 @@ static void StubCacheHelper(bool primary) {
     i::FLAG_test_secondary_stub_cache = true;
   }
   i::FLAG_crankshaft = false;
-  LocalContext env;
-  env->GetIsolate()->SetCounterFunction(LookupCounter);
-  v8::HandleScope scope(env->GetIsolate());
-  int initial_probes = probes_counter;
-  int initial_misses = misses_counter;
-  int initial_updates = updates_counter;
-  CompileRun(kMegamorphicTestProgram);
-  int probes = probes_counter - initial_probes;
-  int misses = misses_counter - initial_misses;
-  int updates = updates_counter - initial_updates;
-  CHECK_LT(updates, 10);
-  CHECK_LT(misses, 10);
-  // TODO(verwaest): Update this test to overflow the degree of polymorphism
-  // before megamorphism. The number of probes will only work once we teach the
-  // serializer to embed references to counters in the stubs, given that the
-  // megamorphic_stub_cache_probes is updated in a snapshot-generated stub.
-  CHECK_GE(probes, 0);
-#endif
+  i::FLAG_turbo = false;
+  v8::Isolate::CreateParams create_params;
+  create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
+  create_params.counter_lookup_callback = LookupCounter;
+  v8::Isolate* isolate = v8::Isolate::New(create_params);
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+
+  if (!i_isolate->snapshot_available()) {
+    // The test is valid only for no-snapshot mode.
+    v8::Isolate::Scope isolate_scope(isolate);
+    LocalContext env(isolate);
+    v8::HandleScope scope(isolate);
+
+    int initial_probes = probes_counter;
+    int initial_misses = misses_counter;
+    int initial_updates = updates_counter;
+    CompileRun(kMegamorphicTestProgram);
+    int probes = probes_counter - initial_probes;
+    int misses = misses_counter - initial_misses;
+    int updates = updates_counter - initial_updates;
+    const int kClassesCount = 6;
+    // Check that updates and misses counts are bounded.
+    CHECK_LE(kClassesCount, updates);
+    CHECK_LT(updates, kClassesCount * 3);
+    CHECK_LE(1, misses);
+    CHECK_LT(misses, kClassesCount * 2);
+    // 2 is for PREMONOMORPHIC and MONOMORPHIC states,
+    // 4 is for POLYMORPHIC states,
+    // and all the others probes are for MEGAMORPHIC state.
+    CHECK_EQ(10000 * kClassesCount - 2 - 4, probes);
+  }
+  isolate->Dispose();
 }
 
+}  // namespace
 
-TEST(SecondaryStubCache) {
-  StubCacheHelper(true);
-}
+UNINITIALIZED_TEST(PrimaryStubCache) { StubCacheHelper(true); }
 
+UNINITIALIZED_TEST(SecondaryStubCache) { StubCacheHelper(false); }
 
-TEST(PrimaryStubCache) {
-  StubCacheHelper(false);
-}
-
+#endif  // ENABLE_DISASSEMBLER
 
 #ifdef DEBUG
 static int cow_arrays_created_runtime = 0;
@@ -23420,6 +23550,88 @@ TEST(ScriptNameAndLineNumber) {
   CHECK_EQ(0, strcmp(url, *utf8_name));
   int line_number = script->GetUnboundScript()->GetLineNumber(0);
   CHECK_EQ(13, line_number);
+}
+
+TEST(ScriptPositionInfo) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+  const char* url = "http://www.foo.com/foo.js";
+  v8::ScriptOrigin origin(v8_str(url), v8::Integer::New(isolate, 13));
+  v8::ScriptCompiler::Source script_source(v8_str("var foo;\n"
+                                                  "var bar;\n"
+                                                  "var fisk = foo + bar;\n"),
+                                           origin);
+  Local<Script> script =
+      v8::ScriptCompiler::Compile(env.local(), &script_source).ToLocalChecked();
+
+  i::Handle<i::SharedFunctionInfo> obj = i::Handle<i::SharedFunctionInfo>::cast(
+      v8::Utils::OpenHandle(*script->GetUnboundScript()));
+  CHECK(obj->script()->IsScript());
+
+  i::Handle<i::Script> script1(i::Script::cast(obj->script()));
+
+  v8::internal::Script::PositionInfo info;
+
+  // With offset.
+
+  // Behave as if 0 was passed if position is negative.
+  CHECK(script1->GetPositionInfo(-1, &info, script1->WITH_OFFSET));
+  CHECK_EQ(13, info.line);
+  CHECK_EQ(0, info.column);
+  CHECK_EQ(0, info.line_start);
+  CHECK_EQ(8, info.line_end);
+
+  CHECK(script1->GetPositionInfo(0, &info, script1->WITH_OFFSET));
+  CHECK_EQ(13, info.line);
+  CHECK_EQ(0, info.column);
+  CHECK_EQ(0, info.line_start);
+  CHECK_EQ(8, info.line_end);
+
+  CHECK(script1->GetPositionInfo(8, &info, script1->WITH_OFFSET));
+  CHECK_EQ(13, info.line);
+  CHECK_EQ(8, info.column);
+  CHECK_EQ(0, info.line_start);
+  CHECK_EQ(8, info.line_end);
+
+  CHECK(script1->GetPositionInfo(9, &info, script1->WITH_OFFSET));
+  CHECK_EQ(14, info.line);
+  CHECK_EQ(0, info.column);
+  CHECK_EQ(9, info.line_start);
+  CHECK_EQ(17, info.line_end);
+
+  // Fail when position is larger than script size.
+  CHECK(!script1->GetPositionInfo(220384, &info, script1->WITH_OFFSET));
+
+  // Without offset.
+
+  // Behave as if 0 was passed if position is negative.
+  CHECK(script1->GetPositionInfo(-1, &info, script1->NO_OFFSET));
+  CHECK_EQ(0, info.line);
+  CHECK_EQ(0, info.column);
+  CHECK_EQ(0, info.line_start);
+  CHECK_EQ(8, info.line_end);
+
+  CHECK(script1->GetPositionInfo(0, &info, script1->NO_OFFSET));
+  CHECK_EQ(0, info.line);
+  CHECK_EQ(0, info.column);
+  CHECK_EQ(0, info.line_start);
+  CHECK_EQ(8, info.line_end);
+
+  CHECK(script1->GetPositionInfo(8, &info, script1->NO_OFFSET));
+  CHECK_EQ(0, info.line);
+  CHECK_EQ(8, info.column);
+  CHECK_EQ(0, info.line_start);
+  CHECK_EQ(8, info.line_end);
+
+  CHECK(script1->GetPositionInfo(9, &info, script1->NO_OFFSET));
+  CHECK_EQ(1, info.line);
+  CHECK_EQ(0, info.column);
+  CHECK_EQ(9, info.line_start);
+  CHECK_EQ(17, info.line_end);
+
+  // Fail when position is larger than script size.
+  CHECK(!script1->GetPositionInfo(220384, &info, script1->NO_OFFSET));
 }
 
 void CheckMagicComments(Local<Script> script, const char* expected_source_url,

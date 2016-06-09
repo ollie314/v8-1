@@ -43,12 +43,6 @@ static void InitializeArrayConstructorDescriptor(
 }
 
 
-void ArraySingleArgumentConstructorStub::InitializeDescriptor(
-    CodeStubDescriptor* descriptor) {
-  InitializeArrayConstructorDescriptor(isolate(), descriptor, 1);
-}
-
-
 void ArrayNArgumentsConstructorStub::InitializeDescriptor(
     CodeStubDescriptor* descriptor) {
   InitializeArrayConstructorDescriptor(isolate(), descriptor, -1);
@@ -76,11 +70,11 @@ void FastArrayPushStub::InitializeDescriptor(CodeStubDescriptor* descriptor) {
   descriptor->Initialize(x0, deopt_handler, -1, JS_FUNCTION_STUB_MODE);
 }
 
-void InternalArraySingleArgumentConstructorStub::InitializeDescriptor(
+void FastFunctionBindStub::InitializeDescriptor(
     CodeStubDescriptor* descriptor) {
-  InitializeInternalArrayConstructorDescriptor(isolate(), descriptor, 1);
+  Address deopt_handler = Runtime::FunctionForId(Runtime::kFunctionBind)->entry;
+  descriptor->Initialize(x0, deopt_handler, -1, JS_FUNCTION_STUB_MODE);
 }
-
 
 void InternalArrayNArgumentsConstructorStub::InitializeDescriptor(
     CodeStubDescriptor* descriptor) {
@@ -1490,7 +1484,6 @@ void LoadIndexedStringStub::Generate(MacroAssembler* masm) {
                                           &miss,  // When not a string.
                                           &miss,  // When not a number.
                                           &miss,  // When index out of range.
-                                          STRING_INDEX_IS_ARRAY_INDEX,
                                           RECEIVER_IS_STRING);
   char_at_generator.GenerateFast(masm);
   __ Ret();
@@ -2022,6 +2015,7 @@ static void GenerateRecordCallTarget(MacroAssembler* masm, Register argc,
   //  feedback_vector : the feedback vector
   //  index :           slot in feedback vector (smi)
   Label initialize, done, miss, megamorphic, not_array_function;
+  Label done_initialize_count, done_increment_count;
 
   DCHECK_EQ(*TypeFeedbackVector::MegamorphicSentinel(masm->isolate()),
             masm->isolate()->heap()->megamorphic_symbol());
@@ -2044,7 +2038,7 @@ static void GenerateRecordCallTarget(MacroAssembler* masm, Register argc,
   Label check_allocation_site;
   __ Ldr(feedback_value, FieldMemOperand(feedback, WeakCell::kValueOffset));
   __ Cmp(function, feedback_value);
-  __ B(eq, &done);
+  __ B(eq, &done_increment_count);
   __ CompareRoot(feedback, Heap::kmegamorphic_symbolRootIndex);
   __ B(eq, &done);
   __ Ldr(feedback_map, FieldMemOperand(feedback, HeapObject::kMapOffset));
@@ -2066,7 +2060,7 @@ static void GenerateRecordCallTarget(MacroAssembler* masm, Register argc,
   __ LoadNativeContextSlot(Context::ARRAY_FUNCTION_INDEX, scratch1);
   __ Cmp(function, scratch1);
   __ B(ne, &megamorphic);
-  __ B(&done);
+  __ B(&done_increment_count);
 
   __ Bind(&miss);
 
@@ -2097,12 +2091,32 @@ static void GenerateRecordCallTarget(MacroAssembler* masm, Register argc,
   CreateAllocationSiteStub create_stub(masm->isolate());
   CallStubInRecordCallTarget(masm, &create_stub, argc, function,
                              feedback_vector, index, new_target);
-  __ B(&done);
+  __ B(&done_initialize_count);
 
   __ Bind(&not_array_function);
   CreateWeakCellStub weak_cell_stub(masm->isolate());
   CallStubInRecordCallTarget(masm, &weak_cell_stub, argc, function,
                              feedback_vector, index, new_target);
+
+  __ bind(&done_initialize_count);
+  // Initialize the call counter.
+  __ Mov(scratch1, Operand(Smi::FromInt(1)));
+  __ Adds(scratch2, feedback_vector,
+          Operand::UntagSmiAndScale(index, kPointerSizeLog2));
+  __ Str(scratch1,
+         FieldMemOperand(scratch2, FixedArray::kHeaderSize + kPointerSize));
+  __ b(&done);
+
+  __ bind(&done_increment_count);
+
+  // Increment the call count for monomorphic function calls.
+  __ Add(scratch1, feedback_vector,
+         Operand::UntagSmiAndScale(index, kPointerSizeLog2));
+  __ Add(scratch1, scratch1, Operand(FixedArray::kHeaderSize + kPointerSize));
+  __ Ldr(scratch2, FieldMemOperand(scratch1, 0));
+  __ Add(scratch2, scratch2, Operand(Smi::FromInt(1)));
+  __ Str(scratch2, FieldMemOperand(scratch1, 0));
+
   __ Bind(&done);
 }
 
@@ -2175,7 +2189,7 @@ void CallICStub::HandleArrayCase(MacroAssembler* masm, Label* miss) {
   __ Add(feedback_vector, feedback_vector,
          Operand(FixedArray::kHeaderSize + kPointerSize));
   __ Ldr(index, FieldMemOperand(feedback_vector, 0));
-  __ Add(index, index, Operand(Smi::FromInt(CallICNexus::kCallCountIncrement)));
+  __ Add(index, index, Operand(Smi::FromInt(1)));
   __ Str(index, FieldMemOperand(feedback_vector, 0));
 
   // Set up arguments for the array constructor stub.
@@ -2235,7 +2249,7 @@ void CallICStub::Generate(MacroAssembler* masm) {
   __ Add(feedback_vector, feedback_vector,
          Operand(FixedArray::kHeaderSize + kPointerSize));
   __ Ldr(index, FieldMemOperand(feedback_vector, 0));
-  __ Add(index, index, Operand(Smi::FromInt(CallICNexus::kCallCountIncrement)));
+  __ Add(index, index, Operand(Smi::FromInt(1)));
   __ Str(index, FieldMemOperand(feedback_vector, 0));
 
   __ Bind(&call_function);
@@ -2300,7 +2314,7 @@ void CallICStub::Generate(MacroAssembler* masm) {
   __ B(ne, &miss);
 
   // Initialize the call counter.
-  __ Mov(x5, Smi::FromInt(CallICNexus::kCallCountIncrement));
+  __ Mov(x5, Smi::FromInt(1));
   __ Adds(x4, feedback_vector,
           Operand::UntagSmiAndScale(index, kPointerSizeLog2));
   __ Str(x5, FieldMemOperand(x4, FixedArray::kHeaderSize + kPointerSize));
@@ -2394,13 +2408,7 @@ void StringCharCodeAtGenerator::GenerateSlow(
     // Save object_ on the stack and pass index_ as argument for runtime call.
     __ Push(object_, index_);
   }
-  if (index_flags_ == STRING_INDEX_IS_NUMBER) {
-    __ CallRuntime(Runtime::kNumberToIntegerMapMinusZero);
-  } else {
-    DCHECK(index_flags_ == STRING_INDEX_IS_ARRAY_INDEX);
-    // NumberToSmi discards numbers that are not exact integers.
-    __ CallRuntime(Runtime::kNumberToSmi);
-  }
+  __ CallRuntime(Runtime::kNumberToSmi);
   // Save the conversion result before the pop instructions below
   // have a chance to overwrite it.
   __ Mov(index_, x0);
@@ -3086,7 +3094,7 @@ void SubStringStub::Generate(MacroAssembler* masm) {
   __ SmiTag(from);
   StringCharAtGenerator generator(input_string, from, result_length, x0,
                                   &runtime, &runtime, &runtime,
-                                  STRING_INDEX_IS_NUMBER, RECEIVER_IS_STRING);
+                                  RECEIVER_IS_STRING);
   generator.GenerateFast(masm);
   __ Drop(3);
   __ Ret();
@@ -3122,8 +3130,7 @@ void NonNumberToNumberStub::Generate(MacroAssembler* masm) {
   // x0: receiver
   // x1: receiver instance type
   __ B(hs, &not_string);
-  StringToNumberStub stub(masm->isolate());
-  __ TailCallStub(&stub);
+  __ Jump(isolate()->builtins()->StringToNumber(), RelocInfo::CODE_TARGET);
   __ Bind(&not_string);
 
   Label not_oddball;
@@ -3135,23 +3142,6 @@ void NonNumberToNumberStub::Generate(MacroAssembler* masm) {
 
   __ Push(x0);  // Push argument.
   __ TailCallRuntime(Runtime::kToNumber);
-}
-
-void StringToNumberStub::Generate(MacroAssembler* masm) {
-  // The StringToNumber stub takes one argument in x0.
-  __ AssertString(x0);
-
-  // Check if string has a cached array index.
-  Label runtime;
-  __ Ldr(x2, FieldMemOperand(x0, String::kHashFieldOffset));
-  __ Tst(x2, Operand(String::kContainsCachedArrayIndexMask));
-  __ B(ne, &runtime);
-  __ IndexFromHash(x2, x0);
-  __ Ret();
-
-  __ Bind(&runtime);
-  __ Push(x0);  // Push argument.
-  __ TailCallRuntime(Runtime::kStringToNumber);
 }
 
 void ToStringStub::Generate(MacroAssembler* masm) {

@@ -655,6 +655,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchDebugBreak:
       __ stop("kArchDebugBreak");
       break;
+    case kArchComment: {
+      Address comment_string = i.InputExternalReference(0).address();
+      __ RecordComment(reinterpret_cast<const char*>(comment_string));
+      break;
+    }
     case kArchNop:
     case kArchThrowTerminator:
       // don't emit code for nops.
@@ -1032,6 +1037,18 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kMipsAbsD:
       __ abs_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0));
       break;
+    case kMipsLogD: {
+      // TODO(bmeurer): We should really get rid of this special instruction,
+      // and generate a CallAddress instruction instead.
+      FrameScope scope(masm(), StackFrame::MANUAL);
+      __ PrepareCallCFunction(0, 1, kScratchReg);
+      __ MovToFloatParameter(i.InputDoubleRegister(0));
+      __ CallCFunction(ExternalReference::math_log_double_function(isolate()),
+                       0, 1);
+      // Move the result in the double result register.
+      __ MovFromFloatResult(i.OutputDoubleRegister());
+      break;
+    }
     case kMipsSqrtD: {
       __ sqrt_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0));
       break;
@@ -1295,7 +1312,13 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     }
     case kMipsStoreToStackSlot: {
       if (instr->InputAt(0)->IsFPRegister()) {
-        __ sdc1(i.InputDoubleRegister(0), MemOperand(sp, i.InputInt32(1)));
+        LocationOperand* op = LocationOperand::cast(instr->InputAt(0));
+        if (op->representation() == MachineRepresentation::kFloat64) {
+          __ sdc1(i.InputDoubleRegister(0), MemOperand(sp, i.InputInt32(1)));
+        } else {
+          DCHECK_EQ(MachineRepresentation::kFloat32, op->representation());
+          __ swc1(i.InputSingleRegister(0), MemOperand(sp, i.InputInt32(1)));
+        }
       } else {
         __ sw(i.InputRegister(0), MemOperand(sp, i.InputInt32(1)));
       }
@@ -1875,7 +1898,13 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
     DCHECK(destination->IsFPRegister() || destination->IsFPStackSlot());
     MemOperand src = g.ToMemOperand(source);
     if (destination->IsFPRegister()) {
-      __ ldc1(g.ToDoubleRegister(destination), src);
+      LocationOperand* op = LocationOperand::cast(source);
+      if (op->representation() == MachineRepresentation::kFloat64) {
+        __ ldc1(g.ToDoubleRegister(destination), src);
+      } else {
+        DCHECK_EQ(MachineRepresentation::kFloat32, op->representation());
+        __ lwc1(g.ToDoubleRegister(destination), src);
+      }
     } else {
       FPURegister temp = kScratchDoubleReg;
       __ ldc1(temp, src);

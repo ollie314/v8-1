@@ -539,6 +539,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchTableSwitch:
       AssembleArchTableSwitch(instr);
       break;
+    case kArchComment: {
+      Address comment_string = i.InputExternalReference(0).address();
+      __ RecordComment(reinterpret_cast<const char*>(comment_string));
+      break;
+    }
     case kArchDebugBreak:
       __ int3();
       break;
@@ -814,6 +819,16 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     case kIA32Popcnt:
       __ Popcnt(i.OutputRegister(), i.InputOperand(0));
+      break;
+    case kX87Float64Log:
+      __ sub(esp, Immediate(kDoubleSize));
+      __ movsd(Operand(esp, 0), i.InputDoubleRegister(0));
+      __ fldln2();
+      __ fld_d(Operand(esp, 0));
+      __ fyl2x();
+      __ fstp_d(Operand(esp, 0));
+      __ movsd(i.OutputDoubleRegister(), Operand(esp, 0));
+      __ add(esp, Immediate(kDoubleSize));
       break;
     case kSSEFloat32Cmp:
       __ ucomiss(i.InputDoubleRegister(0), i.InputOperand(1));
@@ -1230,9 +1245,9 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     }
     case kIA32PushFloat32:
       if (instr->InputAt(0)->IsFPRegister()) {
-        __ sub(esp, Immediate(kDoubleSize));
+        __ sub(esp, Immediate(kFloatSize));
         __ movss(Operand(esp, 0), i.InputDoubleRegister(0));
-        frame_access_state()->IncreaseSPDelta(kDoubleSize / kPointerSize);
+        frame_access_state()->IncreaseSPDelta(kFloatSize / kPointerSize);
       } else if (HasImmediateInput(instr, 0)) {
         __ Move(kScratchDoubleReg, i.InputDouble(0));
         __ sub(esp, Immediate(kDoubleSize));
@@ -1264,9 +1279,9 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     case kIA32Push:
       if (instr->InputAt(0)->IsFPRegister()) {
-        __ sub(esp, Immediate(kDoubleSize));
+        __ sub(esp, Immediate(kFloatSize));
         __ movsd(Operand(esp, 0), i.InputDoubleRegister(0));
-        frame_access_state()->IncreaseSPDelta(kDoubleSize / kPointerSize);
+        frame_access_state()->IncreaseSPDelta(kFloatSize / kPointerSize);
       } else if (HasImmediateInput(instr, 0)) {
         __ push(i.InputImmediate(0));
         frame_access_state()->IncreaseSPDelta(1);

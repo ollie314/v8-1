@@ -22,8 +22,9 @@ RUNTIME_FUNCTION(Runtime_FinishArrayPrototypeSetup) {
   DCHECK(args.length() == 1);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, prototype, 0);
   Object* length = prototype->length();
-  RUNTIME_ASSERT(length->IsSmi() && Smi::cast(length)->value() == 0);
-  RUNTIME_ASSERT(prototype->HasFastSmiOrObjectElements());
+  CHECK(length->IsSmi());
+  CHECK(Smi::cast(length)->value() == 0);
+  CHECK(prototype->HasFastSmiOrObjectElements());
   // This is necessary to enable fast checks for absence of elements
   // on Array.prototype and below.
   prototype->set_elements(isolate->heap()->empty_fixed_array());
@@ -85,7 +86,7 @@ RUNTIME_FUNCTION(Runtime_FixedArraySet) {
 
 RUNTIME_FUNCTION(Runtime_TransitionElementsKind) {
   HandleScope scope(isolate);
-  RUNTIME_ASSERT(args.length() == 2);
+  DCHECK(args.length() == 2);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, array, 0);
   CONVERT_ARG_HANDLE_CHECKED(Map, map, 1);
   JSObject::TransitionElementsKind(array, map->elements_kind());
@@ -193,16 +194,16 @@ RUNTIME_FUNCTION(Runtime_GetArrayKeys) {
   }
 
   if (!array->elements()->IsDictionary()) {
-    RUNTIME_ASSERT(array->HasFastSmiOrObjectElements() ||
-                   array->HasFastDoubleElements());
+    CHECK(array->HasFastSmiOrObjectElements() ||
+          array->HasFastDoubleElements());
     uint32_t actual_length = static_cast<uint32_t>(array->elements()->length());
     return *isolate->factory()->NewNumberFromUint(Min(actual_length, length));
   }
 
-  KeyAccumulator accumulator(isolate, OWN_ONLY, ALL_PROPERTIES);
+  KeyAccumulator accumulator(isolate, KeyCollectionMode::kOwnOnly,
+                             ALL_PROPERTIES);
   // No need to separate prototype levels since we only get element keys.
-  for (PrototypeIterator iter(isolate, array,
-                              PrototypeIterator::START_AT_RECEIVER);
+  for (PrototypeIterator iter(isolate, array, kStartAtReceiver);
        !iter.IsAtEnd(); iter.Advance()) {
     if (PrototypeIterator::GetCurrent(iter)->IsJSProxy() ||
         PrototypeIterator::GetCurrent<JSObject>(iter)
@@ -211,12 +212,12 @@ RUNTIME_FUNCTION(Runtime_GetArrayKeys) {
       // collecting keys in that case.
       return *isolate->factory()->NewNumberFromUint(length);
     }
-    accumulator.NextPrototype();
     Handle<JSObject> current = PrototypeIterator::GetCurrent<JSObject>(iter);
-    accumulator.CollectOwnElementIndices(current);
+    accumulator.CollectOwnElementIndices(array, current);
   }
   // Erase any keys >= length.
-  Handle<FixedArray> keys = accumulator.GetKeys(KEEP_NUMBERS);
+  Handle<FixedArray> keys =
+      accumulator.GetKeys(GetKeysConversion::kKeepNumbers);
   int j = 0;
   for (int i = 0; i < keys->length(); i++) {
     if (NumberToUint32(keys->get(i)) >= length) continue;
@@ -362,8 +363,7 @@ RUNTIME_FUNCTION(Runtime_ArrayConstructor) {
 #endif
 
   Handle<AllocationSite> site;
-  if (!type_info.is_null() &&
-      *type_info != isolate->heap()->undefined_value()) {
+  if (!type_info.is_null() && !type_info->IsUndefined(isolate)) {
     site = Handle<AllocationSite>::cast(type_info);
     DCHECK(!site->SitePointsToLiteral());
   }
@@ -391,13 +391,26 @@ RUNTIME_FUNCTION(Runtime_InternalArrayConstructor) {
                                 Handle<AllocationSite>::null(), caller_args);
 }
 
+RUNTIME_FUNCTION(Runtime_ArraySingleArgumentConstructor) {
+  HandleScope scope(isolate);
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, constructor, 0);
+  Object** argument_base = reinterpret_cast<Object**>(args[1]);
+  CONVERT_SMI_ARG_CHECKED(argument_count, 2);
+  CONVERT_ARG_HANDLE_CHECKED(Object, raw_site, 3);
+  Handle<AllocationSite> casted_site =
+      raw_site->IsUndefined(isolate) ? Handle<AllocationSite>::null()
+                                     : Handle<AllocationSite>::cast(raw_site);
+  Arguments constructor_args(argument_count, argument_base);
+  return ArrayConstructorCommon(isolate, constructor, constructor, casted_site,
+                                &constructor_args);
+}
 
 RUNTIME_FUNCTION(Runtime_NormalizeElements) {
   HandleScope scope(isolate);
   DCHECK(args.length() == 1);
   CONVERT_ARG_HANDLE_CHECKED(JSObject, array, 0);
-  RUNTIME_ASSERT(!array->HasFixedTypedArrayElements() &&
-                 !array->IsJSGlobalProxy());
+  CHECK(!array->HasFixedTypedArrayElements());
+  CHECK(!array->IsJSGlobalProxy());
   JSObject::NormalizeElements(array);
   return *array;
 }
@@ -437,8 +450,7 @@ RUNTIME_FUNCTION(Runtime_HasComplexElements) {
   HandleScope scope(isolate);
   DCHECK(args.length() == 1);
   CONVERT_ARG_HANDLE_CHECKED(JSObject, array, 0);
-  for (PrototypeIterator iter(isolate, array,
-                              PrototypeIterator::START_AT_RECEIVER);
+  for (PrototypeIterator iter(isolate, array, kStartAtReceiver);
        !iter.IsAtEnd(); iter.Advance()) {
     if (PrototypeIterator::GetCurrent(iter)->IsJSProxy()) {
       return isolate->heap()->true_value();
@@ -491,11 +503,8 @@ RUNTIME_FUNCTION(Runtime_ArraySpeciesConstructor) {
   HandleScope scope(isolate);
   DCHECK(args.length() == 1);
   CONVERT_ARG_HANDLE_CHECKED(Object, original_array, 0);
-  Handle<Object> constructor;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, constructor,
-      Object::ArraySpeciesConstructor(isolate, original_array));
-  return *constructor;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, Object::ArraySpeciesConstructor(isolate, original_array));
 }
 
 }  // namespace internal

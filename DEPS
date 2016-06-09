@@ -8,15 +8,17 @@ vars = {
 
 deps = {
   "v8/build":
-    Var("git_url") + "/chromium/src/build.git" + "@" + "298aeabfe2aa544f7be8cab05a133428bca7dea3",
+    Var("git_url") + "/chromium/src/build.git" + "@" + "4842479bd8da7b9e5eb027f8c15bee533f9c328f",
   "v8/tools/gyp":
     Var("git_url") + "/external/gyp.git" + "@" + "bce1c7793010574d88d7915e2d55395213ac63d1",
   "v8/third_party/icu":
-    Var("git_url") + "/chromium/deps/icu.git" + "@" + "54f86bb1d1d02968576d21c16d7134ec35c30fbc",
+    Var("git_url") + "/chromium/deps/icu.git" + "@" + "ffa4b6704cf5cc9fec9485731f24a05b2ba94bca",
   "v8/buildtools":
-    Var("git_url") + "/chromium/buildtools.git" + "@" + "06e80a0e17319868d4a9b13f9bb6a248dc8d8b20",
+    Var("git_url") + "/chromium/buildtools.git" + "@" + "099f1da55bfe8caa12266371a7eb983698fb1d87",
   "v8/base/trace_event/common":
     Var("git_url") + "/chromium/src/base/trace_event/common.git" + "@" + "54b8455be9505c2cb0cf5c26bb86739c236471aa",
+  "v8/tools/mb":
+    Var('git_url') + '/chromium/src/tools/mb.git' + '@' + "66482e6d056affa96f6dec4ff166f52f748a0c00",
   "v8/tools/swarming_client":
     Var('git_url') + '/external/swarming.client.git' + '@' + "df6e95e7669883c8fe9ef956c69a544154701a49",
   "v8/testing/gtest":
@@ -31,7 +33,7 @@ deps = {
   "v8/test/test262/data":
     Var("git_url") + "/external/github.com/tc39/test262.git" + "@" + "9c45e2ac684bae64614d8eb55789cae97323a7e7",
   "v8/tools/clang":
-    Var("git_url") + "/chromium/src/tools/clang.git" + "@" + "996bab489f816e51dde704bd215fb3403919f07e",
+    Var("git_url") + "/chromium/src/tools/clang.git" + "@" + "db6e187140f7b870bdcaab19456193c94d7963bd",
 }
 
 deps_os = {
@@ -44,6 +46,8 @@ deps_os = {
       Var("git_url") + "/chromium/deps/cygwin.git" + "@" + "c89e446b273697fadf3a10ff1007a97c0b7de6df",
   }
 }
+
+recursedeps = [ 'v8/third_party/android_tools' ]
 
 include_rules = [
   # Everybody can use some things.
@@ -187,6 +191,18 @@ hooks = [
                 "--no_auth",
                 "--bucket", "chromium-gn",
                 "-s", "v8/buildtools/linux64/gn.sha1",
+    ],
+  },
+  {
+    # Downloads the current stable linux sysroot to build/linux/ if needed.
+    # This sysroot updates at about the same rate that the chrome build deps
+    # change.
+    'name': 'sysroot',
+    'pattern': '.',
+    'action': [
+        'python',
+        'v8/build/linux/sysroot_scripts/install-sysroot.py',
+        '--running-as-hook',
     ],
   },
   {

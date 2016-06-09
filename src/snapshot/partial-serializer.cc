@@ -34,7 +34,7 @@ void PartialSerializer::Serialize(Object** o) {
     if (context->IsNativeContext()) {
       context->set(Context::NEXT_CONTEXT_LINK,
                    isolate_->heap()->undefined_value());
-      DCHECK(!context->global_object()->IsUndefined());
+      DCHECK(!context->global_object()->IsUndefined(context->GetIsolate()));
     }
   }
   VisitPointer(o);
@@ -83,8 +83,10 @@ void PartialSerializer::SerializeObject(HeapObject* obj, HowToCode how_to_code,
 
   // Clear literal boilerplates.
   if (obj->IsJSFunction()) {
-    FixedArray* literals = JSFunction::cast(obj)->literals();
-    for (int i = 0; i < literals->length(); i++) literals->set_undefined(i);
+    LiteralsArray* literals = JSFunction::cast(obj)->literals();
+    for (int i = 0; i < literals->literals_count(); i++) {
+      literals->set_literal_undefined(i);
+    }
   }
 
   // Object has not yet been serialized.  Serialize it here.

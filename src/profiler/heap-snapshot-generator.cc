@@ -80,8 +80,8 @@ void HeapEntry::SetIndexedReference(HeapGraphEdge::Type type,
 void HeapEntry::Print(
     const char* prefix, const char* edge_name, int max_depth, int indent) {
   STATIC_ASSERT(sizeof(unsigned) == sizeof(id()));
-  base::OS::Print("%6" PRIuS " @%6u %*c %s%s: ", self_size(), id(), indent,
-                  ' ', prefix, edge_name);
+  base::OS::Print("%6" PRIuS " @%6u %*c %s%s: ", self_size(), id(), indent, ' ',
+                  prefix, edge_name);
   if (type() != kString) {
     base::OS::Print("%s %.40s\n", TypeAsString(), name_);
   } else {
@@ -412,10 +412,8 @@ bool HeapObjectsMap::MoveObject(Address from, Address to, int object_size) {
     // object is migrated.
     if (FLAG_heap_profiler_trace_objects) {
       PrintF("Move object from %p to %p old size %6d new size %6d\n",
-             from,
-             to,
-             entries_.at(from_entry_info_index).size,
-             object_size);
+             static_cast<void*>(from), static_cast<void*>(to),
+             entries_.at(from_entry_info_index).size, object_size);
     }
     entries_.at(from_entry_info_index).size = object_size;
     to_entry->value = from_value;
@@ -452,9 +450,7 @@ SnapshotObjectId HeapObjectsMap::FindOrAddEntry(Address addr,
     entry_info.accessed = accessed;
     if (FLAG_heap_profiler_trace_objects) {
       PrintF("Update object size : %p with old size %d and new size %d\n",
-             addr,
-             entry_info.size,
-             size);
+             static_cast<void*>(addr), entry_info.size, size);
     }
     entry_info.size = size;
     return entry_info.id;
@@ -487,9 +483,8 @@ void HeapObjectsMap::UpdateHeapObjectsMap() {
     FindOrAddEntry(obj->address(), obj->Size());
     if (FLAG_heap_profiler_trace_objects) {
       PrintF("Update object      : %p %6d. Next address is %p\n",
-             obj->address(),
-             obj->Size(),
-             obj->address() + obj->Size());
+             static_cast<void*>(obj->address()), obj->Size(),
+             static_cast<void*>(obj->address() + obj->Size()));
     }
   }
   RemoveDeadEntries();
@@ -517,20 +512,16 @@ struct HeapObjectInfo {
   void Print() const {
     if (expected_size == 0) {
       PrintF("Untracked object   : %p %6d. Next address is %p\n",
-             obj->address(),
-             obj->Size(),
-             obj->address() + obj->Size());
+             static_cast<void*>(obj->address()), obj->Size(),
+             static_cast<void*>(obj->address() + obj->Size()));
     } else if (obj->Size() != expected_size) {
-      PrintF("Wrong size %6d: %p %6d. Next address is %p\n",
-             expected_size,
-             obj->address(),
-             obj->Size(),
-             obj->address() + obj->Size());
+      PrintF("Wrong size %6d: %p %6d. Next address is %p\n", expected_size,
+             static_cast<void*>(obj->address()), obj->Size(),
+             static_cast<void*>(obj->address() + obj->Size()));
     } else {
       PrintF("Good object      : %p %6d. Next address is %p\n",
-             obj->address(),
-             expected_size,
-             obj->address() + obj->Size());
+             static_cast<void*>(obj->address()), expected_size,
+             static_cast<void*>(obj->address() + obj->Size()));
     }
   }
 };
@@ -1117,7 +1108,7 @@ void V8HeapExplorer::ExtractJSObjectReferences(
   } else if (obj->IsJSFunction()) {
     JSFunction* js_fun = JSFunction::cast(js_obj);
     Object* proto_or_map = js_fun->prototype_or_initial_map();
-    if (!proto_or_map->IsTheHole()) {
+    if (!proto_or_map->IsTheHole(heap_->isolate())) {
       if (!proto_or_map->IsMap()) {
         SetPropertyReference(
             obj, entry,
@@ -1387,9 +1378,9 @@ void V8HeapExplorer::ExtractSharedFunctionInfoReferences(
   SetInternalReference(obj, entry,
                        "optimized_code_map", shared->optimized_code_map(),
                        SharedFunctionInfo::kOptimizedCodeMapOffset);
-  SetInternalReference(obj, entry,
-                       "feedback_vector", shared->feedback_vector(),
-                       SharedFunctionInfo::kFeedbackVectorOffset);
+  SetInternalReference(obj, entry, "feedback_metadata",
+                       shared->feedback_metadata(),
+                       SharedFunctionInfo::kFeedbackMetadataOffset);
 }
 
 
@@ -1567,6 +1558,7 @@ void V8HeapExplorer::ExtractFixedArrayReferences(int entry, FixedArray* array) {
 
 
 void V8HeapExplorer::ExtractPropertyReferences(JSObject* js_obj, int entry) {
+  Isolate* isolate = js_obj->GetIsolate();
   if (js_obj->HasFastProperties()) {
     DescriptorArray* descs = js_obj->map()->instance_descriptors();
     int real_size = js_obj->map()->NumberOfOwnDescriptors();
@@ -1600,7 +1592,7 @@ void V8HeapExplorer::ExtractPropertyReferences(JSObject* js_obj, int entry) {
     int length = dictionary->Capacity();
     for (int i = 0; i < length; ++i) {
       Object* k = dictionary->KeyAt(i);
-      if (dictionary->IsKey(k)) {
+      if (dictionary->IsKey(isolate, k)) {
         DCHECK(dictionary->ValueAt(i)->IsPropertyCell());
         PropertyCell* cell = PropertyCell::cast(dictionary->ValueAt(i));
         Object* value = cell->value();
@@ -1614,7 +1606,7 @@ void V8HeapExplorer::ExtractPropertyReferences(JSObject* js_obj, int entry) {
     int length = dictionary->Capacity();
     for (int i = 0; i < length; ++i) {
       Object* k = dictionary->KeyAt(i);
-      if (dictionary->IsKey(k)) {
+      if (dictionary->IsKey(isolate, k)) {
         Object* value = dictionary->ValueAt(i);
         PropertyDetails details = dictionary->DetailsAt(i);
         SetDataOrAccessorPropertyReference(details.kind(), js_obj, entry,
@@ -1644,13 +1636,14 @@ void V8HeapExplorer::ExtractAccessorPairProperty(JSObject* js_obj, int entry,
 
 
 void V8HeapExplorer::ExtractElementReferences(JSObject* js_obj, int entry) {
+  Isolate* isolate = js_obj->GetIsolate();
   if (js_obj->HasFastObjectElements()) {
     FixedArray* elements = FixedArray::cast(js_obj->elements());
     int length = js_obj->IsJSArray() ?
         Smi::cast(JSArray::cast(js_obj)->length())->value() :
         elements->length();
     for (int i = 0; i < length; ++i) {
-      if (!elements->get(i)->IsTheHole()) {
+      if (!elements->get(i)->IsTheHole(isolate)) {
         SetElementReference(js_obj, entry, i, elements->get(i));
       }
     }
@@ -1659,7 +1652,7 @@ void V8HeapExplorer::ExtractElementReferences(JSObject* js_obj, int entry) {
     int length = dictionary->Capacity();
     for (int i = 0; i < length; ++i) {
       Object* k = dictionary->KeyAt(i);
-      if (dictionary->IsKey(k)) {
+      if (dictionary->IsKey(isolate, k)) {
         DCHECK(k->IsNumber());
         uint32_t index = static_cast<uint32_t>(k->Number());
         SetElementReference(js_obj, entry, index, dictionary->ValueAt(i));

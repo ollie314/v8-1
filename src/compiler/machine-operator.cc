@@ -154,6 +154,7 @@ MachineRepresentation AtomicStoreRepresentationOf(Operator const* op) {
   V(Float32Div, Operator::kNoProperties, 2, 0, 1)                             \
   V(Float32Sqrt, Operator::kNoProperties, 1, 0, 1)                            \
   V(Float64Abs, Operator::kNoProperties, 1, 0, 1)                             \
+  V(Float64Log, Operator::kNoProperties, 1, 0, 1)                             \
   V(Float64Add, Operator::kCommutative, 2, 0, 1)                              \
   V(Float64Sub, Operator::kNoProperties, 2, 0, 1)                             \
   V(Float64SubPreserveNan, Operator::kNoProperties, 2, 0, 1)                  \
@@ -372,7 +373,9 @@ MachineRepresentation AtomicStoreRepresentationOf(Operator const* op) {
   V(Float64RoundTruncate, Operator::kNoProperties, 1, 0, 1) \
   V(Float64RoundTiesAway, Operator::kNoProperties, 1, 0, 1) \
   V(Float32RoundTiesEven, Operator::kNoProperties, 1, 0, 1) \
-  V(Float64RoundTiesEven, Operator::kNoProperties, 1, 0, 1)
+  V(Float64RoundTiesEven, Operator::kNoProperties, 1, 0, 1) \
+  V(Float32Neg, Operator::kNoProperties, 1, 0, 1)           \
+  V(Float64Neg, Operator::kNoProperties, 1, 0, 1)
 
 #define MACHINE_TYPE_LIST(V) \
   V(Float32)                 \
@@ -535,6 +538,11 @@ struct MachineOperatorGlobalCache {
   DebugBreakOperator kDebugBreak;
 };
 
+struct CommentOperator : public Operator1<const char*> {
+  explicit CommentOperator(const char* msg)
+      : Operator1<const char*>(IrOpcode::kComment, Operator::kNoThrow,
+                               "Comment", 0, 0, 0, 0, 0, 0, msg) {}
+};
 
 static base::LazyInstance<MachineOperatorGlobalCache>::type kCache =
     LAZY_INSTANCE_INITIALIZER;
@@ -542,7 +550,8 @@ static base::LazyInstance<MachineOperatorGlobalCache>::type kCache =
 MachineOperatorBuilder::MachineOperatorBuilder(
     Zone* zone, MachineRepresentation word, Flags flags,
     AlignmentRequirements alignmentRequirements)
-    : cache_(kCache.Get()),
+    : zone_(zone),
+      cache_(kCache.Get()),
       word_(word),
       flags_(flags),
       alignment_requirements_(alignmentRequirements) {
@@ -615,6 +624,10 @@ const Operator* MachineOperatorBuilder::Store(StoreRepresentation store_rep) {
 
 const Operator* MachineOperatorBuilder::DebugBreak() {
   return &cache_.kDebugBreak;
+}
+
+const Operator* MachineOperatorBuilder::Comment(const char* msg) {
+  return new (zone_) CommentOperator(msg);
 }
 
 const Operator* MachineOperatorBuilder::CheckedLoad(

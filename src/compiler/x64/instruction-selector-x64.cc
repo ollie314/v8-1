@@ -37,9 +37,13 @@ class X64OperandGenerator final : public OperandGenerator {
     }
   }
 
-  bool CanBeMemoryOperand(InstructionCode opcode, Node* node, Node* input) {
+  bool CanBeMemoryOperand(InstructionCode opcode, Node* node, Node* input,
+                          int effect_level) {
     if (input->opcode() != IrOpcode::kLoad ||
         !selector()->CanCover(node, input)) {
+      return false;
+    }
+    if (effect_level != selector()->GetEffectLevel(input)) {
       return false;
     }
     MachineRepresentation rep =
@@ -1351,6 +1355,9 @@ void InstructionSelector::VisitFloat64Abs(Node* node) {
   VisitFloatUnop(this, node, node->InputAt(0), kAVXFloat64Abs, kSSEFloat64Abs);
 }
 
+void InstructionSelector::VisitFloat64Log(Node* node) {
+  VisitRR(this, node, kX87Float64Log);
+}
 
 void InstructionSelector::VisitFloat64Sqrt(Node* node) {
   VisitRO(this, node, kSSEFloat64Sqrt);
@@ -1401,6 +1408,9 @@ void InstructionSelector::VisitFloat64RoundTiesEven(Node* node) {
   VisitRR(this, node, kSSEFloat64Round | MiscField::encode(kRoundToNearest));
 }
 
+void InstructionSelector::VisitFloat32Neg(Node* node) { UNREACHABLE(); }
+
+void InstructionSelector::VisitFloat64Neg(Node* node) { UNREACHABLE(); }
 
 void InstructionSelector::EmitPrepareArguments(
     ZoneVector<PushParameter>* arguments, const CallDescriptor* descriptor,
@@ -1433,7 +1443,7 @@ void InstructionSelector::EmitPrepareArguments(
           g.CanBeImmediate(input.node())
               ? g.UseImmediate(input.node())
               : IsSupported(ATOM) ||
-                        sequence()->IsFloat(GetVirtualRegister(input.node()))
+                        sequence()->IsFP(GetVirtualRegister(input.node()))
                     ? g.UseRegister(input.node())
                     : g.Use(input.node());
       Emit(kX64Push, g.NoOutput(), value);
@@ -1548,16 +1558,22 @@ void VisitWordCompare(InstructionSelector* selector, Node* node,
 
   // If one of the two inputs is an immediate, make sure it's on the right, or
   // if one of the two inputs is a memory operand, make sure it's on the left.
+  int effect_level = selector->GetEffectLevel(node);
+  if (cont->IsBranch()) {
+    effect_level = selector->GetEffectLevel(
+        cont->true_block()->PredecessorAt(0)->control_input());
+  }
+
   if ((!g.CanBeImmediate(right) && g.CanBeImmediate(left)) ||
-      (g.CanBeMemoryOperand(opcode, node, right) &&
-       !g.CanBeMemoryOperand(opcode, node, left))) {
+      (g.CanBeMemoryOperand(opcode, node, right, effect_level) &&
+       !g.CanBeMemoryOperand(opcode, node, left, effect_level))) {
     if (!node->op()->HasProperty(Operator::kCommutative)) cont->Commute();
     std::swap(left, right);
   }
 
   // Match immediates on right side of comparison.
   if (g.CanBeImmediate(right)) {
-    if (g.CanBeMemoryOperand(opcode, node, left)) {
+    if (g.CanBeMemoryOperand(opcode, node, left, effect_level)) {
       return VisitCompareWithMemoryOperand(selector, opcode, left,
                                            g.UseImmediate(right), cont);
     }
@@ -1566,7 +1582,7 @@ void VisitWordCompare(InstructionSelector* selector, Node* node,
   }
 
   // Match memory operands on left side of comparison.
-  if (g.CanBeMemoryOperand(opcode, node, left)) {
+  if (g.CanBeMemoryOperand(opcode, node, left, effect_level)) {
     return VisitCompareWithMemoryOperand(selector, opcode, left,
                                          g.UseRegister(right), cont);
   }

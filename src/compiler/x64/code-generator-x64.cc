@@ -18,10 +18,6 @@ namespace compiler {
 
 #define __ masm()->
 
-
-#define kScratchDoubleReg xmm0
-
-
 // Adds X64 specific methods for decoding operands.
 class X64OperandConverter : public InstructionOperandConverter {
  public:
@@ -763,6 +759,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchTableSwitch:
       AssembleArchTableSwitch(instr);
       break;
+    case kArchComment: {
+      Address comment_string = i.InputExternalReference(0).address();
+      __ RecordComment(reinterpret_cast<const char*>(comment_string));
+      break;
+    }
     case kArchDebugBreak:
       __ int3();
       break;
@@ -1006,6 +1007,16 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       } else {
         __ Popcntl(i.OutputRegister(), i.InputOperand(0));
       }
+      break;
+    case kX87Float64Log:
+      __ subq(rsp, Immediate(kDoubleSize));
+      __ Movsd(Operand(rsp, 0), i.InputDoubleRegister(0));
+      __ fldln2();
+      __ fld_d(Operand(rsp, 0));
+      __ fyl2x();
+      __ fstp_d(Operand(rsp, 0));
+      __ Movsd(i.OutputDoubleRegister(), Operand(rsp, 0));
+      __ addq(rsp, Immediate(kDoubleSize));
       break;
     case kSSEFloat32Cmp:
       ASSEMBLE_SSE_BINOP(Ucomiss);
@@ -2227,10 +2238,9 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
       XMMRegister dst = g.ToDoubleRegister(destination);
       __ Movsd(dst, src);
     } else {
-      // We rely on having xmm0 available as a fixed scratch register.
       Operand dst = g.ToOperand(destination);
-      __ Movsd(xmm0, src);
-      __ Movsd(dst, xmm0);
+      __ Movsd(kScratchDoubleReg, src);
+      __ Movsd(dst, kScratchDoubleReg);
     }
   } else {
     UNREACHABLE();
@@ -2274,21 +2284,19 @@ void CodeGenerator::AssembleSwap(InstructionOperand* source,
     dst = g.ToOperand(destination);
     __ popq(dst);
   } else if (source->IsFPRegister() && destination->IsFPRegister()) {
-    // XMM register-register swap. We rely on having xmm0
-    // available as a fixed scratch register.
+    // XMM register-register swap.
     XMMRegister src = g.ToDoubleRegister(source);
     XMMRegister dst = g.ToDoubleRegister(destination);
-    __ Movapd(xmm0, src);
+    __ Movapd(kScratchDoubleReg, src);
     __ Movapd(src, dst);
-    __ Movapd(dst, xmm0);
+    __ Movapd(dst, kScratchDoubleReg);
   } else if (source->IsFPRegister() && destination->IsFPStackSlot()) {
-    // XMM register-memory swap.  We rely on having xmm0
-    // available as a fixed scratch register.
+    // XMM register-memory swap.
     XMMRegister src = g.ToDoubleRegister(source);
     Operand dst = g.ToOperand(destination);
-    __ Movsd(xmm0, src);
+    __ Movsd(kScratchDoubleReg, src);
     __ Movsd(src, dst);
-    __ Movsd(dst, xmm0);
+    __ Movsd(dst, kScratchDoubleReg);
   } else {
     // No other combinations are possible.
     UNREACHABLE();

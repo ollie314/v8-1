@@ -876,6 +876,11 @@ void InstructionSelector::VisitFloat64Abs(Node* node) {
   VisitRR(this, kMipsAbsD, node);
 }
 
+void InstructionSelector::VisitFloat64Log(Node* node) {
+  MipsOperandGenerator g(this);
+  Emit(kMipsLogD, g.DefineAsFixed(node, f0), g.UseFixed(node->InputAt(0), f12))
+      ->MarkAsCall();
+}
 
 void InstructionSelector::VisitFloat32Sqrt(Node* node) {
   VisitRR(this, kMipsSqrtS, node);
@@ -931,6 +936,9 @@ void InstructionSelector::VisitFloat64RoundTiesEven(Node* node) {
   VisitRR(this, kMipsFloat64RoundTiesEven, node);
 }
 
+void InstructionSelector::VisitFloat32Neg(Node* node) { UNREACHABLE(); }
+
+void InstructionSelector::VisitFloat64Neg(Node* node) { UNREACHABLE(); }
 
 void InstructionSelector::EmitPrepareArguments(
     ZoneVector<PushParameter>* arguments, const CallDescriptor* descriptor,

@@ -78,6 +78,9 @@ inline bool operator&(BuiltinExtraArguments lhs, BuiltinExtraArguments rhs) {
                                                                \
   V(DataViewConstructor, kNone)                                \
   V(DataViewConstructor_ConstructStub, kTargetAndNewTarget)    \
+  V(DataViewPrototypeGetBuffer, kNone)                         \
+  V(DataViewPrototypeGetByteLength, kNone)                     \
+  V(DataViewPrototypeGetByteOffset, kNone)                     \
                                                                \
   V(DateConstructor, kNone)                                    \
   V(DateConstructor_ConstructStub, kTargetAndNewTarget)        \
@@ -108,6 +111,7 @@ inline bool operator&(BuiltinExtraArguments lhs, BuiltinExtraArguments rhs) {
   V(DatePrototypeValueOf, kNone)                               \
   V(DatePrototypeGetYear, kNone)                               \
   V(DatePrototypeSetYear, kNone)                               \
+  V(DatePrototypeToJson, kNone)                                \
                                                                \
   V(FunctionConstructor, kTargetAndNewTarget)                  \
   V(FunctionPrototypeBind, kNone)                              \
@@ -116,10 +120,17 @@ inline bool operator&(BuiltinExtraArguments lhs, BuiltinExtraArguments rhs) {
   V(GeneratorFunctionConstructor, kTargetAndNewTarget)         \
   V(AsyncFunctionConstructor, kTargetAndNewTarget)             \
                                                                \
+  V(GlobalDecodeURI, kNone)                                    \
+  V(GlobalDecodeURIComponent, kNone)                           \
   V(GlobalEncodeURI, kNone)                                    \
   V(GlobalEncodeURIComponent, kNone)                           \
+  V(GlobalEscape, kNone)                                       \
+  V(GlobalUnescape, kNone)                                     \
                                                                \
   V(GlobalEval, kTarget)                                       \
+                                                               \
+  V(JsonParse, kNone)                                          \
+  V(JsonStringify, kNone)                                      \
                                                                \
   V(MathAcos, kNone)                                           \
   V(MathAsin, kNone)                                           \
@@ -167,10 +178,14 @@ inline bool operator&(BuiltinExtraArguments lhs, BuiltinExtraArguments rhs) {
   V(ReflectSet, kNone)                                         \
   V(ReflectSetPrototypeOf, kNone)                              \
                                                                \
-  V(StringFromCharCode, kNone)                                 \
+  V(StringPrototypeTrim, kNone)                                \
+  V(StringPrototypeTrimLeft, kNone)                            \
+  V(StringPrototypeTrimRight, kNone)                           \
                                                                \
   V(SymbolConstructor, kNone)                                  \
   V(SymbolConstructor_ConstructStub, kTarget)                  \
+                                                               \
+  V(TypedArrayPrototypeBuffer, kNone)                          \
                                                                \
   V(HandleApiCall, kTargetAndNewTarget)                        \
   V(HandleApiCallAsFunction, kNone)                            \
@@ -214,6 +229,8 @@ inline bool operator&(BuiltinExtraArguments lhs, BuiltinExtraArguments rhs) {
   V(ConstructBoundFunction, BUILTIN, UNINITIALIZED, kNoExtraICState)           \
   V(ConstructProxy, BUILTIN, UNINITIALIZED, kNoExtraICState)                   \
   V(Construct, BUILTIN, UNINITIALIZED, kNoExtraICState)                        \
+                                                                               \
+  V(StringToNumber, BUILTIN, UNINITIALIZED, kNoExtraICState)                   \
                                                                                \
   V(Apply, BUILTIN, UNINITIALIZED, kNoExtraICState)                            \
                                                                                \
@@ -310,22 +327,27 @@ inline bool operator&(BuiltinExtraArguments lhs, BuiltinExtraArguments rhs) {
   CODE_AGE_LIST_WITH_ARG(DECLARE_CODE_AGE_BUILTIN, V)
 
 // Define list of builtins implemented in TurboFan (with JS linkage).
-#define BUILTIN_LIST_T(V)            \
-  V(FunctionPrototypeHasInstance, 2) \
-  V(GeneratorPrototypeNext, 2)       \
-  V(GeneratorPrototypeReturn, 2)     \
-  V(GeneratorPrototypeThrow, 2)      \
-  V(MathCeil, 2)                     \
-  V(MathClz32, 2)                    \
-  V(MathFloor, 2)                    \
-  V(MathRound, 2)                    \
-  V(MathSqrt, 2)                     \
-  V(MathTrunc, 2)                    \
-  V(ObjectHasOwnProperty, 2)         \
-  V(ArrayIsArray, 2)                 \
-  V(StringPrototypeCharAt, 2)        \
-  V(StringPrototypeCharCodeAt, 2)    \
-  V(AtomicsLoad, 3)                  \
+#define BUILTIN_LIST_T(V)             \
+  V(FunctionPrototypeHasInstance, 2)  \
+  V(GeneratorPrototypeNext, 2)        \
+  V(GeneratorPrototypeReturn, 2)      \
+  V(GeneratorPrototypeThrow, 2)       \
+  V(MathCeil, 2)                      \
+  V(MathClz32, 2)                     \
+  V(MathFloor, 2)                     \
+  V(MathLog, 2)                       \
+  V(MathRound, 2)                     \
+  V(MathSqrt, 2)                      \
+  V(MathTrunc, 2)                     \
+  V(ObjectHasOwnProperty, 2)          \
+  V(ArrayIsArray, 2)                  \
+  V(StringFromCharCode, 2)            \
+  V(StringPrototypeCharAt, 2)         \
+  V(StringPrototypeCharCodeAt, 2)     \
+  V(TypedArrayPrototypeByteLength, 1) \
+  V(TypedArrayPrototypeByteOffset, 1) \
+  V(TypedArrayPrototypeLength, 1)     \
+  V(AtomicsLoad, 3)                   \
   V(AtomicsStore, 4)
 
 // Define list of builtin handlers implemented in assembly.
@@ -471,6 +493,7 @@ class Builtins {
   static void Generate_NotifyStubFailure(MacroAssembler* masm);
   static void Generate_NotifyStubFailureSaveDoubles(MacroAssembler* masm);
   static void Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm);
+  static void Generate_StringToNumber(MacroAssembler* masm);
 
   static void Generate_Apply(MacroAssembler* masm);
 
@@ -608,6 +631,8 @@ class Builtins {
   static void Generate_MathClz32(CodeStubAssembler* assembler);
   // ES6 section 20.2.2.16 Math.floor ( x )
   static void Generate_MathFloor(CodeStubAssembler* assembler);
+  // ES6 section 20.2.2.20 Math.log ( x )
+  static void Generate_MathLog(CodeStubAssembler* assembler);
   enum class MathMaxMinKind { kMax, kMin };
   static void Generate_MathMaxMin(MacroAssembler* masm, MathMaxMinKind kind);
   // ES6 section 20.2.2.24 Math.max ( value1, value2 , ...values )
@@ -647,6 +672,8 @@ class Builtins {
   // ES6 section 22.1.2.2 Array.isArray
   static void Generate_ArrayIsArray(CodeStubAssembler* assembler);
 
+  // ES6 section 21.1.2.1 String.fromCharCode ( ...codeUnits )
+  static void Generate_StringFromCharCode(CodeStubAssembler* assembler);
   // ES6 section 21.1.3.1 String.prototype.charAt ( pos )
   static void Generate_StringPrototypeCharAt(CodeStubAssembler* assembler);
   // ES6 section 21.1.3.2 String.prototype.charCodeAt ( pos )
@@ -654,6 +681,16 @@ class Builtins {
 
   static void Generate_StringConstructor(MacroAssembler* masm);
   static void Generate_StringConstructor_ConstructStub(MacroAssembler* masm);
+
+  // ES6 section 22.2.3.2 get %TypedArray%.prototype.byteLength
+  static void Generate_TypedArrayPrototypeByteLength(
+      CodeStubAssembler* assembler);
+  // ES6 section 22.2.3.3 get %TypedArray%.prototype.byteOffset
+  static void Generate_TypedArrayPrototypeByteOffset(
+      CodeStubAssembler* assembler);
+  // ES6 section 22.2.3.18 get %TypedArray%.prototype.length
+  static void Generate_TypedArrayPrototypeLength(CodeStubAssembler* assembler);
+
   static void Generate_OnStackReplacement(MacroAssembler* masm);
   static void Generate_InterruptCheck(MacroAssembler* masm);
   static void Generate_StackCheck(MacroAssembler* masm);

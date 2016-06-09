@@ -480,23 +480,22 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
   __ movp(rdi, FieldOperand(rbx, JSGeneratorObject::kFunctionOffset));
 
   // Flood function if we are stepping.
-  Label skip_flooding;
+  Label prepare_step_in_if_stepping, prepare_step_in_suspended_generator;
+  Label stepping_prepared;
   ExternalReference step_in_enabled =
       ExternalReference::debug_step_in_enabled_address(masm->isolate());
   Operand step_in_enabled_operand = masm->ExternalOperand(step_in_enabled);
   __ cmpb(step_in_enabled_operand, Immediate(0));
-  __ j(equal, &skip_flooding);
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-    __ Push(rbx);
-    __ Push(rdx);
-    __ Push(rdi);
-    __ CallRuntime(Runtime::kDebugPrepareStepInIfStepping);
-    __ Pop(rdx);
-    __ Pop(rbx);
-    __ movp(rdi, FieldOperand(rbx, JSGeneratorObject::kFunctionOffset));
-  }
-  __ bind(&skip_flooding);
+  __ j(not_equal, &prepare_step_in_if_stepping);
+
+  // Flood function if we need to continue stepping in the suspended generator.
+  ExternalReference debug_suspended_generator =
+      ExternalReference::debug_suspended_generator_address(masm->isolate());
+  Operand debug_suspended_generator_operand =
+      masm->ExternalOperand(debug_suspended_generator);
+  __ cmpp(rbx, debug_suspended_generator_operand);
+  __ j(equal, &prepare_step_in_suspended_generator);
+  __ bind(&stepping_prepared);
 
   // Pop return address.
   __ PopReturnAddressTo(rax);
@@ -596,6 +595,31 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
     __ movp(rax, rbx);  // Continuation expects generator object in rax.
     __ jmp(rdx);
   }
+
+  __ bind(&prepare_step_in_if_stepping);
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+    __ Push(rbx);
+    __ Push(rdx);
+    __ Push(rdi);
+    __ CallRuntime(Runtime::kDebugPrepareStepInIfStepping);
+    __ Pop(rdx);
+    __ Pop(rbx);
+    __ movp(rdi, FieldOperand(rbx, JSGeneratorObject::kFunctionOffset));
+  }
+  __ jmp(&stepping_prepared);
+
+  __ bind(&prepare_step_in_suspended_generator);
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+    __ Push(rbx);
+    __ Push(rdx);
+    __ CallRuntime(Runtime::kDebugPrepareStepInSuspendedGenerator);
+    __ Pop(rdx);
+    __ Pop(rbx);
+    __ movp(rdi, FieldOperand(rbx, JSGeneratorObject::kFunctionOffset));
+  }
+  __ jmp(&stepping_prepared);
 }
 
 static void LeaveInterpreterFrame(MacroAssembler* masm, Register scratch1,
@@ -938,13 +962,30 @@ void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
   const int bailout_id = BailoutId::None().ToInt();
   __ cmpl(temp, Immediate(bailout_id));
   __ j(not_equal, &loop_bottom);
+
   // Literals available?
+  Label got_literals, maybe_cleared_weakcell;
   __ movp(temp, FieldOperand(map, index, times_pointer_size,
                              SharedFunctionInfo::kOffsetToPreviousLiterals));
+  // temp contains either a WeakCell pointing to the literals array or the
+  // literals array directly.
+  STATIC_ASSERT(WeakCell::kValueOffset == FixedArray::kLengthOffset);
+  __ movp(r15, FieldOperand(temp, WeakCell::kValueOffset));
+  __ JumpIfSmi(r15, &maybe_cleared_weakcell);
+  // r15 is a pointer, therefore temp is a WeakCell pointing to a literals
+  // array.
   __ movp(temp, FieldOperand(temp, WeakCell::kValueOffset));
-  __ JumpIfSmi(temp, &gotta_call_runtime);
+  __ jmp(&got_literals);
+
+  // r15 is a smi. If it's 0, then we are looking at a cleared WeakCell
+  // around the literals array, and we should visit the runtime. If it's > 0,
+  // then temp already contains the literals array.
+  __ bind(&maybe_cleared_weakcell);
+  __ cmpp(r15, Immediate(0));
+  __ j(equal, &gotta_call_runtime);
 
   // Save the literals in the closure.
+  __ bind(&got_literals);
   __ movp(FieldOperand(closure, JSFunction::kLiteralsOffset), temp);
   __ movp(r15, index);
   __ RecordWriteField(closure, JSFunction::kLiteralsOffset, temp, r15,
@@ -2033,6 +2074,26 @@ void Builtins::Generate_AllocateInOldSpace(MacroAssembler* masm) {
   __ PushReturnAddressFrom(rcx);
   __ Move(rsi, Smi::FromInt(0));
   __ TailCallRuntime(Runtime::kAllocateInTargetSpace);
+}
+
+void Builtins::Generate_StringToNumber(MacroAssembler* masm) {
+  // The StringToNumber stub takes one argument in rax.
+  __ AssertString(rax);
+
+  // Check if string has a cached array index.
+  Label runtime;
+  __ testl(FieldOperand(rax, String::kHashFieldOffset),
+           Immediate(String::kContainsCachedArrayIndexMask));
+  __ j(not_zero, &runtime, Label::kNear);
+  __ movl(rax, FieldOperand(rax, String::kHashFieldOffset));
+  __ IndexFromHash(rax, rax);
+  __ Ret();
+
+  __ bind(&runtime);
+  __ PopReturnAddressTo(rcx);     // Pop return address.
+  __ Push(rax);                   // Push argument.
+  __ PushReturnAddressFrom(rcx);  // Push return address.
+  __ TailCallRuntime(Runtime::kStringToNumber);
 }
 
 void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {

@@ -393,12 +393,28 @@ bool Heap::OldGenerationAllocationLimitReached() {
   return OldGenerationSpaceAvailable() < 0;
 }
 
-
+template <PromotionMode promotion_mode>
 bool Heap::ShouldBePromoted(Address old_address, int object_size) {
   Page* page = Page::FromAddress(old_address);
   Address age_mark = new_space_.age_mark();
+
+  if (promotion_mode == PROMOTE_MARKED) {
+    MarkBit mark_bit = Marking::MarkBitFrom(old_address);
+    if (!Marking::IsWhite(mark_bit)) {
+      return true;
+    }
+  }
+
   return page->IsFlagSet(MemoryChunk::NEW_SPACE_BELOW_AGE_MARK) &&
          (!page->ContainsLimit(age_mark) || old_address < age_mark);
+}
+
+PromotionMode Heap::CurrentPromotionMode() {
+  if (incremental_marking()->IsMarking()) {
+    return PROMOTE_MARKED;
+  } else {
+    return DEFAULT_PROMOTION;
+  }
 }
 
 void Heap::RecordWrite(Object* object, int offset, Object* o) {
@@ -596,12 +612,12 @@ void Heap::ExternalStringTable::Verify() {
   for (int i = 0; i < new_space_strings_.length(); ++i) {
     Object* obj = Object::cast(new_space_strings_[i]);
     DCHECK(heap_->InNewSpace(obj));
-    DCHECK(obj != heap_->the_hole_value());
+    DCHECK(!obj->IsTheHole(heap_->isolate()));
   }
   for (int i = 0; i < old_space_strings_.length(); ++i) {
     Object* obj = Object::cast(old_space_strings_[i]);
     DCHECK(!heap_->InNewSpace(obj));
-    DCHECK(obj != heap_->the_hole_value());
+    DCHECK(!obj->IsTheHole(heap_->isolate()));
   }
 #endif
 }

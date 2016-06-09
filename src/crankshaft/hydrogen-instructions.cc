@@ -1553,6 +1553,9 @@ void HCheckInstanceType::GetCheckInterval(InstanceType* first,
     case IS_JS_ARRAY:
       *first = *last = JS_ARRAY_TYPE;
       return;
+    case IS_JS_FUNCTION:
+      *first = *last = JS_FUNCTION_TYPE;
+      return;
     case IS_JS_DATE:
       *first = *last = JS_DATE_TYPE;
       return;
@@ -1625,6 +1628,8 @@ const char* HCheckInstanceType::GetCheckName() const {
   switch (check_) {
     case IS_JS_RECEIVER: return "object";
     case IS_JS_ARRAY: return "array";
+    case IS_JS_FUNCTION:
+      return "function";
     case IS_JS_DATE:
       return "date";
     case IS_STRING: return "string";
@@ -2412,7 +2417,7 @@ Maybe<HConstant*> HConstant::CopyToTruncatedNumber(Isolate* isolate,
   if (handle->IsBoolean()) {
     res = handle->BooleanValue() ?
       new(zone) HConstant(1) : new(zone) HConstant(0);
-  } else if (handle->IsUndefined()) {
+  } else if (handle->IsUndefined(isolate)) {
     res = new (zone) HConstant(std::numeric_limits<double>::quiet_NaN());
   } else if (handle->IsNull()) {
     res = new(zone) HConstant(0);

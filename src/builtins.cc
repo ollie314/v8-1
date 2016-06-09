@@ -18,6 +18,8 @@
 #include "src/ic/handler-compiler.h"
 #include "src/ic/ic.h"
 #include "src/isolate-inl.h"
+#include "src/json-parser.h"
+#include "src/json-stringifier.h"
 #include "src/messages.h"
 #include "src/profiler/cpu-profiler.h"
 #include "src/property-descriptor.h"
@@ -178,8 +180,21 @@ BUILTIN_LIST_C(DEF_ARG_TYPE)
   }                                                                         \
   Handle<Type> name = Handle<Type>::cast(args.receiver())
 
+// Throws a TypeError for {method} if the receiver is not coercible to Object,
+// or converts the receiver to a String otherwise and assigns it to a new var
+// with the given {name}.
+#define TO_THIS_STRING(name, method)                                          \
+  if (args.receiver()->IsNull() || args.receiver()->IsUndefined(isolate)) {   \
+    THROW_NEW_ERROR_RETURN_FAILURE(                                           \
+        isolate,                                                              \
+        NewTypeError(MessageTemplate::kCalledOnNullOrUndefined,               \
+                     isolate->factory()->NewStringFromAsciiChecked(method))); \
+  }                                                                           \
+  Handle<String> name;                                                        \
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(                                         \
+      isolate, name, Object::ToString(isolate, args.receiver()))
 
-inline bool ClampedToInteger(Object* object, int* out) {
+inline bool ClampedToInteger(Isolate* isolate, Object* object, int* out) {
   // This is an extended version of ECMA-262 7.1.11 handling signed values
   // Try to convert object to a number and clamp values to [kMinInt, kMaxInt]
   if (object->IsSmi()) {
@@ -197,7 +212,7 @@ inline bool ClampedToInteger(Object* object, int* out) {
       *out = static_cast<int>(value);
     }
     return true;
-  } else if (object->IsUndefined() || object->IsNull()) {
+  } else if (object->IsUndefined(isolate) || object->IsNull()) {
     *out = 0;
     return true;
   } else if (object->IsBoolean()) {
@@ -257,8 +272,7 @@ inline bool HasOnlySimpleReceiverElements(Isolate* isolate,
 
 inline bool HasOnlySimpleElements(Isolate* isolate, JSReceiver* receiver) {
   DisallowHeapAllocation no_gc;
-  PrototypeIterator iter(isolate, receiver,
-                         PrototypeIterator::START_AT_RECEIVER);
+  PrototypeIterator iter(isolate, receiver, kStartAtReceiver);
   for (; !iter.IsAtEnd(); iter.Advance()) {
     if (iter.GetCurrent()->IsJSProxy()) return false;
     JSObject* current = iter.GetCurrent<JSObject>();
@@ -328,15 +342,9 @@ MUST_USE_RESULT static Object* CallJsIntrinsic(
   for (int i = 0; i < argc; ++i) {
     argv[i] = args.at<Object>(i + 1);
   }
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      Execution::Call(isolate,
-                      function,
-                      args.receiver(),
-                      argc,
-                      argv.start()));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate,
+      Execution::Call(isolate, function, args.receiver(), argc, argv.start()));
 }
 
 
@@ -588,16 +596,16 @@ BUILTIN(ArraySlice) {
   relative_end = len;
   if (argument_count > 0) {
     DisallowHeapAllocation no_gc;
-    if (!ClampedToInteger(args[1], &relative_start)) {
+    if (!ClampedToInteger(isolate, args[1], &relative_start)) {
       AllowHeapAllocation allow_allocation;
       return CallJsIntrinsic(isolate, isolate->array_slice(), args);
     }
     if (argument_count > 1) {
       Object* end_arg = args[2];
       // slice handles the end_arg specially
-      if (end_arg->IsUndefined()) {
+      if (end_arg->IsUndefined(isolate)) {
         relative_end = len;
-      } else if (!ClampedToInteger(end_arg, &relative_end)) {
+      } else if (!ClampedToInteger(isolate, end_arg, &relative_end)) {
         AllowHeapAllocation allow_allocation;
         return CallJsIntrinsic(isolate, isolate->array_slice(), args);
       }
@@ -635,7 +643,7 @@ BUILTIN(ArraySplice) {
   int relative_start = 0;
   if (argument_count > 0) {
     DisallowHeapAllocation no_gc;
-    if (!ClampedToInteger(args[1], &relative_start)) {
+    if (!ClampedToInteger(isolate, args[1], &relative_start)) {
       AllowHeapAllocation allow_allocation;
       return CallJsIntrinsic(isolate, isolate->array_splice(), args);
     }
@@ -657,7 +665,7 @@ BUILTIN(ArraySplice) {
     int delete_count = 0;
     DisallowHeapAllocation no_gc;
     if (argument_count > 1) {
-      if (!ClampedToInteger(args[2], &delete_count)) {
+      if (!ClampedToInteger(isolate, args[2], &delete_count)) {
         AllowHeapAllocation allow_allocation;
         return CallJsIntrinsic(isolate, isolate->array_splice(), args);
       }
@@ -810,7 +818,7 @@ class ArrayConcatVisitor {
     FOR_WITH_HANDLE_SCOPE(
         isolate_, uint32_t, i = 0, i, i < current_length, i++, {
           Handle<Object> element(current_storage->get(i), isolate_);
-          if (!element->IsTheHole()) {
+          if (!element->IsTheHole(isolate_)) {
             // The object holding this backing store has just been allocated, so
             // it cannot yet be used as a prototype.
             Handle<SeededNumberDictionary> new_storage =
@@ -856,6 +864,7 @@ class ArrayConcatVisitor {
 
 
 uint32_t EstimateElementCount(Handle<JSArray> array) {
+  DisallowHeapAllocation no_gc;
   uint32_t length = static_cast<uint32_t>(array->length()->Number());
   int element_count = 0;
   switch (array->GetElementsKind()) {
@@ -867,9 +876,10 @@ uint32_t EstimateElementCount(Handle<JSArray> array) {
       // a 32-bit signed integer.
       DCHECK(static_cast<int32_t>(FixedArray::kMaxLength) >= 0);
       int fast_length = static_cast<int>(length);
-      Handle<FixedArray> elements(FixedArray::cast(array->elements()));
+      Isolate* isolate = array->GetIsolate();
+      FixedArray* elements = FixedArray::cast(array->elements());
       for (int i = 0; i < fast_length; i++) {
-        if (!elements->get(i)->IsTheHole()) element_count++;
+        if (!elements->get(i)->IsTheHole(isolate)) element_count++;
       }
       break;
     }
@@ -883,20 +893,20 @@ uint32_t EstimateElementCount(Handle<JSArray> array) {
         DCHECK(FixedArray::cast(array->elements())->length() == 0);
         break;
       }
-      Handle<FixedDoubleArray> elements(
-          FixedDoubleArray::cast(array->elements()));
+      FixedDoubleArray* elements = FixedDoubleArray::cast(array->elements());
       for (int i = 0; i < fast_length; i++) {
         if (!elements->is_the_hole(i)) element_count++;
       }
       break;
     }
     case DICTIONARY_ELEMENTS: {
-      Handle<SeededNumberDictionary> dictionary(
-          SeededNumberDictionary::cast(array->elements()));
+      SeededNumberDictionary* dictionary =
+          SeededNumberDictionary::cast(array->elements());
+      Isolate* isolate = dictionary->GetIsolate();
       int capacity = dictionary->Capacity();
       for (int i = 0; i < capacity; i++) {
-        Handle<Object> key(dictionary->KeyAt(i), array->GetIsolate());
-        if (dictionary->IsKey(*key)) {
+        Object* key = dictionary->KeyAt(i);
+        if (dictionary->IsKey(isolate, key)) {
           element_count++;
         }
       }
@@ -945,7 +955,7 @@ void CollectElementIndices(Handle<JSObject> object, uint32_t range,
       uint32_t length = static_cast<uint32_t>(elements->length());
       if (range < length) length = range;
       for (uint32_t i = 0; i < length; i++) {
-        if (!elements->get(i)->IsTheHole()) {
+        if (!elements->get(i)->IsTheHole(isolate)) {
           indices->Add(i);
         }
       }
@@ -973,13 +983,9 @@ void CollectElementIndices(Handle<JSObject> object, uint32_t range,
       SeededNumberDictionary* dict =
           SeededNumberDictionary::cast(object->elements());
       uint32_t capacity = dict->Capacity();
-      Heap* heap = isolate->heap();
-      Object* undefined = heap->undefined_value();
-      Object* the_hole = heap->the_hole_value();
       FOR_WITH_HANDLE_SCOPE(isolate, uint32_t, j = 0, j, j < capacity, j++, {
         Object* k = dict->KeyAt(j);
-        if (k == undefined) continue;
-        if (k == the_hole) continue;
+        if (!dict->IsKey(isolate, k)) continue;
         DCHECK(k->IsNumber());
         uint32_t index = static_cast<uint32_t>(k->Number());
         if (index < range) {
@@ -1115,7 +1121,7 @@ bool IterateElements(Isolate* isolate, Handle<JSReceiver> receiver,
       DCHECK(fast_length <= elements->length());
       FOR_WITH_HANDLE_SCOPE(isolate, int, j = 0, j, j < fast_length, j++, {
         Handle<Object> element_value(elements->get(j), isolate);
-        if (!element_value->IsTheHole()) {
+        if (!element_value->IsTheHole(isolate)) {
           if (!visitor->visit(j, element_value)) return false;
         } else {
           Maybe<bool> maybe = JSReceiver::HasElement(array, j);
@@ -1229,7 +1235,7 @@ static Maybe<bool> IsConcatSpreadable(Isolate* isolate, Handle<Object> obj) {
     MaybeHandle<Object> maybeValue =
         i::Runtime::GetObjectProperty(isolate, obj, key);
     if (!maybeValue.ToHandle(&value)) return Nothing<bool>();
-    if (!value->IsUndefined()) return Just(value->BooleanValue());
+    if (!value->IsUndefined(isolate)) return Just(value->BooleanValue());
   }
   return Object::IsArray(obj);
 }
@@ -1467,7 +1473,8 @@ MaybeHandle<JSArray> Fast_ArrayConcat(Isolate* isolate, Arguments* args) {
       result_len += Smi::cast(array->length())->value();
       DCHECK(result_len >= 0);
       // Throw an Error if we overflow the FixedArray limits
-      if (FixedArray::kMaxLength < result_len) {
+      if (FixedDoubleArray::kMaxLength < result_len ||
+          FixedArray::kMaxLength < result_len) {
         AllowHeapAllocation gc;
         THROW_NEW_ERROR(isolate,
                         NewRangeError(MessageTemplate::kInvalidArrayLength),
@@ -1487,7 +1494,7 @@ BUILTIN(ArrayConcat) {
 
   Handle<Object> receiver = args.receiver();
   // TODO(bmeurer): Do we really care about the exact exception message here?
-  if (receiver->IsNull() || receiver->IsUndefined()) {
+  if (receiver->IsNull() || receiver->IsUndefined(isolate)) {
     THROW_NEW_ERROR_RETURN_FAILURE(
         isolate, NewTypeError(MessageTemplate::kCalledOnNullOrUndefined,
                               isolate->factory()->NewStringFromAsciiChecked(
@@ -1632,8 +1639,9 @@ BUILTIN(ObjectAssign) {
     // 4b ii. Let keys be ? from.[[OwnPropertyKeys]]().
     Handle<FixedArray> keys;
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-        isolate, keys,
-        JSReceiver::GetKeys(from, OWN_ONLY, ALL_PROPERTIES, KEEP_NUMBERS));
+        isolate, keys, KeyAccumulator::GetKeys(
+                           from, KeyCollectionMode::kOwnOnly, ALL_PROPERTIES,
+                           GetKeysConversion::kKeepNumbers));
     // 4c. Repeat for each element nextKey of keys in List order,
     for (int j = 0; j < keys->length(); ++j) {
       Handle<Object> next_key(keys->get(j), isolate);
@@ -1686,7 +1694,7 @@ BUILTIN(ObjectCreate) {
 
   // Define the properties if properties was specified and is not undefined.
   Handle<Object> properties = args.atOrUndefined(isolate, 2);
-  if (!properties->IsUndefined()) {
+  if (!properties->IsUndefined(isolate)) {
     RETURN_FAILURE_ON_EXCEPTION(
         isolate, JSReceiver::DefineProperties(isolate, object, properties));
   }
@@ -1701,11 +1709,8 @@ BUILTIN(ObjectDefineProperties) {
   Handle<Object> target = args.at<Object>(1);
   Handle<Object> properties = args.at<Object>(2);
 
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      JSReceiver::DefineProperties(isolate, target, properties));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, JSReceiver::DefineProperties(isolate, target, properties));
 }
 
 // ES6 section 19.1.2.4 Object.defineProperty
@@ -1867,11 +1872,8 @@ BUILTIN(ObjectGetPrototypeOf) {
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, receiver, Object::ToObject(isolate, object));
 
-  Handle<Object> prototype;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, prototype, JSReceiver::GetPrototype(isolate, receiver));
-
-  return *prototype;
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           JSReceiver::GetPrototype(isolate, receiver));
 }
 
 
@@ -1912,7 +1914,8 @@ Object* GetOwnPropertyKeys(Isolate* isolate,
   Handle<FixedArray> keys;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, keys,
-      JSReceiver::GetKeys(receiver, OWN_ONLY, filter, CONVERT_TO_STRING));
+      KeyAccumulator::GetKeys(receiver, KeyCollectionMode::kOwnOnly, filter,
+                              GetKeysConversion::kConvertToString));
   return *isolate->factory()->NewJSArrayWithElements(keys);
 }
 
@@ -2008,8 +2011,9 @@ BUILTIN(ObjectKeys) {
   } else {
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
         isolate, keys,
-        JSReceiver::GetKeys(receiver, OWN_ONLY, ENUMERABLE_STRINGS,
-                            CONVERT_TO_STRING));
+        KeyAccumulator::GetKeys(receiver, KeyCollectionMode::kOwnOnly,
+                                ENUMERABLE_STRINGS,
+                                GetKeysConversion::kConvertToString));
   }
   return *isolate->factory()->NewJSArrayWithElements(keys, FAST_ELEMENTS);
 }
@@ -2051,8 +2055,9 @@ BUILTIN(ObjectGetOwnPropertyDescriptors) {
 
   Handle<FixedArray> keys;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, keys, JSReceiver::GetKeys(receiver, OWN_ONLY, ALL_PROPERTIES,
-                                         CONVERT_TO_STRING));
+      isolate, keys, KeyAccumulator::GetKeys(
+                         receiver, KeyCollectionMode::kOwnOnly, ALL_PROPERTIES,
+                         GetKeysConversion::kConvertToString));
 
   Handle<JSObject> descriptors =
       isolate->factory()->NewJSObject(isolate->object_function());
@@ -2103,6 +2108,29 @@ BUILTIN(ObjectSeal) {
   return *object;
 }
 
+// ES6 section 18.2.6.2 decodeURI (encodedURI)
+BUILTIN(GlobalDecodeURI) {
+  HandleScope scope(isolate);
+  Handle<String> encoded_uri;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, encoded_uri,
+      Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
+
+  RETURN_RESULT_OR_FAILURE(isolate, Uri::DecodeUri(isolate, encoded_uri));
+}
+
+// ES6 section 18.2.6.3 decodeURIComponent (encodedURIComponent)
+BUILTIN(GlobalDecodeURIComponent) {
+  HandleScope scope(isolate);
+  Handle<String> encoded_uri_component;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, encoded_uri_component,
+      Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
+
+  RETURN_RESULT_OR_FAILURE(
+      isolate, Uri::DecodeUriComponent(isolate, encoded_uri_component));
+}
+
 // ES6 section 18.2.6.4 encodeURI (uri)
 BUILTIN(GlobalEncodeURI) {
   HandleScope scope(isolate);
@@ -2110,18 +2138,41 @@ BUILTIN(GlobalEncodeURI) {
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, uri, Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
 
-  return Uri::EncodeUri(isolate, uri);
+  RETURN_RESULT_OR_FAILURE(isolate, Uri::EncodeUri(isolate, uri));
 }
 
 // ES6 section 18.2.6.5 encodeURIComponenet (uriComponent)
 BUILTIN(GlobalEncodeURIComponent) {
   HandleScope scope(isolate);
-  Handle<String> uriComponent;
+  Handle<String> uri_component;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, uriComponent,
+      isolate, uri_component,
       Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
 
-  return Uri::EncodeUriComponent(isolate, uriComponent);
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           Uri::EncodeUriComponent(isolate, uri_component));
+}
+
+// ES6 section B.2.1.1 escape (string)
+BUILTIN(GlobalEscape) {
+  HandleScope scope(isolate);
+  Handle<String> string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, string,
+      Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
+
+  RETURN_RESULT_OR_FAILURE(isolate, Uri::Escape(isolate, string));
+}
+
+// ES6 section B.2.1.2 unescape (string)
+BUILTIN(GlobalUnescape) {
+  HandleScope scope(isolate);
+  Handle<String> string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, string,
+      Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
+
+  RETURN_RESULT_OR_FAILURE(isolate, Uri::Unescape(isolate, string));
 }
 
 namespace {
@@ -2184,13 +2235,36 @@ BUILTIN(GlobalEval) {
       isolate, function,
       CompileString(handle(target->native_context(), isolate),
                     Handle<String>::cast(x), NO_PARSE_RESTRICTION));
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
+  RETURN_RESULT_OR_FAILURE(
+      isolate,
       Execution::Call(isolate, function, target_global_proxy, 0, nullptr));
-  return *result;
 }
 
+// ES6 section 24.3.1 JSON.parse.
+BUILTIN(JsonParse) {
+  HandleScope scope(isolate);
+  Handle<Object> source = args.atOrUndefined(isolate, 1);
+  Handle<Object> reviver = args.atOrUndefined(isolate, 2);
+  Handle<String> string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, string,
+                                     Object::ToString(isolate, source));
+  string = String::Flatten(string);
+  RETURN_RESULT_OR_FAILURE(
+      isolate, string->IsSeqOneByteString()
+                   ? JsonParser<true>::Parse(isolate, string, reviver)
+                   : JsonParser<false>::Parse(isolate, string, reviver));
+}
+
+// ES6 section 24.3.2 JSON.stringify.
+BUILTIN(JsonStringify) {
+  HandleScope scope(isolate);
+  JsonStringifier stringifier(isolate);
+  Handle<Object> object = args.atOrUndefined(isolate, 1);
+  Handle<Object> replacer = args.atOrUndefined(isolate, 2);
+  Handle<Object> indent = args.atOrUndefined(isolate, 3);
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           stringifier.Stringify(object, replacer, indent));
+}
 
 // -----------------------------------------------------------------------------
 // ES6 section 20.2.2 Function Properties of the Math Object
@@ -2386,6 +2460,18 @@ BUILTIN(MathImul) {
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, y, Object::ToNumber(y));
   int product = static_cast<int>(NumberToUint32(*x) * NumberToUint32(*y));
   return *isolate->factory()->NewNumberFromInt(product);
+}
+
+// ES6 section 20.2.2.20 Math.log ( x )
+void Builtins::Generate_MathLog(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Log(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
 }
 
 // ES6 section 20.2.2.28 Math.round ( x )
@@ -2608,12 +2694,9 @@ BUILTIN(ReflectGet) {
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, name,
                                      Object::ToName(isolate, key));
 
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result, Object::GetPropertyOrElement(
-                           receiver, name, Handle<JSReceiver>::cast(target)));
-
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, Object::GetPropertyOrElement(receiver, name,
+                                            Handle<JSReceiver>::cast(target)));
 }
 
 
@@ -2656,11 +2739,9 @@ BUILTIN(ReflectGetPrototypeOf) {
                               isolate->factory()->NewStringFromAsciiChecked(
                                   "Reflect.getPrototypeOf")));
   }
-  Handle<Object> prototype;
   Handle<JSReceiver> receiver = Handle<JSReceiver>::cast(target);
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, prototype, JSReceiver::GetPrototype(isolate, receiver));
-  return *prototype;
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           JSReceiver::GetPrototype(isolate, receiver));
 }
 
 
@@ -2725,8 +2806,9 @@ BUILTIN(ReflectOwnKeys) {
   Handle<FixedArray> keys;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, keys,
-      JSReceiver::GetKeys(Handle<JSReceiver>::cast(target), OWN_ONLY,
-                          ALL_PROPERTIES, CONVERT_TO_STRING));
+      KeyAccumulator::GetKeys(Handle<JSReceiver>::cast(target),
+                              KeyCollectionMode::kOwnOnly, ALL_PROPERTIES,
+                              GetKeysConversion::kConvertToString));
   return *isolate->factory()->NewJSArrayWithElements(keys);
 }
 
@@ -2901,7 +2983,7 @@ BUILTIN(DataViewConstructor_ConstructStub) {
 
   // 4. Let numberOffset be ? ToNumber(byteOffset).
   Handle<Object> number_offset;
-  if (byte_offset->IsUndefined()) {
+  if (byte_offset->IsUndefined(isolate)) {
     // We intentionally violate the specification at this point to allow
     // for new DataView(buffer) invocations to be equivalent to the full
     // new DataView(buffer, 0) invocation.
@@ -2936,7 +3018,7 @@ BUILTIN(DataViewConstructor_ConstructStub) {
   }
 
   Handle<Object> view_byte_length;
-  if (byte_length->IsUndefined()) {
+  if (byte_length->IsUndefined(isolate)) {
     // 10. If byteLength is undefined, then
     //       a. Let viewByteLength be bufferByteLength - offset.
     view_byte_length =
@@ -2978,6 +3060,119 @@ BUILTIN(DataViewConstructor_ConstructStub) {
   return *result;
 }
 
+// ES6 section 24.2.4.1 get DataView.prototype.buffer
+BUILTIN(DataViewPrototypeGetBuffer) {
+  HandleScope scope(isolate);
+  CHECK_RECEIVER(JSDataView, data_view, "get DataView.prototype.buffer");
+  return data_view->buffer();
+}
+
+// ES6 section 24.2.4.2 get DataView.prototype.byteLength
+BUILTIN(DataViewPrototypeGetByteLength) {
+  HandleScope scope(isolate);
+  CHECK_RECEIVER(JSDataView, data_view, "get DataView.prototype.byteLength");
+  // TODO(bmeurer): According to the ES6 spec, we should throw a TypeError
+  // here if the JSArrayBuffer of the {data_view} was neutered.
+  return data_view->byte_length();
+}
+
+// ES6 section 24.2.4.3 get DataView.prototype.byteOffset
+BUILTIN(DataViewPrototypeGetByteOffset) {
+  HandleScope scope(isolate);
+  CHECK_RECEIVER(JSDataView, data_view, "get DataView.prototype.byteOffset");
+  // TODO(bmeurer): According to the ES6 spec, we should throw a TypeError
+  // here if the JSArrayBuffer of the {data_view} was neutered.
+  return data_view->byte_offset();
+}
+
+// -----------------------------------------------------------------------------
+// ES6 section 22.2 TypedArray Objects
+
+// ES6 section 22.2.3.1 get %TypedArray%.prototype.buffer
+BUILTIN(TypedArrayPrototypeBuffer) {
+  HandleScope scope(isolate);
+  CHECK_RECEIVER(JSTypedArray, typed_array, "get TypedArray.prototype.buffer");
+  return *typed_array->GetBuffer();
+}
+
+namespace {
+
+void Generate_TypedArrayProtoypeGetter(CodeStubAssembler* assembler,
+                                       const char* method_name,
+                                       int object_offset) {
+  typedef CodeStubAssembler::Label Label;
+  typedef compiler::Node Node;
+
+  Node* receiver = assembler->Parameter(0);
+  Node* context = assembler->Parameter(3);
+
+  // Check if the {receiver} is actually a JSTypedArray.
+  Label if_receiverisincompatible(assembler, Label::kDeferred);
+  assembler->GotoIf(assembler->WordIsSmi(receiver), &if_receiverisincompatible);
+  Node* receiver_instance_type = assembler->LoadInstanceType(receiver);
+  assembler->GotoUnless(
+      assembler->Word32Equal(receiver_instance_type,
+                             assembler->Int32Constant(JS_TYPED_ARRAY_TYPE)),
+      &if_receiverisincompatible);
+
+  // Check if the {receiver}'s JSArrayBuffer was neutered.
+  Node* receiver_buffer =
+      assembler->LoadObjectField(receiver, JSTypedArray::kBufferOffset);
+  Node* receiver_buffer_bit_field = assembler->LoadObjectField(
+      receiver_buffer, JSArrayBuffer::kBitFieldOffset, MachineType::Int8());
+  Label if_receiverisneutered(assembler, Label::kDeferred);
+  assembler->GotoUnless(
+      assembler->Word32Equal(
+          assembler->Word32And(
+              receiver_buffer_bit_field,
+              assembler->Int32Constant(JSArrayBuffer::WasNeutered::kMask)),
+          assembler->Int32Constant(0)),
+      &if_receiverisneutered);
+  assembler->Return(assembler->LoadObjectField(receiver, object_offset));
+
+  assembler->Bind(&if_receiverisneutered);
+  {
+    // The {receiver}s buffer was neutered, default to zero.
+    assembler->Return(assembler->SmiConstant(0));
+  }
+
+  assembler->Bind(&if_receiverisincompatible);
+  {
+    // The {receiver} is not a valid JSGeneratorObject.
+    Node* result = assembler->CallRuntime(
+        Runtime::kThrowIncompatibleMethodReceiver, context,
+        assembler->HeapConstant(assembler->factory()->NewStringFromAsciiChecked(
+            method_name, TENURED)),
+        receiver);
+    assembler->Return(result);  // Never reached.
+  }
+}
+
+}  // namespace
+
+// ES6 section 22.2.3.2 get %TypedArray%.prototype.byteLength
+void Builtins::Generate_TypedArrayPrototypeByteLength(
+    CodeStubAssembler* assembler) {
+  Generate_TypedArrayProtoypeGetter(assembler,
+                                    "get TypedArray.prototype.byteLength",
+                                    JSTypedArray::kByteLengthOffset);
+}
+
+// ES6 section 22.2.3.3 get %TypedArray%.prototype.byteOffset
+void Builtins::Generate_TypedArrayPrototypeByteOffset(
+    CodeStubAssembler* assembler) {
+  Generate_TypedArrayProtoypeGetter(assembler,
+                                    "get TypedArray.prototype.byteOffset",
+                                    JSTypedArray::kByteOffsetOffset);
+}
+
+// ES6 section 22.2.3.18 get %TypedArray%.prototype.length
+void Builtins::Generate_TypedArrayPrototypeLength(
+    CodeStubAssembler* assembler) {
+  Generate_TypedArrayProtoypeGetter(assembler,
+                                    "get TypedArray.prototype.length",
+                                    JSTypedArray::kLengthOffset);
+}
 
 // -----------------------------------------------------------------------------
 // ES6 section 20.3 Date Objects
@@ -3096,11 +3291,9 @@ double ParseDateTimeString(Handle<String> str) {
   String::FlatContent str_content = str->GetFlatContent();
   bool result;
   if (str_content.IsOneByte()) {
-    result = DateParser::Parse(str_content.ToOneByteVector(), *tmp,
-                               isolate->unicode_cache());
+    result = DateParser::Parse(isolate, str_content.ToOneByteVector(), *tmp);
   } else {
-    result = DateParser::Parse(str_content.ToUC16Vector(), *tmp,
-                               isolate->unicode_cache());
+    result = DateParser::Parse(isolate, str_content.ToUC16Vector(), *tmp);
   }
   if (!result) return std::numeric_limits<double>::quiet_NaN();
   double const day = MakeDay(tmp->get(0)->Number(), tmp->get(1)->Number(),
@@ -3179,11 +3372,8 @@ BUILTIN(DateConstructor) {
   double const time_val = JSDate::CurrentTimeValue(isolate);
   char buffer[128];
   ToDateString(time_val, ArrayVector(buffer), isolate->date_cache());
-  Handle<String> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
 }
 
 
@@ -3265,10 +3455,7 @@ BUILTIN(DateConstructor_ConstructStub) {
       time_val = std::numeric_limits<double>::quiet_NaN();
     }
   }
-  Handle<JSDate> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, result,
-                                     JSDate::New(target, new_target, time_val));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(isolate, JSDate::New(target, new_target, time_val));
 }
 
 
@@ -3763,11 +3950,8 @@ BUILTIN(DatePrototypeToDateString) {
   char buffer[128];
   ToDateString(date->value()->Number(), ArrayVector(buffer),
                isolate->date_cache(), kDateOnly);
-  Handle<String> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
 }
 
 
@@ -3806,11 +3990,8 @@ BUILTIN(DatePrototypeToString) {
   char buffer[128];
   ToDateString(date->value()->Number(), ArrayVector(buffer),
                isolate->date_cache());
-  Handle<String> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
 }
 
 
@@ -3821,11 +4002,8 @@ BUILTIN(DatePrototypeToTimeString) {
   char buffer[128];
   ToDateString(date->value()->Number(), ArrayVector(buffer),
                isolate->date_cache(), kTimeOnly);
-  Handle<String> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
 }
 
 
@@ -3863,10 +4041,7 @@ BUILTIN(DatePrototypeToPrimitive) {
   DCHECK_EQ(2, args.length());
   CHECK_RECEIVER(JSReceiver, receiver, "Date.prototype [ @@toPrimitive ]");
   Handle<Object> hint = args.at<Object>(1);
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, result,
-                                     JSDate::ToPrimitive(receiver, hint));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(isolate, JSDate::ToPrimitive(receiver, hint));
 }
 
 
@@ -3910,6 +4085,33 @@ BUILTIN(DatePrototypeSetYear) {
   return SetLocalDateValue(date, time_val);
 }
 
+// ES6 section 20.3.4.37 Date.prototype.toJSON ( key )
+BUILTIN(DatePrototypeToJson) {
+  HandleScope scope(isolate);
+  Handle<Object> receiver = args.atOrUndefined(isolate, 0);
+  Handle<JSReceiver> receiver_obj;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, receiver_obj,
+                                     Object::ToObject(isolate, receiver));
+  Handle<Object> primitive;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, primitive,
+      Object::ToPrimitive(receiver_obj, ToPrimitiveHint::kNumber));
+  if (primitive->IsNumber() && !std::isfinite(primitive->Number())) {
+    return isolate->heap()->null_value();
+  } else {
+    Handle<String> name =
+        isolate->factory()->NewStringFromAsciiChecked("toISOString");
+    Handle<Object> function;
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, function,
+                                       Object::GetProperty(receiver_obj, name));
+    if (!function->IsCallable()) {
+      THROW_NEW_ERROR_RETURN_FAILURE(
+          isolate, NewTypeError(MessageTemplate::kCalledNonCallable, name));
+    }
+    RETURN_RESULT_OR_FAILURE(
+        isolate, Execution::Call(isolate, function, receiver_obj, 0, NULL));
+  }
+}
 
 // static
 void Builtins::Generate_DatePrototypeGetDate(MacroAssembler* masm) {
@@ -4111,7 +4313,7 @@ MaybeHandle<JSFunction> CreateDynamicFunction(
   // function has wrong initial map. To fix that we create a new
   // function object with correct initial map.
   Handle<Object> unchecked_new_target = args.new_target();
-  if (!unchecked_new_target->IsUndefined() &&
+  if (!unchecked_new_target->IsUndefined(isolate) &&
       !unchecked_new_target.is_identical_to(target)) {
     Handle<JSReceiver> new_target =
         Handle<JSReceiver>::cast(unchecked_new_target);
@@ -4143,9 +4345,10 @@ BUILTIN(FunctionConstructor) {
   return *result;
 }
 
+namespace {
 
-// ES6 section 19.2.3.2 Function.prototype.bind ( thisArg, ...args )
-BUILTIN(FunctionPrototypeBind) {
+Object* DoFunctionBind(Isolate* isolate,
+                       BuiltinArguments<BuiltinExtraArguments::kNone> args) {
   HandleScope scope(isolate);
   DCHECK_LE(1, args.length());
   if (!args.receiver()->IsCallable()) {
@@ -4229,6 +4432,22 @@ BUILTIN(FunctionPrototypeBind) {
   return *function;
 }
 
+}  // namespace
+
+// ES6 section 19.2.3.2 Function.prototype.bind ( thisArg, ...args )
+BUILTIN(FunctionPrototypeBind) { return DoFunctionBind(isolate, args); }
+
+// TODO(verwaest): This is a temporary helper until the FastFunctionBind stub
+// can tailcall to the builtin directly.
+RUNTIME_FUNCTION(Runtime_FunctionBind) {
+  DCHECK_EQ(2, args.length());
+  Arguments* incoming = reinterpret_cast<Arguments*>(args[0]);
+  // Rewrap the arguments as builtins arguments.
+  BuiltinArguments<BuiltinExtraArguments::kNone> caller_args(
+      incoming->length() + 1, incoming->arguments() + 1);
+  return DoFunctionBind(isolate, caller_args);
+}
+
 // ES6 section 19.2.3.5 Function.prototype.toString ( )
 BUILTIN(FunctionPrototypeToString) {
   HandleScope scope(isolate);
@@ -4248,18 +4467,14 @@ BUILTIN(FunctionPrototypeToString) {
 // ES6 section 25.2.1.1 GeneratorFunction (p1, p2, ... , pn, body)
 BUILTIN(GeneratorFunctionConstructor) {
   HandleScope scope(isolate);
-  Handle<JSFunction> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result, CreateDynamicFunction(isolate, args, "function*"));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           CreateDynamicFunction(isolate, args, "function*"));
 }
 
 BUILTIN(AsyncFunctionConstructor) {
   HandleScope scope(isolate);
-  Handle<JSFunction> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result, CreateDynamicFunction(isolate, args, "async function"));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, CreateDynamicFunction(isolate, args, "async function"));
 }
 
 // ES6 section 19.4.1.1 Symbol ( [ description ] ) for the [[Call]] case.
@@ -4267,7 +4482,7 @@ BUILTIN(SymbolConstructor) {
   HandleScope scope(isolate);
   Handle<Symbol> result = isolate->factory()->NewSymbol();
   Handle<Object> description = args.atOrUndefined(isolate, 1);
-  if (!description->IsUndefined()) {
+  if (!description->IsUndefined(isolate)) {
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, description,
                                        Object::ToString(isolate, description));
     result->set_name(*description);
@@ -4289,76 +4504,198 @@ BUILTIN(SymbolConstructor_ConstructStub) {
 BUILTIN(ObjectProtoToString) {
   HandleScope scope(isolate);
   Handle<Object> object = args.at<Object>(0);
-  Handle<String> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result, Object::ObjectProtoToString(isolate, object));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           Object::ObjectProtoToString(isolate, object));
 }
 
 // -----------------------------------------------------------------------------
 // ES6 section 21.1 String Objects
 
-namespace {
+// ES6 section 21.1.2.1 String.fromCharCode ( ...codeUnits )
+void Builtins::Generate_StringFromCharCode(CodeStubAssembler* assembler) {
+  typedef CodeStubAssembler::Label Label;
+  typedef compiler::Node Node;
+  typedef CodeStubAssembler::Variable Variable;
 
-bool ToUint16(Handle<Object> value, uint16_t* result) {
-  if (value->IsNumber() || Object::ToNumber(value).ToHandle(&value)) {
-    *result = DoubleToUint32(value->Number());
-    return true;
+  Node* code = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+
+  // Check if we have exactly one arguments (plus the implicit receiver), i.e.
+  // if the parent frame is not an arguments adaptor frame.
+  Label if_oneargument(assembler), if_notoneargument(assembler);
+  Node* parent_frame_pointer = assembler->LoadParentFramePointer();
+  Node* parent_frame_type =
+      assembler->Load(MachineType::Pointer(), parent_frame_pointer,
+                      assembler->IntPtrConstant(
+                          CommonFrameConstants::kContextOrFrameTypeOffset));
+  assembler->Branch(
+      assembler->WordEqual(
+          parent_frame_type,
+          assembler->SmiConstant(Smi::FromInt(StackFrame::ARGUMENTS_ADAPTOR))),
+      &if_notoneargument, &if_oneargument);
+
+  assembler->Bind(&if_oneargument);
+  {
+    // Single argument case, perform fast single character string cache lookup
+    // for one-byte code units, or fall back to creating a single character
+    // string on the fly otherwise.
+    Node* code32 = assembler->TruncateTaggedToWord32(context, code);
+    Node* code16 = assembler->Word32And(
+        code32, assembler->Int32Constant(String::kMaxUtf16CodeUnit));
+    Node* result = assembler->StringFromCharCode(code16);
+    assembler->Return(result);
   }
-  return false;
-}
 
-}  // namespace
+  assembler->Bind(&if_notoneargument);
+  {
+    // Determine the resulting string length.
+    Node* parent_frame_length =
+        assembler->Load(MachineType::Pointer(), parent_frame_pointer,
+                        assembler->IntPtrConstant(
+                            ArgumentsAdaptorFrameConstants::kLengthOffset));
+    Node* length = assembler->SmiToWord(parent_frame_length);
 
-// ES6 21.1.2.1 String.fromCharCode ( ...codeUnits )
-BUILTIN(StringFromCharCode) {
-  HandleScope scope(isolate);
-  // Check resulting string length.
-  int index = 0;
-  Handle<String> result;
-  int const length = args.length() - 1;
-  if (length == 0) return isolate->heap()->empty_string();
-  DCHECK_LT(0, length);
-  // Load the first character code.
-  uint16_t code;
-  if (!ToUint16(args.at<Object>(1), &code)) return isolate->heap()->exception();
-  // Assume that the resulting String contains only one byte characters.
-  if (code <= String::kMaxOneByteCharCodeU) {
-    // Check for single one-byte character fast case.
-    if (length == 1) {
-      return *isolate->factory()->LookupSingleCharacterStringFromCode(code);
-    }
-    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-        isolate, result, isolate->factory()->NewRawOneByteString(length));
-    do {
-      Handle<SeqOneByteString>::cast(result)->Set(index, code);
-      if (++index == length) break;
-      if (!ToUint16(args.at<Object>(1 + index), &code)) {
-        return isolate->heap()->exception();
+    // Assume that the resulting string contains only one-byte characters.
+    Node* result = assembler->AllocateSeqOneByteString(context, length);
+
+    // Truncate all input parameters and append them to the resulting string.
+    Variable var_offset(assembler, MachineType::PointerRepresentation());
+    Label loop(assembler, &var_offset), done_loop(assembler);
+    var_offset.Bind(assembler->IntPtrConstant(0));
+    assembler->Goto(&loop);
+    assembler->Bind(&loop);
+    {
+      // Load the current {offset}.
+      Node* offset = var_offset.value();
+
+      // Check if we're done with the string.
+      assembler->GotoIf(assembler->WordEqual(offset, length), &done_loop);
+
+      // Load the next code point and truncate it to a 16-bit value.
+      Node* code = assembler->Load(
+          MachineType::AnyTagged(), parent_frame_pointer,
+          assembler->IntPtrAdd(
+              assembler->WordShl(assembler->IntPtrSub(length, offset),
+                                 assembler->IntPtrConstant(kPointerSizeLog2)),
+              assembler->IntPtrConstant(
+                  CommonFrameConstants::kFixedFrameSizeAboveFp -
+                  kPointerSize)));
+      Node* code32 = assembler->TruncateTaggedToWord32(context, code);
+      Node* code16 = assembler->Word32And(
+          code32, assembler->Int32Constant(String::kMaxUtf16CodeUnit));
+
+      // Check if {code16} fits into a one-byte string.
+      Label if_codeisonebyte(assembler), if_codeistwobyte(assembler);
+      assembler->Branch(
+          assembler->Int32LessThanOrEqual(
+              code16, assembler->Int32Constant(String::kMaxOneByteCharCode)),
+          &if_codeisonebyte, &if_codeistwobyte);
+
+      assembler->Bind(&if_codeisonebyte);
+      {
+        // The {code16} fits into the SeqOneByteString {result}.
+        assembler->StoreNoWriteBarrier(
+            MachineRepresentation::kWord8, result,
+            assembler->IntPtrAdd(
+                assembler->IntPtrConstant(SeqOneByteString::kHeaderSize -
+                                          kHeapObjectTag),
+                offset),
+            code16);
+        var_offset.Bind(
+            assembler->IntPtrAdd(offset, assembler->IntPtrConstant(1)));
+        assembler->Goto(&loop);
       }
-    } while (code <= String::kMaxOneByteCharCodeU);
-  }
-  // Check if all characters fit into the one byte range.
-  if (index < length) {
-    // Fallback to two byte string.
-    Handle<String> new_result;
-    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-        isolate, new_result, isolate->factory()->NewRawTwoByteString(length));
-    for (int new_index = 0; new_index < index; ++new_index) {
-      uint16_t new_code =
-          Handle<SeqOneByteString>::cast(result)->Get(new_index);
-      Handle<SeqTwoByteString>::cast(new_result)->Set(new_index, new_code);
-    }
-    while (true) {
-      Handle<SeqTwoByteString>::cast(new_result)->Set(index, code);
-      if (++index == length) break;
-      if (!ToUint16(args.at<Object>(1 + index), &code)) {
-        return isolate->heap()->exception();
+
+      assembler->Bind(&if_codeistwobyte);
+      {
+        // Allocate a SeqTwoByteString to hold the resulting string.
+        Node* cresult = assembler->AllocateSeqTwoByteString(context, length);
+
+        // Copy all characters that were previously written to the
+        // SeqOneByteString in {result} over to the new {cresult}.
+        Variable var_coffset(assembler, MachineType::PointerRepresentation());
+        Label cloop(assembler, &var_coffset), done_cloop(assembler);
+        var_coffset.Bind(assembler->IntPtrConstant(0));
+        assembler->Goto(&cloop);
+        assembler->Bind(&cloop);
+        {
+          Node* coffset = var_coffset.value();
+          assembler->GotoIf(assembler->WordEqual(coffset, offset), &done_cloop);
+          Node* ccode = assembler->Load(
+              MachineType::Uint8(), result,
+              assembler->IntPtrAdd(
+                  assembler->IntPtrConstant(SeqOneByteString::kHeaderSize -
+                                            kHeapObjectTag),
+                  coffset));
+          assembler->StoreNoWriteBarrier(
+              MachineRepresentation::kWord16, cresult,
+              assembler->IntPtrAdd(
+                  assembler->IntPtrConstant(SeqTwoByteString::kHeaderSize -
+                                            kHeapObjectTag),
+                  assembler->WordShl(coffset, 1)),
+              ccode);
+          var_coffset.Bind(
+              assembler->IntPtrAdd(coffset, assembler->IntPtrConstant(1)));
+          assembler->Goto(&cloop);
+        }
+
+        // Write the pending {code16} to {offset}.
+        assembler->Bind(&done_cloop);
+        assembler->StoreNoWriteBarrier(
+            MachineRepresentation::kWord16, cresult,
+            assembler->IntPtrAdd(
+                assembler->IntPtrConstant(SeqTwoByteString::kHeaderSize -
+                                          kHeapObjectTag),
+                assembler->WordShl(offset, 1)),
+            code16);
+
+        // Copy the remaining parameters to the SeqTwoByteString {cresult}.
+        Label floop(assembler, &var_offset), done_floop(assembler);
+        assembler->Goto(&floop);
+        assembler->Bind(&floop);
+        {
+          // Compute the next {offset}.
+          Node* offset = assembler->IntPtrAdd(var_offset.value(),
+                                              assembler->IntPtrConstant(1));
+
+          // Check if we're done with the string.
+          assembler->GotoIf(assembler->WordEqual(offset, length), &done_floop);
+
+          // Load the next code point and truncate it to a 16-bit value.
+          Node* code = assembler->Load(
+              MachineType::AnyTagged(), parent_frame_pointer,
+              assembler->IntPtrAdd(
+                  assembler->WordShl(
+                      assembler->IntPtrSub(length, offset),
+                      assembler->IntPtrConstant(kPointerSizeLog2)),
+                  assembler->IntPtrConstant(
+                      CommonFrameConstants::kFixedFrameSizeAboveFp -
+                      kPointerSize)));
+          Node* code32 = assembler->TruncateTaggedToWord32(context, code);
+          Node* code16 = assembler->Word32And(
+              code32, assembler->Int32Constant(String::kMaxUtf16CodeUnit));
+
+          // Store the truncated {code} point at the next offset.
+          assembler->StoreNoWriteBarrier(
+              MachineRepresentation::kWord16, cresult,
+              assembler->IntPtrAdd(
+                  assembler->IntPtrConstant(SeqTwoByteString::kHeaderSize -
+                                            kHeapObjectTag),
+                  assembler->WordShl(offset, 1)),
+              code16);
+          var_offset.Bind(offset);
+          assembler->Goto(&floop);
+        }
+
+        // Return the SeqTwoByteString.
+        assembler->Bind(&done_floop);
+        assembler->Return(cresult);
       }
     }
-    result = new_result;
+
+    assembler->Bind(&done_loop);
+    assembler->Return(result);
   }
-  return *result;
 }
 
 // ES6 section 21.1.3.1 String.prototype.charAt ( pos )
@@ -4548,6 +4885,27 @@ void Builtins::Generate_StringPrototypeCharCodeAt(
   assembler->Return(result);
 }
 
+// ES6 section 21.1.3.25 String.prototype.trim ()
+BUILTIN(StringPrototypeTrim) {
+  HandleScope scope(isolate);
+  TO_THIS_STRING(string, "String.prototype.trim");
+  return *String::Trim(string, String::kTrim);
+}
+
+// Non-standard WebKit extension
+BUILTIN(StringPrototypeTrimLeft) {
+  HandleScope scope(isolate);
+  TO_THIS_STRING(string, "String.prototype.trimLeft");
+  return *String::Trim(string, String::kTrimLeft);
+}
+
+// Non-standard WebKit extension
+BUILTIN(StringPrototypeTrimRight) {
+  HandleScope scope(isolate);
+  TO_THIS_STRING(string, "String.prototype.trimRight");
+  return *String::Trim(string, String::kTrimRight);
+}
+
 // -----------------------------------------------------------------------------
 // ES6 section 21.1 ArrayBuffer Objects
 
@@ -4625,10 +4983,7 @@ BUILTIN(ProxyConstructor_ConstructStub) {
   DCHECK(isolate->proxy_function()->IsConstructor());
   Handle<Object> target = args.atOrUndefined(isolate, 1);
   Handle<Object> handler = args.atOrUndefined(isolate, 2);
-  Handle<JSProxy> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, result,
-                                     JSProxy::New(isolate, target, handler));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(isolate, JSProxy::New(isolate, target, handler));
 }
 
 
@@ -4663,7 +5018,7 @@ MUST_USE_RESULT MaybeHandle<Object> HandleApiCallHelper(
   HandleScope scope(isolate);
   Handle<HeapObject> function = args.target<HeapObject>();
   Handle<HeapObject> new_target = args.new_target();
-  bool is_construct = !new_target->IsUndefined();
+  bool is_construct = !new_target->IsUndefined(isolate);
   Handle<JSReceiver> receiver;
 
   DCHECK(function->IsFunctionTemplateInfo() ||
@@ -4674,8 +5029,8 @@ MUST_USE_RESULT MaybeHandle<Object> HandleApiCallHelper(
           ? Handle<FunctionTemplateInfo>::cast(function)
           : handle(JSFunction::cast(*function)->shared()->get_api_func_data());
   if (is_construct) {
-    DCHECK(args.receiver()->IsTheHole());
-    if (fun_data->instance_template()->IsUndefined()) {
+    DCHECK(args.receiver()->IsTheHole(isolate));
+    if (fun_data->instance_template()->IsUndefined(isolate)) {
       v8::Local<ObjectTemplate> templ =
           ObjectTemplate::New(reinterpret_cast<v8::Isolate*>(isolate),
                               ToApiHandle<v8::FunctionTemplate>(fun_data));
@@ -4714,7 +5069,7 @@ MUST_USE_RESULT MaybeHandle<Object> HandleApiCallHelper(
   }
 
   Object* raw_call_data = fun_data->call_code();
-  if (!raw_call_data->IsUndefined()) {
+  if (!raw_call_data->IsUndefined(isolate)) {
     DCHECK(raw_call_data->IsCallHandlerInfo());
     CallHandlerInfo* call_data = CallHandlerInfo::cast(raw_call_data);
     Object* callback_obj = call_data->callback();
@@ -4746,10 +5101,7 @@ MUST_USE_RESULT MaybeHandle<Object> HandleApiCallHelper(
 
 BUILTIN(HandleApiCall) {
   HandleScope scope(isolate);
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, result,
-                                     HandleApiCallHelper(isolate, args));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(isolate, HandleApiCallHelper(isolate, args));
 }
 
 
@@ -4927,7 +5279,7 @@ MUST_USE_RESULT static Object* HandleApiCallAsFunctionOrConstructor(
   CHECK(constructor->shared()->IsApiFunction());
   Object* handler =
       constructor->shared()->get_api_func_data()->instance_call_handler();
-  DCHECK(!handler->IsUndefined());
+  DCHECK(!handler->IsUndefined(isolate));
   // TODO(ishell): remove this debugging code.
   CHECK(handler->IsCallHandlerInfo());
   CallHandlerInfo* call_data = CallHandlerInfo::cast(handler);

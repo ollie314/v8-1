@@ -669,13 +669,13 @@ Expression* ParserTraits::NewTargetExpression(Scope* scope,
 Expression* ParserTraits::FunctionSentExpression(Scope* scope,
                                                  AstNodeFactory* factory,
                                                  int pos) {
-  // We desugar function.sent into %GeneratorGetInput(generator).
+  // We desugar function.sent into %_GeneratorGetInput(generator).
   Zone* zone = parser_->zone();
   ZoneList<Expression*>* args = new (zone) ZoneList<Expression*>(1, zone);
   VariableProxy* generator = factory->NewVariableProxy(
       parser_->function_state_->generator_object_variable());
   args->Add(generator, zone);
-  return factory->NewCallRuntime(Runtime::kGeneratorGetInput, args, pos);
+  return factory->NewCallRuntime(Runtime::kInlineGeneratorGetInput, args, pos);
 }
 
 
@@ -803,6 +803,7 @@ Parser::Parser(ParseInfo* info)
   set_allow_harmony_exponentiation_operator(
       FLAG_harmony_exponentiation_operator);
   set_allow_harmony_async_await(FLAG_harmony_async_await);
+  set_allow_harmony_restrictive_generators(FLAG_harmony_restrictive_generators);
   for (int feature = 0; feature < v8::Isolate::kUseCounterFeatureCount;
        ++feature) {
     use_counts_[feature] = 0;
@@ -1971,10 +1972,24 @@ Variable* Parser::Declare(Declaration* declaration,
     } else if (IsLexicalVariableMode(mode) ||
                IsLexicalVariableMode(var->mode())) {
       // Allow duplicate function decls for web compat, see bug 4693.
+      bool duplicate_allowed = false;
       if (is_sloppy(language_mode()) && is_function_declaration &&
           var->is_function()) {
         DCHECK(IsLexicalVariableMode(mode) &&
                IsLexicalVariableMode(var->mode()));
+        // If the duplication is allowed, then the var will show up
+        // in the SloppyBlockFunctionMap and the new FunctionKind
+        // will be a permitted duplicate.
+        FunctionKind function_kind =
+            declaration->AsFunctionDeclaration()->fun()->kind();
+        duplicate_allowed =
+            scope->DeclarationScope()->sloppy_block_function_map()->Lookup(
+                const_cast<AstRawString*>(name), name->hash()) != nullptr &&
+            !IsAsyncFunction(function_kind) &&
+            !(allow_harmony_restrictive_generators() &&
+              IsGeneratorFunction(function_kind));
+      }
+      if (duplicate_allowed) {
         ++use_counts_[v8::Isolate::kSloppyModeBlockScopedFunctionRedefinition];
       } else {
         // The name was declared in this scope before; check for conflicting
@@ -2188,7 +2203,13 @@ Statement* Parser::ParseHoistableDeclaration(
   Declare(declaration, DeclarationDescriptor::NORMAL, true, CHECK_OK);
   if (names) names->Add(name, zone());
   EmptyStatement* empty = factory()->NewEmptyStatement(RelocInfo::kNoPosition);
-  if (is_sloppy(language_mode()) && !scope_->is_declaration_scope()) {
+  // Async functions don't undergo sloppy mode block scoped hoisting, and don't
+  // allow duplicates in a block. Both are represented by the
+  // sloppy_block_function_map. Don't add them to the map for async functions.
+  // Generators are also supposed to be prohibited; currently doing this behind
+  // a flag and UseCounting violations to assess web compatibility.
+  if (is_sloppy(language_mode()) && !scope_->is_declaration_scope() &&
+      !is_async && !(allow_harmony_restrictive_generators() && is_generator)) {
     SloppyBlockFunctionStatement* delegate =
         factory()->NewSloppyBlockFunctionStatement(empty, scope_);
     scope_->DeclarationScope()->sloppy_block_function_map()->Declare(name,
@@ -2725,7 +2746,7 @@ Statement* Parser::ParseReturnStatement(bool* ok) {
       Expression* is_spec_object_call = factory()->NewCallRuntime(
           Runtime::kInlineIsJSReceiver, is_spec_object_args, pos);
 
-      // %_IsJSReceiver(temp) ? temp : throw_expression
+      // %_IsJSReceiver(temp) ? temp : 1;
       Expression* is_object_conditional = factory()->NewConditional(
           is_spec_object_call, factory()->NewVariableProxy(temp),
           factory()->NewSmiLiteral(1, pos), pos);
@@ -4533,6 +4554,7 @@ Block* Parser::BuildParameterInitializationBlock(
   DCHECK(scope_->is_function_scope());
   Block* init_block =
       factory()->NewBlock(NULL, 1, true, RelocInfo::kNoPosition);
+  ZoneList<Scope*>* param_scopes = new (zone()) ZoneList<Scope*>(0, zone());
   for (int i = 0; i < parameters.params.length(); ++i) {
     auto parameter = parameters.params[i];
     if (parameter.is_rest && parameter.pattern->IsVariableProxy()) break;
@@ -4574,12 +4596,13 @@ Block* Parser::BuildParameterInitializationBlock(
 
     Scope* param_scope = scope_;
     Block* param_block = init_block;
-    if (!parameter.is_simple() && scope_->calls_sloppy_eval()) {
+    if (!parameter.is_simple()) {
       param_scope = NewScope(scope_, BLOCK_SCOPE);
       param_scope->set_is_declaration_scope();
       param_scope->set_start_position(descriptor.initialization_pos);
       param_scope->set_end_position(parameter.initializer_end_position);
-      param_scope->RecordEvalCall();
+      param_scopes->Add(param_scope, zone());
+      scope_->PropagateUsageFlagsToScope(param_scope);
       param_block = factory()->NewBlock(NULL, 8, true, RelocInfo::kNoPosition);
       param_block->set_scope(param_scope);
       descriptor.hoist_scope = scope_;
@@ -4593,13 +4616,16 @@ Block* Parser::BuildParameterInitializationBlock(
                                                      &decl, nullptr, CHECK_OK);
     }
 
-    if (!parameter.is_simple() && scope_->calls_sloppy_eval()) {
+    if (!parameter.is_simple()) {
       param_scope = param_scope->FinalizeBlockScope();
       if (param_scope != nullptr) {
         CheckConflictingVarDeclarations(param_scope, CHECK_OK);
       }
       init_block->statements()->Add(param_block, zone());
     }
+  }
+  for (Scope* param_scope : *param_scopes) {
+    scope_->PropagateUsageFlagsToScope(param_scope);
   }
   return init_block;
 }
@@ -5577,7 +5603,8 @@ void ParserTraits::RewriteNonPattern(Type::ExpressionClassifier* classifier,
   parser_->RewriteNonPattern(classifier, ok);
 }
 
-Expression* ParserTraits::RewriteAwaitExpression(Expression* value, int pos) {
+Expression* ParserTraits::RewriteAwaitExpression(Expression* value,
+                                                 int await_pos) {
   // yield %AsyncFunctionAwait(.generator_object, <operand>)
   Variable* generator_object_variable =
       parser_->function_state_->generator_object_variable();
@@ -5585,21 +5612,38 @@ Expression* ParserTraits::RewriteAwaitExpression(Expression* value, int pos) {
   // If generator_object_variable is null,
   if (!generator_object_variable) return value;
 
-  Expression* generator_object =
-      parser_->factory()->NewVariableProxy(generator_object_variable);
+  auto factory = parser_->factory();
+  const int nopos = RelocInfo::kNoPosition;
+
+  Variable* temp_var = parser_->scope_->NewTemporary(
+      parser_->ast_value_factory()->empty_string());
+  VariableProxy* temp_proxy = factory->NewVariableProxy(temp_var);
+  Block* do_block = factory->NewBlock(nullptr, 2, false, nopos);
+
+  // Wrap value evaluation to provide a break location.
+  Expression* value_assignment =
+      factory->NewAssignment(Token::ASSIGN, temp_proxy, value, nopos);
+  do_block->statements()->Add(
+      factory->NewExpressionStatement(value_assignment, value->position()),
+      zone());
 
   ZoneList<Expression*>* async_function_await_args =
       new (zone()) ZoneList<Expression*>(2, zone());
+  Expression* generator_object =
+      factory->NewVariableProxy(generator_object_variable);
   async_function_await_args->Add(generator_object, zone());
-  async_function_await_args->Add(value, zone());
+  async_function_await_args->Add(temp_proxy, zone());
   Expression* async_function_await = parser_->factory()->NewCallRuntime(
-      Context::ASYNC_FUNCTION_AWAIT_INDEX, async_function_await_args,
-      RelocInfo::kNoPosition);
+      Context::ASYNC_FUNCTION_AWAIT_INDEX, async_function_await_args, nopos);
+  // Wrap await to provide a break location between value evaluation and yield.
+  Expression* await_assignment = factory->NewAssignment(
+      Token::ASSIGN, temp_proxy, async_function_await, nopos);
+  do_block->statements()->Add(
+      factory->NewExpressionStatement(await_assignment, await_pos), zone());
+  Expression* do_expr = factory->NewDoExpression(do_block, temp_var, nopos);
 
-  generator_object =
-      parser_->factory()->NewVariableProxy(generator_object_variable);
-  return parser_->factory()->NewYield(generator_object, async_function_await,
-                                      pos);
+  generator_object = factory->NewVariableProxy(generator_object_variable);
+  return factory->NewYield(generator_object, do_expr, nopos);
 }
 
 Zone* ParserTraits::zone() const {
@@ -6400,12 +6444,18 @@ void ParserTraits::BuildIteratorClose(ZoneList<Statement*>* statements,
   // following code:
   //
   //   let iteratorReturn = iterator.return;
-  //   if (IS_NULL_OR_UNDEFINED(iteratorReturn) return |input|;
-  //   output = %_Call(iteratorReturn, iterator|, input|);
+  //   if (IS_NULL_OR_UNDEFINED(iteratorReturn) {
+  //     return {value: input, done: true};
+  //   }
+  //   output = %_Call(iteratorReturn, iterator, input);
   //   if (!IS_RECEIVER(output)) %ThrowIterResultNotAnObject(output);
   //
-  // Here, |...| denotes optional parts, depending on the presence of the
-  // input variable.  The reason for allowing input is that BuildIteratorClose
+  // When the input variable is not given, the return statement becomes
+  //   return {value: undefined, done: true};
+  // and %_Call has only two arguments:
+  //   output = %_Call(iteratorReturn, iterator);
+  //
+  // The reason for allowing input is that BuildIteratorClose
   // can then be reused to handle the return case in yield*.
   //
 
@@ -6429,7 +6479,9 @@ void ParserTraits::BuildIteratorClose(ZoneList<Statement*>* statements,
     get_return = factory->NewExpressionStatement(assignment, nopos);
   }
 
-  // if (IS_NULL_OR_UNDEFINED(iteratorReturn) return |input|;
+  // if (IS_NULL_OR_UNDEFINED(iteratorReturn) {
+  //   return {value: input, done: true};
+  // }
   Statement* check_return;
   {
     Expression* condition = factory->NewCompareOperation(
@@ -6441,13 +6493,14 @@ void ParserTraits::BuildIteratorClose(ZoneList<Statement*>* statements,
                                   factory->NewVariableProxy(input.FromJust()))
                             : factory->NewUndefinedLiteral(nopos);
 
-    Statement* return_input = factory->NewReturnStatement(value, nopos);
+    Statement* return_input =
+        factory->NewReturnStatement(BuildIteratorResult(value, true), nopos);
 
     check_return = factory->NewIfStatement(
         condition, return_input, factory->NewEmptyStatement(nopos), nopos);
   }
 
-  // output = %_Call(iteratorReturn, iterator, |input|);
+  // output = %_Call(iteratorReturn, iterator, input);
   Statement* call_return;
   {
     auto args = new (zone) ZoneList<Expression*>(3, zone);

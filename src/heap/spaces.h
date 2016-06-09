@@ -27,6 +27,7 @@ class CompactionSpace;
 class CompactionSpaceCollection;
 class FreeList;
 class Isolate;
+class LocalArrayBufferTracker;
 class MemoryAllocator;
 class MemoryChunk;
 class Page;
@@ -450,6 +451,11 @@ class MemoryChunk {
     //   has been aborted and needs special handling by the sweeper.
     COMPACTION_WAS_ABORTED,
 
+    // |COMPACTION_WAS_ABORTED_FOR_TESTING|: During stress testing evacuation
+    // on pages is sometimes aborted. The flag is used to avoid repeatedly
+    // triggering on the same page.
+    COMPACTION_WAS_ABORTED_FOR_TESTING,
+
     // |ANCHOR|: Flag is set if page is an anchor.
     ANCHOR,
 
@@ -509,6 +515,7 @@ class MemoryChunk {
   static const size_t kWriteBarrierCounterOffset =
       kOldToNewSlotsOffset + kPointerSize  // SlotSet* old_to_new_slots_;
       + kPointerSize                       // SlotSet* old_to_old_slots_;
+      + kPointerSize   // TypedSlotSet* typed_old_to_new_slots_;
       + kPointerSize   // TypedSlotSet* typed_old_to_old_slots_;
       + kPointerSize;  // SkipList* skip_list_;
 
@@ -522,7 +529,8 @@ class MemoryChunk {
       + kPointerSize      // AtomicValue next_chunk_
       + kPointerSize      // AtomicValue prev_chunk_
       // FreeListCategory categories_[kNumberOfCategories]
-      + FreeListCategory::kSize * kNumberOfCategories;
+      + FreeListCategory::kSize * kNumberOfCategories +
+      kPointerSize;  // LocalArrayBufferTracker* local_tracker_;
 
   // We add some more space to the computed header size to amount for missing
   // alignment requirements in our computation.
@@ -625,16 +633,24 @@ class MemoryChunk {
 
   inline SlotSet* old_to_new_slots() { return old_to_new_slots_; }
   inline SlotSet* old_to_old_slots() { return old_to_old_slots_; }
+  inline TypedSlotSet* typed_old_to_new_slots() {
+    return typed_old_to_new_slots_;
+  }
   inline TypedSlotSet* typed_old_to_old_slots() {
     return typed_old_to_old_slots_;
   }
+  inline LocalArrayBufferTracker* local_tracker() { return local_tracker_; }
 
   void AllocateOldToNewSlots();
   void ReleaseOldToNewSlots();
   void AllocateOldToOldSlots();
   void ReleaseOldToOldSlots();
+  void AllocateTypedOldToNewSlots();
+  void ReleaseTypedOldToNewSlots();
   void AllocateTypedOldToOldSlots();
   void ReleaseTypedOldToOldSlots();
+  void AllocateLocalTracker();
+  void ReleaseLocalTracker();
 
   Address area_start() { return area_start_; }
   Address area_end() { return area_end_; }
@@ -644,6 +660,8 @@ class MemoryChunk {
 
   // Approximate amount of physical memory committed for this chunk.
   size_t CommittedPhysicalMemory() { return high_water_mark_.Value(); }
+
+  Address HighWaterMark() { return address() + high_water_mark_.Value(); }
 
   int progress_bar() {
     DCHECK(IsFlagSet(HAS_PROGRESS_BAR));
@@ -707,7 +725,8 @@ class MemoryChunk {
   }
 
   bool ShouldSkipEvacuationSlotRecording() {
-    return (flags_ & kSkipEvacuationSlotsRecordingMask) != 0;
+    return ((flags_ & kSkipEvacuationSlotsRecordingMask) != 0) &&
+           !IsFlagSet(COMPACTION_WAS_ABORTED);
   }
 
   Executability executable() {
@@ -792,6 +811,7 @@ class MemoryChunk {
   // is ceil(size() / kPageSize).
   SlotSet* old_to_new_slots_;
   SlotSet* old_to_old_slots_;
+  TypedSlotSet* typed_old_to_new_slots_;
   TypedSlotSet* typed_old_to_old_slots_;
 
   SkipList* skip_list_;
@@ -816,6 +836,8 @@ class MemoryChunk {
   base::AtomicValue<MemoryChunk*> prev_chunk_;
 
   FreeListCategory categories_[kNumberOfCategories];
+
+  LocalArrayBufferTracker* local_tracker_;
 
  private:
   void InitializeReservedMemory() { reservation_.Reset(); }
@@ -1446,16 +1468,6 @@ class MemoryAllocator {
   // filling it up with a recognizable non-NULL bit pattern.
   void ZapBlock(Address start, size_t size);
 
-  void PerformAllocationCallback(ObjectSpace space, AllocationAction action,
-                                 size_t size);
-
-  void AddMemoryAllocationCallback(MemoryAllocationCallback callback,
-                                   ObjectSpace space, AllocationAction action);
-
-  void RemoveMemoryAllocationCallback(MemoryAllocationCallback callback);
-
-  bool MemoryAllocationCallbackRegistered(MemoryAllocationCallback callback);
-
   static int CodePageGuardStartOffset();
 
   static int CodePageGuardSize();
@@ -1515,19 +1527,6 @@ class MemoryAllocator {
   // and exclusive on the high end.
   base::AtomicValue<void*> lowest_ever_allocated_;
   base::AtomicValue<void*> highest_ever_allocated_;
-
-  struct MemoryAllocationCallbackRegistration {
-    MemoryAllocationCallbackRegistration(MemoryAllocationCallback callback,
-                                         ObjectSpace space,
-                                         AllocationAction action)
-        : callback(callback), space(space), action(action) {}
-    MemoryAllocationCallback callback;
-    ObjectSpace space;
-    AllocationAction action;
-  };
-
-  // A List of callback that are triggered when memory is allocated or free'd
-  List<MemoryAllocationCallbackRegistration> memory_allocation_callbacks_;
 
   // Initializes pages in a chunk. Returns the first page address.
   // This function and GetChunkId() are provided for the mark-compact
@@ -2236,6 +2235,12 @@ class PagedSpace : public Space {
   // The dummy page that anchors the linked list of pages.
   Page* anchor() { return &anchor_; }
 
+  // Collect code size related statistics
+  void CollectCodeStatistics();
+
+  // Reset code size related statistics
+  static void ResetCodeAndMetadataStatistics(Isolate* isolate);
+
 #ifdef VERIFY_HEAP
   // Verify integrity of this space.
   virtual void Verify(ObjectVisitor* visitor);
@@ -2253,7 +2258,6 @@ class PagedSpace : public Space {
   void ReportStatistics();
 
   // Report code object related statistics
-  void CollectCodeStatistics();
   static void ReportCodeStatistics(Isolate* isolate);
   static void ResetCodeStatistics(Isolate* isolate);
 #endif
@@ -3061,6 +3065,9 @@ class LargeObjectSpace : public Space {
 
   LargePage* first_page() { return first_page_; }
 
+  // Collect code statistics.
+  void CollectCodeStatistics();
+
 #ifdef VERIFY_HEAP
   virtual void Verify();
 #endif
@@ -3068,7 +3075,6 @@ class LargeObjectSpace : public Space {
 #ifdef DEBUG
   void Print() override;
   void ReportStatistics();
-  void CollectCodeStatistics();
 #endif
 
  private:
@@ -3111,8 +3117,7 @@ class LargePageIterator BASE_EMBEDDED {
 // pointers to new space or to evacuation candidates.
 class MemoryChunkIterator BASE_EMBEDDED {
  public:
-  enum Mode { ALL, ALL_BUT_MAP_SPACE, ALL_BUT_CODE_SPACE };
-  inline explicit MemoryChunkIterator(Heap* heap, Mode mode);
+  inline explicit MemoryChunkIterator(Heap* heap);
 
   // Return NULL when the iterator is done.
   inline MemoryChunk* next();
@@ -3126,7 +3131,6 @@ class MemoryChunkIterator BASE_EMBEDDED {
     kFinishedState
   };
   State state_;
-  const Mode mode_;
   PageIterator old_iterator_;
   PageIterator code_iterator_;
   PageIterator map_iterator_;

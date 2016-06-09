@@ -113,13 +113,15 @@ class MachineOperatorBuilder final : public ZoneObject {
     kWord64Popcnt = 1u << 19,
     kWord32ReverseBits = 1u << 20,
     kWord64ReverseBits = 1u << 21,
-    kAllOptionalOps = kFloat32Max | kFloat32Min | kFloat64Max | kFloat64Min |
-                      kFloat32RoundDown | kFloat64RoundDown | kFloat32RoundUp |
-                      kFloat64RoundUp | kFloat32RoundTruncate |
-                      kFloat64RoundTruncate | kFloat64RoundTiesAway |
-                      kFloat32RoundTiesEven | kFloat64RoundTiesEven |
-                      kWord32Ctz | kWord64Ctz | kWord32Popcnt | kWord64Popcnt |
-                      kWord32ReverseBits | kWord64ReverseBits
+    kFloat32Neg = 1u << 22,
+    kFloat64Neg = 1u << 23,
+    kAllOptionalOps =
+        kFloat32Max | kFloat32Min | kFloat64Max | kFloat64Min |
+        kFloat32RoundDown | kFloat64RoundDown | kFloat32RoundUp |
+        kFloat64RoundUp | kFloat32RoundTruncate | kFloat64RoundTruncate |
+        kFloat64RoundTiesAway | kFloat32RoundTiesEven | kFloat64RoundTiesEven |
+        kWord32Ctz | kWord64Ctz | kWord32Popcnt | kWord64Popcnt |
+        kWord32ReverseBits | kWord64ReverseBits | kFloat32Neg | kFloat64Neg
   };
   typedef base::Flags<Flag, unsigned> Flags;
 
@@ -192,6 +194,7 @@ class MachineOperatorBuilder final : public ZoneObject {
       AlignmentRequirements alignmentRequirements =
           AlignmentRequirements::NoUnalignedAccessSupport());
 
+  const Operator* Comment(const char* msg);
   const Operator* DebugBreak();
 
   const Operator* Word32And();
@@ -360,6 +363,13 @@ class MachineOperatorBuilder final : public ZoneObject {
   const OptionalOperator Float64RoundTiesAway();
   const OptionalOperator Float32RoundTiesEven();
   const OptionalOperator Float64RoundTiesEven();
+
+  // Floating point neg.
+  const OptionalOperator Float32Neg();
+  const OptionalOperator Float64Neg();
+
+  // Floating point logarithm (double-precision).
+  const Operator* Float64Log();
 
   // Floating point bit representation.
   const Operator* Float64ExtractLowWord32();
@@ -622,6 +632,7 @@ class MachineOperatorBuilder final : public ZoneObject {
 #undef PSEUDO_OP_LIST
 
  private:
+  Zone* zone_;
   MachineOperatorGlobalCache const& cache_;
   MachineRepresentation const word_;
   Flags const flags_;

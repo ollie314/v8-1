@@ -40,6 +40,7 @@
 #include "src/icu_util.h"
 #include "src/isolate-inl.h"
 #include "src/json-parser.h"
+#include "src/json-stringifier.h"
 #include "src/messages.h"
 #include "src/parsing/parser.h"
 #include "src/parsing/scanner-character-streams.h"
@@ -384,7 +385,6 @@ bool RunExtraCode(Isolate* isolate, Local<Context> context,
 
 StartupData SerializeIsolateAndContext(
     Isolate* isolate, Persistent<Context>* context,
-    i::Snapshot::Metadata metadata,
     i::StartupSerializer::FunctionCodeHandling function_code_handling) {
   if (context->IsEmpty()) return {NULL, 0};
 
@@ -427,7 +427,7 @@ StartupData SerializeIsolateAndContext(
   context_ser.Serialize(&raw_context);
   ser.SerializeWeakReferencesAndDeferred();
 
-  return i::Snapshot::CreateSnapshotBlob(ser, context_ser, metadata);
+  return i::Snapshot::CreateSnapshotBlob(ser, context_ser);
 }
 
 }  // namespace
@@ -459,11 +459,8 @@ StartupData V8::CreateSnapshotDataBlob(const char* embedded_source) {
       }
     }
 
-    i::Snapshot::Metadata metadata;
-    metadata.set_embeds_script(embedded_source != NULL);
-
     result = SerializeIsolateAndContext(
-        isolate, &context, metadata, i::StartupSerializer::CLEAR_FUNCTION_CODE);
+        isolate, &context, i::StartupSerializer::CLEAR_FUNCTION_CODE);
     DCHECK(context.IsEmpty());
   }
   isolate->Dispose();
@@ -514,11 +511,8 @@ StartupData V8::WarmUpSnapshotDataBlob(StartupData cold_snapshot_blob,
       context.Reset(isolate, new_context);
     }
 
-    i::Snapshot::Metadata metadata;
-    metadata.set_embeds_script(i::Snapshot::EmbedsScript(internal_isolate));
-
     result = SerializeIsolateAndContext(
-        isolate, &context, metadata, i::StartupSerializer::KEEP_FUNCTION_CODE);
+        isolate, &context, i::StartupSerializer::KEEP_FUNCTION_CODE);
     DCHECK(context.IsEmpty());
   }
   isolate->Dispose();
@@ -811,9 +805,8 @@ EscapableHandleScope::EscapableHandleScope(Isolate* v8_isolate) {
 
 i::Object** EscapableHandleScope::Escape(i::Object** escape_value) {
   i::Heap* heap = reinterpret_cast<i::Isolate*>(GetIsolate())->heap();
-  Utils::ApiCheck(*escape_slot_ == heap->the_hole_value(),
-                  "EscapeableHandleScope::Escape",
-                  "Escape value set twice");
+  Utils::ApiCheck((*escape_slot_)->IsTheHole(heap->isolate()),
+                  "EscapeableHandleScope::Escape", "Escape value set twice");
   if (escape_value == NULL) {
     *escape_slot_ = heap->undefined_value();
     return NULL;
@@ -1074,7 +1067,7 @@ Local<ObjectTemplate> FunctionTemplate::PrototypeTemplate() {
   ENTER_V8(i_isolate);
   i::Handle<i::Object> result(Utils::OpenHandle(this)->prototype_template(),
                               i_isolate);
-  if (result->IsUndefined()) {
+  if (result->IsUndefined(i_isolate)) {
     // Do not cache prototype objects.
     result = Utils::OpenHandle(
         *ObjectTemplateNew(i_isolate, Local<FunctionTemplate>(), true));
@@ -1254,7 +1247,7 @@ Local<ObjectTemplate> FunctionTemplate::InstanceTemplate() {
   }
   i::Isolate* isolate = handle->GetIsolate();
   ENTER_V8(isolate);
-  if (handle->instance_template()->IsUndefined()) {
+  if (handle->instance_template()->IsUndefined(isolate)) {
     Local<ObjectTemplate> templ =
         ObjectTemplate::New(isolate, ToApiHandle<FunctionTemplate>(handle));
     handle->set_instance_template(*Utils::OpenHandle(*templ));
@@ -1368,7 +1361,7 @@ static i::Handle<i::FunctionTemplateInfo> EnsureConstructor(
     i::Isolate* isolate,
     ObjectTemplate* object_template) {
   i::Object* obj = Utils::OpenHandle(object_template)->constructor();
-  if (!obj ->IsUndefined()) {
+  if (!obj->IsUndefined(isolate)) {
     i::FunctionTemplateInfo* info = i::FunctionTemplateInfo::cast(obj);
     return i::Handle<i::FunctionTemplateInfo>(info, isolate);
   }
@@ -1538,8 +1531,6 @@ void ObjectTemplate::SetAccessCheckCallback(AccessCheckCallback callback,
       i::Handle<i::AccessCheckInfo>::cast(struct_info);
 
   SET_FIELD_WRAPPED(info, set_callback, callback);
-  SET_FIELD_WRAPPED(info, set_named_callback, nullptr);
-  SET_FIELD_WRAPPED(info, set_indexed_callback, nullptr);
 
   if (data.IsEmpty()) {
     data = v8::Undefined(reinterpret_cast<v8::Isolate*>(isolate));
@@ -1549,39 +1540,6 @@ void ObjectTemplate::SetAccessCheckCallback(AccessCheckCallback callback,
   cons->set_access_check_info(*info);
   cons->set_needs_access_check(true);
 }
-
-void ObjectTemplate::SetAccessCheckCallback(
-    DeprecatedAccessCheckCallback callback, Local<Value> data) {
-  SetAccessCheckCallback(reinterpret_cast<AccessCheckCallback>(callback), data);
-}
-
-void ObjectTemplate::SetAccessCheckCallbacks(
-    NamedSecurityCallback named_callback,
-    IndexedSecurityCallback indexed_callback, Local<Value> data) {
-  i::Isolate* isolate = Utils::OpenHandle(this)->GetIsolate();
-  ENTER_V8(isolate);
-  i::HandleScope scope(isolate);
-  auto cons = EnsureConstructor(isolate, this);
-  EnsureNotInstantiated(cons, "v8::ObjectTemplate::SetAccessCheckCallbacks");
-
-  i::Handle<i::Struct> struct_info =
-      isolate->factory()->NewStruct(i::ACCESS_CHECK_INFO_TYPE);
-  i::Handle<i::AccessCheckInfo> info =
-      i::Handle<i::AccessCheckInfo>::cast(struct_info);
-
-  SET_FIELD_WRAPPED(info, set_callback, nullptr);
-  SET_FIELD_WRAPPED(info, set_named_callback, named_callback);
-  SET_FIELD_WRAPPED(info, set_indexed_callback, indexed_callback);
-
-  if (data.IsEmpty()) {
-    data = v8::Undefined(reinterpret_cast<v8::Isolate*>(isolate));
-  }
-  info->set_data(*Utils::OpenHandle(*data));
-
-  cons->set_access_check_info(*info);
-  cons->set_needs_access_check(true);
-}
-
 
 void ObjectTemplate::SetHandler(
     const IndexedPropertyHandlerConfiguration& config) {
@@ -2257,7 +2215,7 @@ v8::TryCatch::~TryCatch() {
 
 
 bool v8::TryCatch::HasCaught() const {
-  return !reinterpret_cast<i::Object*>(exception_)->IsTheHole();
+  return !reinterpret_cast<i::Object*>(exception_)->IsTheHole(isolate_);
 }
 
 
@@ -2316,8 +2274,8 @@ v8::Local<Value> v8::TryCatch::StackTrace() const {
 
 v8::Local<v8::Message> v8::TryCatch::Message() const {
   i::Object* message = reinterpret_cast<i::Object*>(message_obj_);
-  DCHECK(message->IsJSMessageObject() || message->IsTheHole());
-  if (HasCaught() && !message->IsTheHole()) {
+  DCHECK(message->IsJSMessageObject() || message->IsTheHole(isolate_));
+  if (HasCaught() && !message->IsTheHole(isolate_)) {
     return v8::Utils::MessageToLocal(i::Handle<i::Object>(message, isolate_));
   } else {
     return v8::Local<v8::Message>();
@@ -2661,7 +2619,7 @@ void NativeWeakMap::Set(Local<Value> v8_key, Local<Value> v8_value) {
   }
   i::Handle<i::ObjectHashTable> table(
       i::ObjectHashTable::cast(weak_collection->table()));
-  if (!table->IsKey(*key)) {
+  if (!table->IsKey(isolate, *key)) {
     DCHECK(false);
     return;
   }
@@ -2681,12 +2639,12 @@ Local<Value> NativeWeakMap::Get(Local<Value> v8_key) {
   }
   i::Handle<i::ObjectHashTable> table(
       i::ObjectHashTable::cast(weak_collection->table()));
-  if (!table->IsKey(*key)) {
+  if (!table->IsKey(isolate, *key)) {
     DCHECK(false);
     return v8::Undefined(reinterpret_cast<v8::Isolate*>(isolate));
   }
   i::Handle<i::Object> lookup(table->Lookup(key), isolate);
-  if (lookup->IsTheHole())
+  if (lookup->IsTheHole(isolate))
     return v8::Undefined(reinterpret_cast<v8::Isolate*>(isolate));
   return Utils::ToLocal(lookup);
 }
@@ -2704,12 +2662,12 @@ bool NativeWeakMap::Has(Local<Value> v8_key) {
   }
   i::Handle<i::ObjectHashTable> table(
       i::ObjectHashTable::cast(weak_collection->table()));
-  if (!table->IsKey(*key)) {
+  if (!table->IsKey(isolate, *key)) {
     DCHECK(false);
     return false;
   }
   i::Handle<i::Object> lookup(table->Lookup(key), isolate);
-  return !lookup->IsTheHole();
+  return !lookup->IsTheHole(isolate);
 }
 
 
@@ -2725,7 +2683,7 @@ bool NativeWeakMap::Delete(Local<Value> v8_key) {
   }
   i::Handle<i::ObjectHashTable> table(
       i::ObjectHashTable::cast(weak_collection->table()));
-  if (!table->IsKey(*key)) {
+  if (!table->IsKey(isolate, *key)) {
     DCHECK(false);
     return false;
   }
@@ -2741,9 +2699,10 @@ MaybeLocal<Value> JSON::Parse(Isolate* v8_isolate, Local<String> json_string) {
   PREPARE_FOR_EXECUTION_WITH_ISOLATE(isolate, JSON, Parse, Value);
   i::Handle<i::String> string = Utils::OpenHandle(*json_string);
   i::Handle<i::String> source = i::String::Flatten(string);
+  i::Handle<i::Object> undefined = isolate->factory()->undefined_value();
   auto maybe = source->IsSeqOneByteString()
-                   ? i::JsonParser<true>::Parse(source)
-                   : i::JsonParser<false>::Parse(source);
+                   ? i::JsonParser<true>::Parse(isolate, source, undefined)
+                   : i::JsonParser<false>::Parse(isolate, source, undefined);
   Local<Value> result;
   has_pending_exception = !ToLocal<Value>(maybe, &result);
   RETURN_ON_FAILED_EXECUTION(Value);
@@ -2755,9 +2714,10 @@ MaybeLocal<Value> JSON::Parse(Local<Context> context,
   PREPARE_FOR_EXECUTION(context, JSON, Parse, Value);
   i::Handle<i::String> string = Utils::OpenHandle(*json_string);
   i::Handle<i::String> source = i::String::Flatten(string);
+  i::Handle<i::Object> undefined = isolate->factory()->undefined_value();
   auto maybe = source->IsSeqOneByteString()
-                   ? i::JsonParser<true>::Parse(source)
-                   : i::JsonParser<false>::Parse(source);
+                   ? i::JsonParser<true>::Parse(isolate, source, undefined)
+                   : i::JsonParser<false>::Parse(isolate, source, undefined);
   Local<Value> result;
   has_pending_exception = !ToLocal<Value>(maybe, &result);
   RETURN_ON_FAILED_EXECUTION(Value);
@@ -2773,13 +2733,14 @@ MaybeLocal<String> JSON::Stringify(Local<Context> context,
                                    Local<String> gap) {
   PREPARE_FOR_EXECUTION(context, JSON, Stringify, String);
   i::Handle<i::Object> object = Utils::OpenHandle(*json_object);
+  i::Handle<i::Object> replacer = isolate->factory()->undefined_value();
   i::Handle<i::String> gap_string = gap.IsEmpty()
                                         ? isolate->factory()->empty_string()
                                         : Utils::OpenHandle(*gap);
   i::Handle<i::Object> maybe;
-  has_pending_exception =
-      !i::Runtime::BasicJsonStringify(isolate, object, gap_string)
-           .ToHandle(&maybe);
+  has_pending_exception = !i::JsonStringifier(isolate)
+                               .Stringify(object, replacer, gap_string)
+                               .ToHandle(&maybe);
   RETURN_ON_FAILED_EXECUTION(String);
   Local<String> result;
   has_pending_exception =
@@ -3853,7 +3814,7 @@ Local<Object> v8::Object::FindInstanceInPrototypeChain(
     v8::Local<FunctionTemplate> tmpl) {
   auto isolate = Utils::OpenHandle(this)->GetIsolate();
   i::PrototypeIterator iter(isolate, *Utils::OpenHandle(this),
-                            i::PrototypeIterator::START_AT_RECEIVER);
+                            i::kStartAtReceiver);
   auto tmpl_info = *Utils::OpenHandle(*tmpl);
   while (!tmpl_info->IsTemplateFor(iter.GetCurrent())) {
     iter.Advance();
@@ -3865,15 +3826,27 @@ Local<Object> v8::Object::FindInstanceInPrototypeChain(
   return Utils::ToLocal(i::handle(iter.GetCurrent<i::JSObject>(), isolate));
 }
 
-
 MaybeLocal<Array> v8::Object::GetPropertyNames(Local<Context> context) {
+  return GetPropertyNames(
+      context, v8::KeyCollectionMode::kIncludePrototypes,
+      static_cast<v8::PropertyFilter>(ONLY_ENUMERABLE | SKIP_SYMBOLS),
+      v8::IndexFilter::kIncludeIndices);
+}
+
+MaybeLocal<Array> v8::Object::GetPropertyNames(Local<Context> context,
+                                               KeyCollectionMode mode,
+                                               PropertyFilter property_filter,
+                                               IndexFilter index_filter) {
   PREPARE_FOR_EXECUTION(context, Object, GetPropertyNames, Array);
   auto self = Utils::OpenHandle(this);
   i::Handle<i::FixedArray> value;
-  has_pending_exception =
-      !i::JSReceiver::GetKeys(self, i::INCLUDE_PROTOS, i::ENUMERABLE_STRINGS)
-           .ToHandle(&value);
+  i::KeyAccumulator accumulator(
+      isolate, static_cast<i::KeyCollectionMode>(mode),
+      static_cast<i::PropertyFilter>(property_filter));
+  accumulator.set_skip_indices(index_filter == IndexFilter::kSkipIndices);
+  has_pending_exception = accumulator.CollectKeys(self, self).IsNothing();
   RETURN_ON_FAILED_EXECUTION(Array);
+  value = accumulator.GetKeys(i::GetKeysConversion::kKeepNumbers);
   DCHECK(self->map()->EnumLength() == i::kInvalidEnumCacheSentinel ||
          self->map()->EnumLength() == 0 ||
          self->map()->instance_descriptors()->GetEnumCache() != *value);
@@ -3899,19 +3872,8 @@ Local<Array> v8::Object::GetOwnPropertyNames() {
 
 MaybeLocal<Array> v8::Object::GetOwnPropertyNames(Local<Context> context,
                                                   PropertyFilter filter) {
-  PREPARE_FOR_EXECUTION(context, Object, GetOwnPropertyNames, Array);
-  auto self = Utils::OpenHandle(this);
-  i::Handle<i::FixedArray> value;
-  has_pending_exception =
-      !i::JSReceiver::GetKeys(self, i::OWN_ONLY,
-                              static_cast<i::PropertyFilter>(filter))
-           .ToHandle(&value);
-  RETURN_ON_FAILED_EXECUTION(Array);
-  DCHECK(self->map()->EnumLength() == i::kInvalidEnumCacheSentinel ||
-         self->map()->EnumLength() == 0 ||
-         self->map()->instance_descriptors()->GetEnumCache() != *value);
-  auto result = isolate->factory()->NewJSArrayWithElements(value);
-  RETURN_ESCAPED(Utils::ToLocal(result));
+  return GetPropertyNames(context, KeyCollectionMode::kOwnOnly, filter,
+                          v8::IndexFilter::kIncludeIndices);
 }
 
 MaybeLocal<String> v8::Object::ObjectProtoToString(Local<Context> context) {
@@ -4340,7 +4302,7 @@ int v8::Object::GetIdentityHash() {
   auto isolate = Utils::OpenHandle(this)->GetIsolate();
   i::HandleScope scope(isolate);
   auto self = Utils::OpenHandle(this);
-  return i::JSReceiver::GetOrCreateIdentityHash(self)->value();
+  return i::JSReceiver::GetOrCreateIdentityHash(isolate, self)->value();
 }
 
 
@@ -5509,11 +5471,17 @@ HeapObjectStatistics::HeapObjectStatistics()
       object_count_(0),
       object_size_(0) {}
 
+HeapCodeStatistics::HeapCodeStatistics()
+    : code_and_metadata_size_(0), bytecode_and_metadata_size_(0) {}
 
 bool v8::V8::InitializeICU(const char* icu_data_file) {
   return i::InitializeICU(icu_data_file);
 }
 
+bool v8::V8::InitializeICUDefaultLocation(const char* exec_path,
+                                          const char* icu_data_file) {
+  return i::InitializeICUDefaultLocation(exec_path, icu_data_file);
+}
 
 void v8::V8::InitializeExternalStartupData(const char* directory_path) {
   i::InitializeExternalStartupData(directory_path);
@@ -5561,7 +5529,7 @@ static i::Handle<i::Context> CreateEnvironment(
       // Migrate security handlers from global_template to
       // proxy_template.  Temporarily removing access check
       // information from the global template.
-      if (!global_constructor->access_check_info()->IsUndefined()) {
+      if (!global_constructor->access_check_info()->IsUndefined(isolate)) {
         proxy_constructor->set_access_check_info(
             global_constructor->access_check_info());
         proxy_constructor->set_needs_access_check(
@@ -6935,7 +6903,7 @@ static i::Handle<i::Symbol> SymbolFor(i::Isolate* isolate,
   i::Handle<i::Object> symbol =
       i::Object::GetPropertyOrElement(symbols, name).ToHandleChecked();
   if (!symbol->IsSymbol()) {
-    DCHECK(symbol->IsUndefined());
+    DCHECK(symbol->IsUndefined(isolate));
     if (private_symbol)
       symbol = isolate->factory()->NewPrivateSymbol();
     else
@@ -7182,22 +7150,6 @@ void Isolate::SetEmbedderHeapTracer(EmbedderHeapTracer* tracer) {
   isolate->heap()->SetEmbedderHeapTracer(tracer);
 }
 
-void Isolate::AddMemoryAllocationCallback(MemoryAllocationCallback callback,
-                                          ObjectSpace space,
-                                          AllocationAction action) {
-  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
-  isolate->heap()->memory_allocator()->AddMemoryAllocationCallback(
-      callback, space, action);
-}
-
-
-void Isolate::RemoveMemoryAllocationCallback(
-    MemoryAllocationCallback callback) {
-  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
-  isolate->heap()->memory_allocator()->RemoveMemoryAllocationCallback(callback);
-}
-
-
 void Isolate::TerminateExecution() {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
   isolate->stack_guard()->RequestTerminateExecution();
@@ -7284,14 +7236,6 @@ Isolate* Isolate::New(const Isolate::CreateParams& params) {
   // TODO(jochen): Once we got rid of Isolate::Current(), we can remove this.
   Isolate::Scope isolate_scope(v8_isolate);
   if (params.entry_hook || !i::Snapshot::Initialize(isolate)) {
-    // If the isolate has a function entry hook, it needs to re-build all its
-    // code stubs with entry hooks embedded, so don't deserialize a snapshot.
-    if (i::Snapshot::EmbedsScript(isolate)) {
-      // If the snapshot embeds a script, we cannot initialize the isolate
-      // without the snapshot as a fallback. This is unlikely to happen though.
-      V8_Fatal(__FILE__, __LINE__,
-               "Initializing isolate from custom startup snapshot failed");
-    }
     isolate->Init(NULL);
   }
   return v8_isolate;
@@ -7463,6 +7407,18 @@ bool Isolate::GetHeapObjectStatisticsAtLastGC(
   return true;
 }
 
+bool Isolate::GetHeapCodeAndMetadataStatistics(
+    HeapCodeStatistics* code_statistics) {
+  if (!code_statistics) return false;
+
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
+  isolate->heap()->CollectCodeStatistics();
+
+  code_statistics->code_and_metadata_size_ = isolate->code_and_metadata_size();
+  code_statistics->bytecode_and_metadata_size_ =
+      isolate->bytecode_and_metadata_size();
+  return true;
+}
 
 void Isolate::GetStackSample(const RegisterState& state, void** frames,
                              size_t frames_limit, SampleInfo* sample_info) {
@@ -7759,7 +7715,7 @@ void Isolate::RemoveMessageListeners(MessageCallback that) {
   i::HandleScope scope(isolate);
   NeanderArray listeners(isolate->factory()->message_listeners());
   for (int i = 0; i < listeners.length(); i++) {
-    if (listeners.get(i)->IsUndefined()) continue;  // skip deleted ones
+    if (listeners.get(i)->IsUndefined(isolate)) continue;  // skip deleted ones
 
     NeanderObject listener(i::JSObject::cast(listeners.get(i)));
     i::Handle<i::Foreign> callback_obj(i::Foreign::cast(listener.get(0)));
@@ -7788,6 +7744,12 @@ void Isolate::SetCaptureStackTraceForUncaughtExceptions(
 void Isolate::VisitExternalResources(ExternalResourceVisitor* visitor) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
   isolate->heap()->VisitExternalResources(visitor);
+}
+
+
+bool Isolate::IsInUse() {
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
+  return isolate->IsInUse();
 }
 
 
@@ -8115,6 +8077,14 @@ Local<Context> Debug::GetDebugContext() {
   return GetDebugContext(reinterpret_cast<Isolate*>(i::Isolate::Current()));
 }
 
+MaybeLocal<Context> Debug::GetDebuggedContext(Isolate* isolate) {
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  ENTER_V8(i_isolate);
+  if (!i_isolate->debug()->in_debug_scope()) return MaybeLocal<Context>();
+  i::Handle<i::Object> calling = i_isolate->GetCallingNativeContext();
+  if (calling.is_null()) return MaybeLocal<Context>();
+  return Utils::ToLocal(i::Handle<i::Context>::cast(calling));
+}
 
 void Debug::SetLiveEditEnabled(Isolate* isolate, bool enable) {
   i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate);
@@ -8317,8 +8287,8 @@ CpuProfile* CpuProfiler::StopProfiling(Local<String> title) {
 
 void CpuProfiler::SetIdle(bool is_idle) {
   i::CpuProfiler* profiler = reinterpret_cast<i::CpuProfiler*>(this);
-  if (!profiler->is_profiling()) return;
   i::Isolate* isolate = profiler->isolate();
+  if (!isolate->is_profiling()) return;
   v8::StateTag state = isolate->current_vm_state();
   DCHECK(state == v8::EXTERNAL || state == v8::IDLE);
   if (isolate->js_entry_sp() != NULL) return;

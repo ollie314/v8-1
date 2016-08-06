@@ -66,7 +66,8 @@ Debug.StepAction = { StepOut: 0,
 // The different types of scripts matching enum ScriptType in objects.h.
 Debug.ScriptType = { Native: 0,
                      Extension: 1,
-                     Normal: 2 };
+                     Normal: 2,
+                     Wasm: 3};
 
 // The different types of script compilations matching enum
 // Script::CompilationType in objects.h.
@@ -471,13 +472,6 @@ Debug.setListener = function(listener, opt_data) {
 };
 
 
-Debug.breakLocations = function(f, opt_position_aligment) {
-  if (!IS_FUNCTION(f)) throw MakeTypeError(kDebuggerType);
-  var position_aligment = IS_UNDEFINED(opt_position_aligment)
-      ? Debug.BreakPositionAlignment.Statement : opt_position_aligment;
-  return %GetBreakLocations(f, position_aligment);
-};
-
 // Returns a Script object. If the parameter is a function the return value
 // is the script in which the function is defined. If the parameter is a string
 // the return value is the script for which the script name has that string
@@ -487,7 +481,7 @@ Debug.findScript = function(func_or_script_name) {
   if (IS_FUNCTION(func_or_script_name)) {
     return %FunctionGetScript(func_or_script_name);
   } else if (IS_REGEXP(func_or_script_name)) {
-    var scripts = Debug.scripts();
+    var scripts = this.scripts();
     var last_result = null;
     var result_count = 0;
     for (var i in scripts) {
@@ -587,10 +581,9 @@ Debug.setBreakPoint = function(func, opt_line, opt_column, opt_condition) {
   if (%FunctionIsAPIFunction(func)) {
     throw MakeError(kDebugger, 'Cannot set break point in native code.');
   }
-  // Find source position relative to start of the function
-  var break_position =
+  // Find source position.
+  var source_position =
       this.findFunctionSourceLocation(func, opt_line, opt_column).position;
-  var source_position = break_position - this.sourcePosition(func);
   // Find the script for the function.
   var script = %FunctionGetScript(func);
   // Break in builtin JavaScript code is not supported.
@@ -600,8 +593,6 @@ Debug.setBreakPoint = function(func, opt_line, opt_column, opt_condition) {
   // If the script for the function has a name convert this to a script break
   // point.
   if (script && script.id) {
-    // Adjust the source position to be script relative.
-    source_position += %FunctionGetScriptSourcePosition(func);
     // Find line and column for the position in the script and set a script
     // break point from that.
     var location = script.locationFromPosition(source_position, false);
@@ -613,7 +604,6 @@ Debug.setBreakPoint = function(func, opt_line, opt_column, opt_condition) {
     var break_point = MakeBreakPoint(source_position);
     var actual_position =
         %SetFunctionBreakPoint(func, source_position, break_point);
-    actual_position += this.sourcePosition(func);
     var actual_location = script.locationFromPosition(actual_position, true);
     break_point.actual_location = { line: actual_location.line,
                                     column: actual_location.column,
@@ -633,15 +623,12 @@ Debug.setBreakPointByScriptIdAndPosition = function(script_id, position,
   if (!enabled) {
     break_point.disable();
   }
-  var scripts = this.scripts();
-  var position_alignment = IS_UNDEFINED(opt_position_alignment)
-      ? Debug.BreakPositionAlignment.Statement : opt_position_alignment;
-  for (var i = 0; i < scripts.length; i++) {
-    if (script_id == scripts[i].id) {
-      break_point.actual_position = %SetScriptBreakPoint(scripts[i], position,
-          position_alignment, break_point);
-      break;
-    }
+  var script = scriptById(script_id);
+  if (script) {
+    var position_alignment = IS_UNDEFINED(opt_position_alignment)
+        ? Debug.BreakPositionAlignment.Statement : opt_position_alignment;
+    break_point.actual_position = %SetScriptBreakPoint(script, position,
+        position_alignment, break_point);
   }
   return break_point;
 };
@@ -831,8 +818,10 @@ Debug.isBreakOnUncaughtException = function() {
 Debug.showBreakPoints = function(f, full, opt_position_alignment) {
   if (!IS_FUNCTION(f)) throw MakeError(kDebuggerType);
   var source = full ? this.scriptSource(f) : this.source(f);
-  var offset = full ? this.sourcePosition(f) : 0;
-  var locations = this.breakLocations(f, opt_position_alignment);
+  var offset = full ? 0 : this.sourcePosition(f);
+  var position_alignment = IS_UNDEFINED(opt_position_alignment)
+      ? Debug.BreakPositionAlignment.Statement : opt_position_alignment;
+  var locations = %GetBreakLocations(f, position_alignment);
   if (!locations) return source;
   locations.sort(function(x, y) { return x - y; });
   var result = "";
@@ -858,9 +847,30 @@ Debug.scripts = function() {
 };
 
 
+// Get a specific script currently loaded. This is based on scanning the heap.
+// TODO(clemensh): Create a runtime function for this.
+function scriptById(scriptId) {
+  var scripts = Debug.scripts();
+  for (var script of scripts) {
+    if (script.id == scriptId) return script;
+  }
+  return UNDEFINED;
+};
+
+
 Debug.debuggerFlags = function() {
   return debugger_flags;
 };
+
+Debug.getWasmFunctionOffsetTable = function(scriptId) {
+  var script = scriptById(scriptId);
+  return script ? %GetWasmFunctionOffsetTable(script) : UNDEFINED;
+}
+
+Debug.disassembleWasmFunction = function(scriptId) {
+  var script = scriptById(scriptId);
+  return script ? %DisassembleWasmFunction(script) : UNDEFINED;
+}
 
 Debug.MakeMirror = MakeMirror;
 
@@ -2155,7 +2165,7 @@ DebugCommandProcessor.prototype.scriptsRequest_ = function(request, response) {
   }
 
   // Collect all scripts in the heap.
-  var scripts = %DebugGetLoadedScripts();
+  var scripts = Debug.scripts();
 
   response.body = [];
 
@@ -2205,14 +2215,7 @@ DebugCommandProcessor.prototype.changeLiveRequest_ = function(
   var script_id = request.arguments.script_id;
   var preview_only = !!request.arguments.preview_only;
 
-  var scripts = %DebugGetLoadedScripts();
-
-  var the_script = null;
-  for (var i = 0; i < scripts.length; i++) {
-    if (scripts[i].id == script_id) {
-      the_script = scripts[i];
-    }
-  }
+  var the_script = scriptById(script_id);
   if (!the_script) {
     response.failed('Script not found');
     return;

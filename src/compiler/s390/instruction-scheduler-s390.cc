@@ -13,11 +13,12 @@ bool InstructionScheduler::SchedulerSupported() { return true; }
 int InstructionScheduler::GetTargetInstructionFlags(
     const Instruction* instr) const {
   switch (instr->arch_opcode()) {
-    case kS390_And:
-    case kS390_AndComplement:
-    case kS390_Or:
-    case kS390_OrComplement:
-    case kS390_Xor:
+    case kS390_And32:
+    case kS390_And64:
+    case kS390_Or32:
+    case kS390_Or64:
+    case kS390_Xor32:
+    case kS390_Xor64:
     case kS390_ShiftLeft32:
     case kS390_ShiftLeft64:
     case kS390_ShiftLeftPair:
@@ -29,7 +30,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kS390_ShiftRightArithPair:
     case kS390_RotRight32:
     case kS390_RotRight64:
-    case kS390_Not:
+    case kS390_Not32:
+    case kS390_Not64:
     case kS390_RotLeftAndMask32:
     case kS390_RotLeftAndClear64:
     case kS390_RotLeftAndClearLeft64:
@@ -46,6 +48,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kS390_SubFloat:
     case kS390_SubDouble:
     case kS390_Mul32:
+    case kS390_Mul32WithHigh32:
     case kS390_Mul64:
     case kS390_MulHigh32:
     case kS390_MulHighU32:
@@ -62,7 +65,6 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kS390_ModU32:
     case kS390_ModU64:
     case kS390_ModDouble:
-    case kS390_LogDouble:
     case kS390_Neg:
     case kS390_NegDouble:
     case kS390_SqrtFloat:
@@ -105,6 +107,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kS390_Float32ToUint32:
     case kS390_Float32ToUint64:
     case kS390_Float32ToDouble:
+    case kS390_Float64SilenceNaN:
     case kS390_DoubleToInt32:
     case kS390_DoubleToUint32:
     case kS390_Float32ToInt64:
@@ -120,6 +123,9 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kS390_BitcastFloat32ToInt32:
     case kS390_BitcastInt64ToDouble:
     case kS390_BitcastDoubleToInt64:
+    case kS390_LoadReverse16RR:
+    case kS390_LoadReverse32RR:
+    case kS390_LoadReverse64RR:
       return kNoOpcodeFlags;
 
     case kS390_LoadWordS8:
@@ -131,12 +137,18 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kS390_LoadWord64:
     case kS390_LoadFloat32:
     case kS390_LoadDouble:
+    case kS390_LoadReverse16:
+    case kS390_LoadReverse32:
+    case kS390_LoadReverse64:
       return kIsLoadOperation;
 
     case kS390_StoreWord8:
     case kS390_StoreWord16:
     case kS390_StoreWord32:
     case kS390_StoreWord64:
+    case kS390_StoreReverse16:
+    case kS390_StoreReverse32:
+    case kS390_StoreReverse64:
     case kS390_StoreFloat32:
     case kS390_StoreDouble:
     case kS390_Push:

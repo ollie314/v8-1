@@ -5,6 +5,8 @@
 #ifndef V8_CODE_STUB_ASSEMBLER_H_
 #define V8_CODE_STUB_ASSEMBLER_H_
 
+#include <functional>
+
 #include "src/compiler/code-assembler.h"
 #include "src/objects.h"
 
@@ -14,6 +16,8 @@ namespace internal {
 class CallInterfaceDescriptor;
 class StatsCounter;
 class StubCache;
+
+enum class PrimitiveType { kBoolean, kNumber, kString, kSymbol };
 
 // Provides JavaScript-specific "macro-assembler" functionality on top of the
 // CodeAssembler. By factoring the JavaScript-isms out of the CodeAssembler,
@@ -40,11 +44,15 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* EmptyStringConstant();
   compiler::Node* HeapNumberMapConstant();
   compiler::Node* NoContextConstant();
+  compiler::Node* NanConstant();
   compiler::Node* NullConstant();
+  compiler::Node* MinusZeroConstant();
   compiler::Node* UndefinedConstant();
   compiler::Node* TheHoleConstant();
   compiler::Node* HashSeed();
   compiler::Node* StaleRegisterConstant();
+
+  compiler::Node* IntPtrOrSmiConstant(int value, ParameterMode mode);
 
   // Float64 operations.
   compiler::Node* Float64Ceil(compiler::Node* x);
@@ -74,6 +82,10 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* SmiLessThan(compiler::Node* a, compiler::Node* b);
   compiler::Node* SmiLessThanOrEqual(compiler::Node* a, compiler::Node* b);
   compiler::Node* SmiMin(compiler::Node* a, compiler::Node* b);
+  // Computes a % b for Smi inputs a and b; result is not necessarily a Smi.
+  compiler::Node* SmiMod(compiler::Node* a, compiler::Node* b);
+  // Computes a * b for Smi inputs a and b; result is not necessarily a Smi.
+  compiler::Node* SmiMul(compiler::Node* a, compiler::Node* b);
 
   // Allocate an object of the given size.
   compiler::Node* Allocate(compiler::Node* size, AllocationFlags flags = kNone);
@@ -88,6 +100,11 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* WordIsSmi(compiler::Node* a);
   // Check that the value is a positive smi.
   compiler::Node* WordIsPositiveSmi(compiler::Node* a);
+
+  void BranchIfSmiEqual(compiler::Node* a, compiler::Node* b, Label* if_true,
+                        Label* if_false) {
+    BranchIf(SmiEqual(a, b), if_true, if_false);
+  }
 
   void BranchIfSmiLessThan(compiler::Node* a, compiler::Node* b, Label* if_true,
                            Label* if_false) {
@@ -104,6 +121,27 @@ class CodeStubAssembler : public compiler::CodeAssembler {
     BranchIfFloat64Equal(value, value, if_false, if_true);
   }
 
+  // Branches to {if_true} if ToBoolean applied to {value} yields true,
+  // otherwise goes to {if_false}.
+  void BranchIfToBooleanIsTrue(compiler::Node* value, Label* if_true,
+                               Label* if_false);
+
+  void BranchIfSimd128Equal(compiler::Node* lhs, compiler::Node* lhs_map,
+                            compiler::Node* rhs, compiler::Node* rhs_map,
+                            Label* if_equal, Label* if_notequal);
+  void BranchIfSimd128Equal(compiler::Node* lhs, compiler::Node* rhs,
+                            Label* if_equal, Label* if_notequal) {
+    BranchIfSimd128Equal(lhs, LoadMap(lhs), rhs, LoadMap(rhs), if_equal,
+                         if_notequal);
+  }
+
+  void BranchIfSameValueZero(compiler::Node* a, compiler::Node* b,
+                             compiler::Node* context, Label* if_true,
+                             Label* if_false);
+
+  void BranchIfFastJSArray(compiler::Node* object, compiler::Node* context,
+                           Label* if_true, Label* if_false);
+
   // Load value from current frame by given offset in bytes.
   compiler::Node* LoadFromFrame(int offset,
                                 MachineType rep = MachineType::AnyTagged());
@@ -117,18 +155,35 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   // Load a field from an object on the heap.
   compiler::Node* LoadObjectField(compiler::Node* object, int offset,
                                   MachineType rep = MachineType::AnyTagged());
+  compiler::Node* LoadObjectField(compiler::Node* object,
+                                  compiler::Node* offset,
+                                  MachineType rep = MachineType::AnyTagged());
+  // Load a SMI field and untag it.
+  compiler::Node* LoadAndUntagObjectField(compiler::Node* object, int offset);
+  // Load a SMI field, untag it, and convert to Word32.
+  compiler::Node* LoadAndUntagToWord32ObjectField(compiler::Node* object,
+                                                  int offset);
+  // Load a SMI and untag it.
+  compiler::Node* LoadAndUntagSmi(compiler::Node* base, int index);
+  // Load a SMI root, untag it, and convert to Word32.
+  compiler::Node* LoadAndUntagToWord32Root(Heap::RootListIndex root_index);
+
   // Load the floating point value of a HeapNumber.
   compiler::Node* LoadHeapNumberValue(compiler::Node* object);
   // Load the Map of an HeapObject.
   compiler::Node* LoadMap(compiler::Node* object);
   // Load the instance type of an HeapObject.
   compiler::Node* LoadInstanceType(compiler::Node* object);
+  // Checks that given heap object has given instance type.
+  void AssertInstanceType(compiler::Node* object, InstanceType instance_type);
   // Load the properties backing store of a JSObject.
   compiler::Node* LoadProperties(compiler::Node* object);
   // Load the elements backing store of a JSObject.
   compiler::Node* LoadElements(compiler::Node* object);
   // Load the length of a fixed array base instance.
   compiler::Node* LoadFixedArrayBaseLength(compiler::Node* array);
+  // Load the length of a fixed array base instance.
+  compiler::Node* LoadAndUntagFixedArrayBaseLength(compiler::Node* array);
   // Load the bit field of a Map.
   compiler::Node* LoadMapBitField(compiler::Node* map);
   // Load bit field 2 of a map.
@@ -143,6 +198,10 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* LoadMapPrototype(compiler::Node* map);
   // Load the instance size of a Map.
   compiler::Node* LoadMapInstanceSize(compiler::Node* map);
+  // Load the inobject properties count of a Map (valid only for JSObjects).
+  compiler::Node* LoadMapInobjectProperties(compiler::Node* map);
+  // Load the constructor of a Map (equivalent to Map::GetConstructor()).
+  compiler::Node* LoadMapConstructor(compiler::Node* map);
 
   // Load the hash field of a name.
   compiler::Node* LoadNameHashField(compiler::Node* name);
@@ -156,12 +215,18 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   // Load value field of a JSValue object.
   compiler::Node* LoadJSValueValue(compiler::Node* object);
   // Load value field of a WeakCell object.
-  compiler::Node* LoadWeakCellValue(compiler::Node* weak_cell);
+  compiler::Node* LoadWeakCellValue(compiler::Node* weak_cell,
+                                    Label* if_cleared = nullptr);
 
   compiler::Node* AllocateUninitializedFixedArray(compiler::Node* length);
 
   // Load an array element from a FixedArray.
   compiler::Node* LoadFixedArrayElement(
+      compiler::Node* object, compiler::Node* int32_index,
+      int additional_offset = 0,
+      ParameterMode parameter_mode = INTEGER_PARAMETERS);
+  // Load an array element from a FixedArray, untag it and return it as Word32.
+  compiler::Node* LoadAndUntagToWord32FixedArrayElement(
       compiler::Node* object, compiler::Node* int32_index,
       int additional_offset = 0,
       ParameterMode parameter_mode = INTEGER_PARAMETERS);
@@ -189,6 +254,8 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   // Store the Map of an HeapObject.
   compiler::Node* StoreMapNoWriteBarrier(compiler::Node* object,
                                          compiler::Node* map);
+  compiler::Node* StoreObjectFieldRoot(compiler::Node* object, int offset,
+                                       Heap::RootListIndex root);
   // Store an array element to a FixedArray.
   compiler::Node* StoreFixedArrayElement(
       compiler::Node* object, compiler::Node* index, compiler::Node* value,
@@ -218,6 +285,30 @@ class CodeStubAssembler : public compiler::CodeAssembler {
                                   compiler::Node* allocation_site = nullptr,
                                   ParameterMode mode = INTEGER_PARAMETERS);
 
+  compiler::Node* AllocateFixedArray(ElementsKind kind,
+                                     compiler::Node* capacity,
+                                     ParameterMode mode = INTEGER_PARAMETERS);
+
+  void FillFixedArrayWithHole(ElementsKind kind, compiler::Node* array,
+                              compiler::Node* from_index,
+                              compiler::Node* to_index,
+                              ParameterMode mode = INTEGER_PARAMETERS);
+
+  void CopyFixedArrayElements(
+      ElementsKind kind, compiler::Node* from_array, compiler::Node* to_array,
+      compiler::Node* element_count,
+      WriteBarrierMode barrier_mode = UPDATE_WRITE_BARRIER,
+      ParameterMode mode = INTEGER_PARAMETERS);
+
+  compiler::Node* CalculateNewElementsCapacity(
+      compiler::Node* old_capacity, ParameterMode mode = INTEGER_PARAMETERS);
+
+  compiler::Node* CheckAndGrowElementsCapacity(compiler::Node* context,
+                                               compiler::Node* elements,
+                                               ElementsKind kind,
+                                               compiler::Node* key,
+                                               Label* fail);
+
   // Allocation site manipulation
   void InitializeAllocationMemento(compiler::Node* base_allocation,
                                    int base_allocation_size,
@@ -240,6 +331,12 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   // or returns the {value} converted to a String otherwise.
   compiler::Node* ToThisString(compiler::Node* context, compiler::Node* value,
                                char const* method_name);
+  // Throws a TypeError for {method_name} if {value} is neither of the given
+  // {primitive_type} nor a JSValue wrapping a value of {primitive_type}, or
+  // returns the {value} (or wrapped value) otherwise.
+  compiler::Node* ToThisValue(compiler::Node* context, compiler::Node* value,
+                              PrimitiveType primitive_type,
+                              char const* method_name);
 
   // String helpers.
   // Load a character from a String (might flatten a ConsString).
@@ -261,15 +358,33 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   void IncrementCounter(StatsCounter* counter, int delta);
   void DecrementCounter(StatsCounter* counter, int delta);
 
+  // Generates "if (false) goto label" code. Useful for marking a label as
+  // "live" to avoid assertion failures during graph building. In the resulting
+  // code this check will be eliminated.
+  void Use(Label* label);
+
   // Various building blocks for stubs doing property lookups.
   void TryToName(compiler::Node* key, Label* if_keyisindex, Variable* var_index,
                  Label* if_keyisunique, Label* if_bailout);
 
+  // Calculates array index for given dictionary entry and entry field.
+  // See Dictionary::EntryToIndex().
+  template <typename Dictionary>
+  compiler::Node* EntryToIndex(compiler::Node* entry, int field_index);
+  template <typename Dictionary>
+  compiler::Node* EntryToIndex(compiler::Node* entry) {
+    return EntryToIndex<Dictionary>(entry, Dictionary::kEntryKeyIndex);
+  }
+
+  // Looks up an entry in a NameDictionaryBase successor. If the entry is found
+  // control goes to {if_found} and {var_name_index} contains an index of the
+  // key field of the entry found. If the key is not found control goes to
+  // {if_not_found}.
   static const int kInlinedDictionaryProbes = 4;
   template <typename Dictionary>
   void NameDictionaryLookup(compiler::Node* dictionary,
                             compiler::Node* unique_name, Label* if_found,
-                            Variable* var_entry, Label* if_not_found,
+                            Variable* var_name_index, Label* if_not_found,
                             int inlined_probes = kInlinedDictionaryProbes);
 
   compiler::Node* ComputeIntegerHash(compiler::Node* key, compiler::Node* seed);
@@ -279,15 +394,80 @@ class CodeStubAssembler : public compiler::CodeAssembler {
                               Label* if_found, Variable* var_entry,
                               Label* if_not_found);
 
-  void TryLookupProperty(compiler::Node* object, compiler::Node* map,
+  // Tries to check if {object} has own {unique_name} property.
+  void TryHasOwnProperty(compiler::Node* object, compiler::Node* map,
                          compiler::Node* instance_type,
                          compiler::Node* unique_name, Label* if_found,
+                         Label* if_not_found, Label* if_bailout);
+
+  // Tries to get {object}'s own {unique_name} property value. If the property
+  // is an accessor then it also calls a getter. If the property is a double
+  // field it re-wraps value in an immutable heap number.
+  void TryGetOwnProperty(compiler::Node* context, compiler::Node* receiver,
+                         compiler::Node* object, compiler::Node* map,
+                         compiler::Node* instance_type,
+                         compiler::Node* unique_name, Label* if_found,
+                         Variable* var_value, Label* if_not_found,
+                         Label* if_bailout);
+
+  void LoadPropertyFromFastObject(compiler::Node* object, compiler::Node* map,
+                                  compiler::Node* descriptors,
+                                  compiler::Node* name_index,
+                                  Variable* var_details, Variable* var_value);
+
+  void LoadPropertyFromNameDictionary(compiler::Node* dictionary,
+                                      compiler::Node* entry,
+                                      Variable* var_details,
+                                      Variable* var_value);
+
+  void LoadPropertyFromGlobalDictionary(compiler::Node* dictionary,
+                                        compiler::Node* entry,
+                                        Variable* var_details,
+                                        Variable* var_value, Label* if_deleted);
+
+  // Generic property lookup generator. If the {object} is fast and
+  // {unique_name} property is found then the control goes to {if_found_fast}
+  // label and {var_meta_storage} and {var_name_index} will contain
+  // DescriptorArray and an index of the descriptor's name respectively.
+  // If the {object} is slow or global then the control goes to {if_found_dict}
+  // or {if_found_global} and the {var_meta_storage} and {var_name_index} will
+  // contain a dictionary and an index of the key field of the found entry.
+  // If property is not found or given lookup is not supported then
+  // the control goes to {if_not_found} or {if_bailout} respectively.
+  //
+  // Note: this code does not check if the global dictionary points to deleted
+  // entry! This has to be done by the caller.
+  void TryLookupProperty(compiler::Node* object, compiler::Node* map,
+                         compiler::Node* instance_type,
+                         compiler::Node* unique_name, Label* if_found_fast,
+                         Label* if_found_dict, Label* if_found_global,
+                         Variable* var_meta_storage, Variable* var_name_index,
                          Label* if_not_found, Label* if_bailout);
 
   void TryLookupElement(compiler::Node* object, compiler::Node* map,
                         compiler::Node* instance_type, compiler::Node* index,
                         Label* if_found, Label* if_not_found,
                         Label* if_bailout);
+
+  // This is a type of a lookup in holder generator function. In case of a
+  // property lookup the {key} is guaranteed to be a unique name and in case of
+  // element lookup the key is an Int32 index.
+  typedef std::function<void(compiler::Node* receiver, compiler::Node* holder,
+                             compiler::Node* map, compiler::Node* instance_type,
+                             compiler::Node* key, Label* next_holder,
+                             Label* if_bailout)>
+      LookupInHolder;
+
+  // Generic property prototype chain lookup generator.
+  // For properties it generates lookup using given {lookup_property_in_holder}
+  // and for elements it uses {lookup_element_in_holder}.
+  // Upon reaching the end of prototype chain the control goes to {if_end}.
+  // If it can't handle the case {receiver}/{key} case then the control goes
+  // to {if_bailout}.
+  void TryPrototypeChainLookup(compiler::Node* receiver, compiler::Node* key,
+                               LookupInHolder& lookup_property_in_holder,
+                               LookupInHolder& lookup_element_in_holder,
+                               Label* if_end, Label* if_bailout);
 
   // Instanceof helpers.
   // ES6 section 7.3.19 OrdinaryHasInstance (C, O)
@@ -330,11 +510,9 @@ class CodeStubAssembler : public compiler::CodeAssembler {
                              int unroll_count);
 
   compiler::Node* StubCachePrimaryOffset(compiler::Node* name,
-                                         Code::Flags flags,
                                          compiler::Node* map);
 
   compiler::Node* StubCacheSecondaryOffset(compiler::Node* name,
-                                           Code::Flags flags,
                                            compiler::Node* seed);
 
   // This enum is used here as a replacement for StubCache::Table to avoid
@@ -343,18 +521,47 @@ class CodeStubAssembler : public compiler::CodeAssembler {
 
   void TryProbeStubCacheTable(StubCache* stub_cache, StubCacheTable table_id,
                               compiler::Node* entry_offset,
-                              compiler::Node* name, Code::Flags flags,
-                              compiler::Node* map, Label* if_handler,
-                              Variable* var_handler, Label* if_miss);
+                              compiler::Node* name, compiler::Node* map,
+                              Label* if_handler, Variable* var_handler,
+                              Label* if_miss);
 
-  void TryProbeStubCache(StubCache* stub_cache, Code::Flags flags,
-                         compiler::Node* receiver, compiler::Node* name,
-                         Label* if_handler, Variable* var_handler,
-                         Label* if_miss);
+  void TryProbeStubCache(StubCache* stub_cache, compiler::Node* receiver,
+                         compiler::Node* name, Label* if_handler,
+                         Variable* var_handler, Label* if_miss);
 
-  void LoadIC(const LoadICParameters* p, Label* if_miss);
+  void LoadIC(const LoadICParameters* p);
+  void LoadGlobalIC(const LoadICParameters* p);
+  void KeyedLoadIC(const LoadICParameters* p);
+
+  // Get the enumerable length from |map| and return the result as a Smi.
+  compiler::Node* EnumLength(compiler::Node* map);
+
+  // Check the cache validity for |receiver|. Branch to |use_cache| if
+  // the cache is valid, otherwise branch to |use_runtime|.
+  void CheckEnumCache(compiler::Node* receiver,
+                      CodeStubAssembler::Label* use_cache,
+                      CodeStubAssembler::Label* use_runtime);
+
+  // Create a new weak cell with a specified value and install it into a
+  // feedback vector.
+  compiler::Node* CreateWeakCellInFeedbackVector(
+      compiler::Node* feedback_vector, compiler::Node* slot,
+      compiler::Node* value);
 
  private:
+  enum ElementSupport { kOnlyProperties, kSupportElements };
+
+  void HandleLoadICHandlerCase(
+      const LoadICParameters* p, compiler::Node* handler, Label* miss,
+      ElementSupport support_elements = kOnlyProperties);
+  void EmitBoundsCheck(compiler::Node* object, compiler::Node* elements,
+                       compiler::Node* intptr_key, compiler::Node* is_jsarray,
+                       Label* miss);
+  void EmitElementLoad(compiler::Node* object, compiler::Node* elements,
+                       compiler::Node* elements_kind, compiler::Node* key,
+                       Label* if_hole, Label* rebox_double,
+                       Variable* var_double_value, Label* miss);
+
   compiler::Node* ElementOffsetFromIndex(compiler::Node* index,
                                          ElementsKind kind, ParameterMode mode,
                                          int base_size = 0);

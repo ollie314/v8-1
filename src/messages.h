@@ -10,7 +10,8 @@
 #ifndef V8_MESSAGES_H_
 #define V8_MESSAGES_H_
 
-#include "src/base/smart-pointers.h"
+#include <memory>
+
 #include "src/handles.h"
 #include "src/list.h"
 
@@ -50,6 +51,8 @@ class CallSite {
   Handle<Object> GetFunctionName();
   Handle<Object> GetScriptNameOrSourceUrl();
   Handle<Object> GetMethodName();
+  Handle<Object> GetTypeName();
+  Handle<Object> GetEvalOrigin();
   // Return 1-based line number, including line offset.
   int GetLineNumber();
   // Return 1-based column number, including column offset if first line.
@@ -62,6 +65,8 @@ class CallSite {
   bool IsJavaScript() { return !fun_.is_null(); }
   bool IsWasm() { return !wasm_obj_.is_null(); }
 
+  int wasm_func_index() const { return wasm_func_index_; }
+
  private:
   Isolate* isolate_;
   Handle<Object> receiver_;
@@ -69,6 +74,47 @@ class CallSite {
   int32_t pos_ = -1;
   Handle<JSObject> wasm_obj_;
   uint32_t wasm_func_index_ = static_cast<uint32_t>(-1);
+};
+
+// Determines how stack trace collection skips frames.
+enum FrameSkipMode {
+  // Unconditionally skips the first frame. Used e.g. when the Error constructor
+  // is called, in which case the first frame is always a BUILTIN_EXIT frame.
+  SKIP_FIRST,
+  // Skip all frames until a specified caller function is seen.
+  SKIP_UNTIL_SEEN,
+  SKIP_NONE,
+};
+
+class ErrorUtils : public AllStatic {
+ public:
+  static MaybeHandle<Object> Construct(
+      Isolate* isolate, Handle<JSFunction> target, Handle<Object> new_target,
+      Handle<Object> message, FrameSkipMode mode, Handle<Object> caller,
+      bool suppress_detailed_trace);
+
+  static MaybeHandle<String> ToString(Isolate* isolate, Handle<Object> recv);
+
+  static MaybeHandle<Object> MakeGenericError(
+      Isolate* isolate, Handle<JSFunction> constructor, int template_index,
+      Handle<Object> arg0, Handle<Object> arg1, Handle<Object> arg2,
+      FrameSkipMode mode);
+
+  // Formats a textual stack trace from the given structured stack trace.
+  // Note that this can call arbitrary JS code through Error.prepareStackTrace.
+  static MaybeHandle<Object> FormatStackTrace(Isolate* isolate,
+                                              Handle<JSObject> error,
+                                              Handle<Object> stack_trace);
+};
+
+class CallSiteUtils : public AllStatic {
+ public:
+  static MaybeHandle<Object> Construct(Isolate* isolate,
+                                       Handle<Object> receiver,
+                                       Handle<Object> fun, Handle<Object> pos,
+                                       Handle<Object> strict_mode);
+
+  static MaybeHandle<String> ToString(Isolate* isolate, Handle<Object> recv);
 };
 
 #define MESSAGE_TEMPLATES(T)                                                   \
@@ -128,6 +174,8 @@ class CallSite {
   T(FunctionBind, "Bind must be called on a function")                         \
   T(GeneratorRunning, "Generator is already running")                          \
   T(IllegalInvocation, "Illegal invocation")                                   \
+  T(ImmutablePrototypeSet,                                                     \
+    "Immutable prototype object '%' cannot have their prototype set")          \
   T(IncompatibleMethodReceiver, "Method % called on incompatible receiver %")  \
   T(InstanceofNonobjectProto,                                                  \
     "Function has non-object prototype '%' in instanceof check")               \
@@ -440,6 +488,8 @@ class CallSite {
     "Too many arguments in function call (only 65535 allowed)")                \
   T(TooManyParameters,                                                         \
     "Too many parameters in function definition (only 65535 allowed)")         \
+  T(TooManySpreads,                                                            \
+    "Literal containing too many nested spreads (up to 65534 allowed)")        \
   T(TooManyVariables, "Too many variables declared (only 4194303 allowed)")    \
   T(TypedArrayTooShort,                                                        \
     "Derived TypedArray constructor created an array which was too small")     \
@@ -487,7 +537,8 @@ class CallSite {
   T(WasmTrapRemByZero, "remainder by zero")                                    \
   T(WasmTrapFloatUnrepresentable, "integer result unrepresentable")            \
   T(WasmTrapFuncInvalid, "invalid function")                                   \
-  T(WasmTrapFuncSigMismatch, "function signature mismatch")
+  T(WasmTrapFuncSigMismatch, "function signature mismatch")                    \
+  T(WasmTrapInvalidIndex, "invalid index into function table")
 
 class MessageTemplate {
  public:
@@ -527,8 +578,8 @@ class MessageHandler {
   static void DefaultMessageReport(Isolate* isolate, const MessageLocation* loc,
                                    Handle<Object> message_obj);
   static Handle<String> GetMessage(Isolate* isolate, Handle<Object> data);
-  static base::SmartArrayPointer<char> GetLocalizedMessage(Isolate* isolate,
-                                                           Handle<Object> data);
+  static std::unique_ptr<char[]> GetLocalizedMessage(Isolate* isolate,
+                                                     Handle<Object> data);
 };
 
 

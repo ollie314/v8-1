@@ -1245,7 +1245,7 @@ WASM_EXEC_TEST(I64ReinterpretF64) {
 
   FOR_INT32_INPUTS(i) {
     int64_t expected = static_cast<int64_t>(*i) * 0x300010001;
-    memory[0] = expected;
+    module.WriteMemory(&memory[0], expected);
     CHECK_EQ(expected, r.Call());
   }
 }
@@ -1256,15 +1256,15 @@ WASM_EXEC_TEST(F64ReinterpretI64) {
   int64_t* memory = module.AddMemoryElems<int64_t>(8);
   WasmRunner<int64_t> r(&module, MachineType::Int64());
 
-  BUILD(r, WASM_BLOCK(
-               2, WASM_STORE_MEM(MachineType::Float64(), WASM_ZERO,
-                                 WASM_F64_REINTERPRET_I64(WASM_GET_LOCAL(0))),
-               WASM_GET_LOCAL(0)));
+  BUILD(r,
+        WASM_BLOCK(WASM_STORE_MEM(MachineType::Float64(), WASM_ZERO,
+                                  WASM_F64_REINTERPRET_I64(WASM_GET_LOCAL(0))),
+                   WASM_GET_LOCAL(0)));
 
   FOR_INT32_INPUTS(i) {
     int64_t expected = static_cast<int64_t>(*i) * 0x300010001;
     CHECK_EQ(expected, r.Call(expected));
-    CHECK_EQ(expected, memory[0]);
+    CHECK_EQ(expected, module.ReadMemory<int64_t>(&memory[0]));
   }
 }
 
@@ -1277,13 +1277,13 @@ WASM_EXEC_TEST(LoadMemI64) {
 
   BUILD(r, WASM_LOAD_MEM(MachineType::Int64(), WASM_I8(0)));
 
-  memory[0] = 0xaabbccdd00112233LL;
+  module.WriteMemory<int64_t>(&memory[0], 0xaabbccdd00112233LL);
   CHECK_EQ(0xaabbccdd00112233LL, r.Call());
 
-  memory[0] = 0x33aabbccdd001122LL;
+  module.WriteMemory<int64_t>(&memory[0], 0x33aabbccdd001122LL);
   CHECK_EQ(0x33aabbccdd001122LL, r.Call());
 
-  memory[0] = 77777777;
+  module.WriteMemory<int64_t>(&memory[0], 77777777);
   CHECK_EQ(77777777, r.Call());
 }
 
@@ -1298,13 +1298,13 @@ WASM_EXEC_TEST(LoadMemI64_alignment) {
     BUILD(r,
           WASM_LOAD_MEM_ALIGNMENT(MachineType::Int64(), WASM_I8(0), alignment));
 
-    memory[0] = 0xaabbccdd00112233LL;
+    module.WriteMemory<int64_t>(&memory[0], 0xaabbccdd00112233LL);
     CHECK_EQ(0xaabbccdd00112233LL, r.Call());
 
-    memory[0] = 0x33aabbccdd001122LL;
+    module.WriteMemory<int64_t>(&memory[0], 0x33aabbccdd001122LL);
     CHECK_EQ(0x33aabbccdd001122LL, r.Call());
 
-    memory[0] = 77777777;
+    module.WriteMemory<int64_t>(&memory[0], 77777777);
     CHECK_EQ(77777777, r.Call());
   }
 }
@@ -1320,25 +1320,25 @@ WASM_EXEC_TEST(MemI64_Sum) {
   WasmRunner<uint64_t> r(&module, MachineType::Int32());
   const byte kSum = r.AllocateLocal(kAstI64);
 
-  BUILD(r, WASM_BLOCK(
-               2, WASM_WHILE(
-                      WASM_GET_LOCAL(0),
-                      WASM_BLOCK(
-                          2, WASM_SET_LOCAL(
-                                 kSum, WASM_I64_ADD(
-                                           WASM_GET_LOCAL(kSum),
+  BUILD(r,
+        WASM_BLOCK(
+            WASM_WHILE(
+                WASM_GET_LOCAL(0),
+                WASM_BLOCK(
+                    WASM_SET_LOCAL(
+                        kSum, WASM_I64_ADD(WASM_GET_LOCAL(kSum),
                                            WASM_LOAD_MEM(MachineType::Int64(),
                                                          WASM_GET_LOCAL(0)))),
-                          WASM_SET_LOCAL(
-                              0, WASM_I32_SUB(WASM_GET_LOCAL(0), WASM_I8(8))))),
-               WASM_GET_LOCAL(1)));
+                    WASM_SET_LOCAL(
+                        0, WASM_I32_SUB(WASM_GET_LOCAL(0), WASM_I8(8))))),
+            WASM_GET_LOCAL(1)));
 
   // Run 4 trials.
   for (int i = 0; i < 3; i++) {
     module.RandomizeMemory(i * 33);
     uint64_t expected = 0;
     for (size_t j = kNumElems - 1; j > 0; j--) {
-      expected += memory[j];
+      expected += module.ReadMemory(&memory[j]);
     }
     uint64_t result = r.Call(8 * (kNumElems - 1));
     CHECK_EQ(expected, result);
@@ -1355,10 +1355,10 @@ WASM_EXEC_TEST(StoreMemI64_alignment) {
     BUILD(r, WASM_STORE_MEM_ALIGNMENT(MachineType::Int64(), WASM_ZERO, i,
                                       WASM_GET_LOCAL(0)));
     module.RandomizeMemory(1111);
-    memory[0] = 0;
+    module.WriteMemory<int64_t>(&memory[0], 0);
 
     CHECK_EQ(kWritten, r.Call(kWritten));
-    CHECK_EQ(kWritten, memory[0]);
+    CHECK_EQ(kWritten, module.ReadMemory(&memory[0]));
   }
 }
 
@@ -1368,15 +1368,15 @@ WASM_EXEC_TEST(I64Global) {
   REQUIRE(I64And);
   REQUIRE(DepthFirst);
   TestingModule module(execution_mode);
-  int64_t* global = module.AddGlobal<int64_t>(MachineType::Int64());
+  int64_t* global = module.AddGlobal<int64_t>(kAstI64);
   WasmRunner<int32_t> r(&module, MachineType::Int32());
   // global = global + p0
-  BUILD(r, B2(WASM_STORE_GLOBAL(
-                  0, WASM_I64_AND(WASM_LOAD_GLOBAL(0),
+  BUILD(r, B2(WASM_SET_GLOBAL(
+                  0, WASM_I64_AND(WASM_GET_GLOBAL(0),
                                   WASM_I64_SCONVERT_I32(WASM_GET_LOCAL(0)))),
               WASM_ZERO));
 
-  *global = 0xFFFFFFFFFFFFFFFFLL;
+  module.WriteMemory<int64_t>(global, 0xFFFFFFFFFFFFFFFFLL);
   for (int i = 9; i < 444444; i += 111111) {
     int64_t expected = *global & i;
     r.Call(i);

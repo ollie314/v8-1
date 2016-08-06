@@ -58,7 +58,6 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kX64Tzcnt32:
     case kX64Popcnt:
     case kX64Popcnt32:
-    case kX87Float64Log:
     case kSSEFloat32Cmp:
     case kSSEFloat32Add:
     case kSSEFloat32Sub:
@@ -68,8 +67,6 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kSSEFloat32Neg:
     case kSSEFloat32Sqrt:
     case kSSEFloat32Round:
-    case kSSEFloat32Max:
-    case kSSEFloat32Min:
     case kSSEFloat32ToFloat64:
     case kSSEFloat64Cmp:
     case kSSEFloat64Add:
@@ -105,20 +102,17 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kSSEFloat64InsertLowWord32:
     case kSSEFloat64InsertHighWord32:
     case kSSEFloat64LoadLowWord32:
+    case kSSEFloat64SilenceNaN:
     case kAVXFloat32Cmp:
     case kAVXFloat32Add:
     case kAVXFloat32Sub:
     case kAVXFloat32Mul:
     case kAVXFloat32Div:
-    case kAVXFloat32Max:
-    case kAVXFloat32Min:
     case kAVXFloat64Cmp:
     case kAVXFloat64Add:
     case kAVXFloat64Sub:
     case kAVXFloat64Mul:
     case kAVXFloat64Div:
-    case kAVXFloat64Max:
-    case kAVXFloat64Min:
     case kAVXFloat64Abs:
     case kAVXFloat64Neg:
     case kAVXFloat32Abs:

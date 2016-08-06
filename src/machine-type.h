@@ -23,10 +23,12 @@ enum class MachineRepresentation : uint8_t {
   kWord32,
   kWord64,
   kFloat32,
-  kFloat64,
-  kSimd128,
+  kFloat64,  // must follow kFloat32
+  kSimd128,  // must follow kFloat64
   kTagged
 };
+
+const char* MachineReprToString(MachineRepresentation);
 
 enum class MachineSemantic : uint8_t {
   kNone,
@@ -155,6 +157,35 @@ class MachineType {
   }
   static MachineType RepBit() {
     return MachineType(MachineRepresentation::kBit, MachineSemantic::kNone);
+  }
+
+  static MachineType TypeForRepresentation(MachineRepresentation& rep,
+                                           bool isSigned = true) {
+    switch (rep) {
+      case MachineRepresentation::kNone:
+        return MachineType::None();
+      case MachineRepresentation::kBit:
+        return MachineType::Bool();
+      case MachineRepresentation::kWord8:
+        return isSigned ? MachineType::Int8() : MachineType::Uint8();
+      case MachineRepresentation::kWord16:
+        return isSigned ? MachineType::Int16() : MachineType::Uint16();
+      case MachineRepresentation::kWord32:
+        return isSigned ? MachineType::Int32() : MachineType::Uint32();
+      case MachineRepresentation::kWord64:
+        return isSigned ? MachineType::Int64() : MachineType::Uint64();
+      case MachineRepresentation::kFloat32:
+        return MachineType::Float32();
+      case MachineRepresentation::kFloat64:
+        return MachineType::Float64();
+      case MachineRepresentation::kSimd128:
+        return MachineType::Simd128();
+      case MachineRepresentation::kTagged:
+        return MachineType::AnyTagged();
+      default:
+        UNREACHABLE();
+        return MachineType::None();
+    }
   }
 
  private:

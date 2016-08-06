@@ -20,6 +20,11 @@ void CallInterfaceDescriptor::DefaultInitializePlatformSpecific(
                                    default_stub_registers);
 }
 
+const Register FastNewFunctionContextDescriptor::FunctionRegister() {
+  return r3;
+}
+const Register FastNewFunctionContextDescriptor::SlotsRegister() { return r2; }
+
 const Register LoadDescriptor::ReceiverRegister() { return r3; }
 const Register LoadDescriptor::NameRegister() { return r4; }
 const Register LoadDescriptor::SlotRegister() { return r2; }
@@ -29,18 +34,15 @@ const Register LoadWithVectorDescriptor::VectorRegister() { return r5; }
 const Register StoreDescriptor::ReceiverRegister() { return r3; }
 const Register StoreDescriptor::NameRegister() { return r4; }
 const Register StoreDescriptor::ValueRegister() { return r2; }
+const Register StoreDescriptor::SlotRegister() { return r6; }
 
-const Register VectorStoreICTrampolineDescriptor::SlotRegister() { return r6; }
-
-const Register VectorStoreICDescriptor::VectorRegister() { return r5; }
+const Register StoreWithVectorDescriptor::VectorRegister() { return r5; }
 
 const Register VectorStoreTransitionDescriptor::SlotRegister() { return r6; }
 const Register VectorStoreTransitionDescriptor::VectorRegister() { return r5; }
 const Register VectorStoreTransitionDescriptor::MapRegister() { return r7; }
 
 const Register StoreTransitionDescriptor::MapRegister() { return r5; }
-
-const Register LoadGlobalViaContextDescriptor::SlotRegister() { return r4; }
 
 const Register StoreGlobalViaContextDescriptor::SlotRegister() { return r4; }
 const Register StoreGlobalViaContextDescriptor::ValueRegister() { return r2; }
@@ -63,12 +65,6 @@ const Register GrowArrayElementsDescriptor::KeyRegister() { return r5; }
 void FastNewClosureDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {r4};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-void FastNewContextDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  Register registers[] = {r3};
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
@@ -238,17 +234,10 @@ void ArraySingleArgumentConstructorDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(arraysize(registers), registers, NULL);
 }
 
-void ArrayConstructorDescriptor::InitializePlatformSpecific(
+void ArrayNArgumentsConstructorDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   // stack param count needs (constructor pointer, and single argument)
   Register registers[] = {r3, r4, r2};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-void InternalArrayConstructorDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  // stack param count needs (constructor pointer, and single argument)
-  Register registers[] = {r3, r2};
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 

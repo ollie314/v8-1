@@ -28,7 +28,6 @@ var InnerArrayFilter;
 var InnerArrayFind;
 var InnerArrayFindIndex;
 var InnerArrayForEach;
-var InnerArrayIncludes;
 var InnerArrayIndexOf;
 var InnerArrayJoin;
 var InnerArrayLastIndexOf;
@@ -47,6 +46,7 @@ var PackedArrayReverse;
 var SpeciesConstructor;
 var ToPositiveInteger;
 var iteratorSymbol = utils.ImportNow("iterator_symbol");
+var speciesSymbol = utils.ImportNow("species_symbol");
 var toStringTagSymbol = utils.ImportNow("to_string_tag_symbol");
 
 macro TYPED_ARRAYS(FUNCTION)
@@ -81,7 +81,6 @@ utils.Import(function(from) {
   InnerArrayFind = from.InnerArrayFind;
   InnerArrayFindIndex = from.InnerArrayFindIndex;
   InnerArrayForEach = from.InnerArrayForEach;
-  InnerArrayIncludes = from.InnerArrayIncludes;
   InnerArrayIndexOf = from.InnerArrayIndexOf;
   InnerArrayJoin = from.InnerArrayJoin;
   InnerArrayLastIndexOf = from.InnerArrayLastIndexOf;
@@ -349,7 +348,7 @@ function TypedArraySetFromArrayLike(target, source, sourceLength, offset) {
 function TypedArraySetFromOverlappingTypedArray(target, source, offset) {
   var sourceElementSize = source.BYTES_PER_ELEMENT;
   var targetElementSize = target.BYTES_PER_ELEMENT;
-  var sourceLength = source.length;
+  var sourceLength = %_TypedArrayGetLength(source);
 
   // Copy left part.
   function CopyLeftPart() {
@@ -369,7 +368,7 @@ function TypedArraySetFromOverlappingTypedArray(target, source, offset) {
   }
   var leftIndex = CopyLeftPart();
 
-  // Copy rigth part;
+  // Copy right part;
   function CopyRightPart() {
     // First unmutated byte before the next write
     var targetPtr =
@@ -413,7 +412,8 @@ function TypedArraySet(obj, offset) {
       TypedArraySetFromOverlappingTypedArray(this, obj, intOffset);
       return;
     case 2: // TYPED_ARRAY_SET_TYPED_ARRAY_NONOVERLAPPING
-      TypedArraySetFromArrayLike(this, obj, obj.length, intOffset);
+      TypedArraySetFromArrayLike(this,
+          obj, %_TypedArrayGetLength(obj), intOffset);
       return;
     case 3: // TYPED_ARRAY_SET_NON_TYPED_ARRAY
       var l = obj.length;
@@ -428,7 +428,7 @@ function TypedArraySet(obj, offset) {
         return;
       }
       l = TO_LENGTH(l);
-      if (intOffset + l > this.length) {
+      if (intOffset + l > %_TypedArrayGetLength(this)) {
         throw MakeRangeError(kTypedArraySetSourceTooLarge);
       }
       TypedArraySetFromArrayLike(this, obj, l, intOffset);
@@ -711,7 +711,29 @@ function TypedArrayIncludes(searchElement, fromIndex) {
 
   var length = %_TypedArrayGetLength(this);
 
-  return InnerArrayIncludes(searchElement, fromIndex, this, length);
+  if (length === 0) return false;
+  var n = TO_INTEGER(fromIndex);
+
+  var k;
+  if (n >= 0) {
+    k = n;
+  } else {
+    k = length + n;
+    if (k < 0) {
+      k = 0;
+    }
+  }
+
+  while (k < length) {
+    var elementK = this[k];
+    if (%SameValueZero(searchElement, elementK)) {
+      return true;
+    }
+
+    ++k;
+  }
+
+  return false;
 }
 %FunctionSetLength(TypedArrayIncludes, 1);
 
@@ -784,6 +806,10 @@ function TypedArrayConstructor() {
   }
 }
 
+function TypedArraySpecies() {
+  return this;
+}
+
 // -------------------------------------------------------------------
 
 %SetCode(GlobalTypedArray, TypedArrayConstructor);
@@ -791,6 +817,7 @@ utils.InstallFunctions(GlobalTypedArray, DONT_ENUM, [
   "from", TypedArrayFrom,
   "of", TypedArrayOf
 ]);
+utils.InstallGetter(GlobalTypedArray, speciesSymbol, TypedArraySpecies);
 utils.InstallGetter(GlobalTypedArray.prototype, toStringTagSymbol,
                     TypedArrayGetToStringTag);
 utils.InstallFunctions(GlobalTypedArray.prototype, DONT_ENUM, [

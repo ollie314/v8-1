@@ -4,6 +4,8 @@
 
 #include "src/runtime/runtime-utils.h"
 
+#include <memory>
+
 #include "src/arguments.h"
 #include "src/deoptimizer.h"
 #include "src/frames-inl.h"
@@ -14,6 +16,15 @@
 namespace v8 {
 namespace internal {
 
+RUNTIME_FUNCTION(Runtime_ConstructDouble) {
+  HandleScope scope(isolate);
+  DCHECK(args.length() == 2);
+  CONVERT_NUMBER_CHECKED(uint32_t, hi, Uint32, args[0]);
+  CONVERT_NUMBER_CHECKED(uint32_t, lo, Uint32, args[1]);
+  uint64_t result = (static_cast<uint64_t>(hi) << 32) | lo;
+  return *isolate->factory()->NewNumber(uint64_to_double(result));
+}
+
 RUNTIME_FUNCTION(Runtime_DeoptimizeFunction) {
   HandleScope scope(isolate);
   DCHECK(args.length() == 1);
@@ -21,12 +32,12 @@ RUNTIME_FUNCTION(Runtime_DeoptimizeFunction) {
   // This function is used by fuzzers to get coverage in compiler.
   // Ignore calls on non-function objects to avoid runtime errors.
   CONVERT_ARG_HANDLE_CHECKED(Object, function_object, 0);
-  // If it is not a JSFunction, just return.
   if (!function_object->IsJSFunction()) {
     return isolate->heap()->undefined_value();
   }
   Handle<JSFunction> function = Handle<JSFunction>::cast(function_object);
 
+  // If the function is not optimized, just return.
   if (!function->IsOptimized()) return isolate->heap()->undefined_value();
 
   // TODO(turbofan): Deoptimization is not supported yet.
@@ -47,17 +58,12 @@ RUNTIME_FUNCTION(Runtime_DeoptimizeNow) {
 
   Handle<JSFunction> function;
 
-  // If the argument is 'undefined', deoptimize the topmost
-  // function.
+  // Find the JavaScript function on the top of the stack.
   JavaScriptFrameIterator it(isolate);
-  while (!it.done()) {
-    if (it.frame()->is_java_script()) {
-      function = Handle<JSFunction>(it.frame()->function());
-      break;
-    }
-  }
+  if (!it.done()) function = Handle<JSFunction>(it.frame()->function());
   if (function.is_null()) return isolate->heap()->undefined_value();
 
+  // If the function is not optimized, just return.
   if (!function->IsOptimized()) return isolate->heap()->undefined_value();
 
   // TODO(turbofan): Deoptimization is not supported yet.
@@ -93,22 +99,27 @@ RUNTIME_FUNCTION(Runtime_IsConcurrentRecompilationSupported) {
 
 RUNTIME_FUNCTION(Runtime_OptimizeFunctionOnNextCall) {
   HandleScope scope(isolate);
-  RUNTIME_ASSERT(args.length() == 1 || args.length() == 2);
+
+  // This function is used by fuzzers, ignore calls with bogus arguments count.
+  if (args.length() != 1 && args.length() != 2) {
+    return isolate->heap()->undefined_value();
+  }
 
   // This function is used by fuzzers to get coverage for optimizations
   // in compiler. Ignore calls on non-function objects to avoid runtime errors.
   CONVERT_ARG_HANDLE_CHECKED(Object, function_object, 0);
-  // If it is not a JSFunction, just return.
   if (!function_object->IsJSFunction()) {
     return isolate->heap()->undefined_value();
   }
   Handle<JSFunction> function = Handle<JSFunction>::cast(function_object);
 
-  // The following assertion was lifted from the DCHECK inside
+  // The following condition was lifted from the DCHECK inside
   // JSFunction::MarkForOptimization().
-  RUNTIME_ASSERT(function->shared()->allows_lazy_compilation() ||
-                 (function->code()->kind() == Code::FUNCTION &&
-                  !function->shared()->optimization_disabled()));
+  if (!(function->shared()->allows_lazy_compilation() ||
+        (function->code()->kind() == Code::FUNCTION &&
+         !function->shared()->optimization_disabled()))) {
+    return isolate->heap()->undefined_value();
+  }
 
   // If the function is already optimized, just return.
   if (function->IsOptimized()) return isolate->heap()->undefined_value();
@@ -130,18 +141,17 @@ RUNTIME_FUNCTION(Runtime_OptimizeFunctionOnNextCall) {
 
 RUNTIME_FUNCTION(Runtime_OptimizeOsr) {
   HandleScope scope(isolate);
-  RUNTIME_ASSERT(args.length() == 0 || args.length() == 1);
-  Handle<JSFunction> function = Handle<JSFunction>::null();
 
+  // This function is used by fuzzers, ignore calls with bogus arguments count.
+  if (args.length() != 0 && args.length() != 1) {
+    return isolate->heap()->undefined_value();
+  }
+
+  Handle<JSFunction> function = Handle<JSFunction>::null();
   if (args.length() == 0) {
     // Find the JavaScript function on the top of the stack.
     JavaScriptFrameIterator it(isolate);
-    while (!it.done()) {
-      if (it.frame()->is_java_script()) {
-        function = Handle<JSFunction>(it.frame()->function());
-        break;
-      }
-    }
+    if (!it.done()) function = Handle<JSFunction>(it.frame()->function());
     if (function.is_null()) return isolate->heap()->undefined_value();
   } else {
     // Function was passed as an argument.
@@ -149,25 +159,19 @@ RUNTIME_FUNCTION(Runtime_OptimizeOsr) {
     function = arg;
   }
 
-  // The following assertion was lifted from the DCHECK inside
-  // JSFunction::MarkForOptimization().
-  RUNTIME_ASSERT(function->shared()->allows_lazy_compilation() ||
-                 !function->shared()->optimization_disabled());
-
-  // If function is interpreted, just return. OSR is not supported.
-  // TODO(4764): Remove this check when OSR is enabled in the interpreter.
-  if (function->shared()->HasBytecodeArray()) {
+  // If function is interpreted but OSR hasn't been enabled, just return.
+  if (function->shared()->HasBytecodeArray() && !FLAG_ignition_osr) {
     return isolate->heap()->undefined_value();
   }
 
   // If the function is already optimized, just return.
   if (function->IsOptimized()) return isolate->heap()->undefined_value();
 
-  Code* unoptimized = function->shared()->code();
-  if (unoptimized->kind() == Code::FUNCTION) {
-    DCHECK(BackEdgeTable::Verify(isolate, unoptimized));
+  // Make the profiler arm all back edges in unoptimized code.
+  if (function->shared()->HasBytecodeArray() ||
+      function->shared()->code()->kind() == Code::FUNCTION) {
     isolate->runtime_profiler()->AttemptOnStackReplacement(
-        *function, Code::kMaxLoopNestingMarker);
+        *function, AbstractCode::kMaxLoopNestingMarker);
   }
 
   return isolate->heap()->undefined_value();
@@ -187,18 +191,29 @@ RUNTIME_FUNCTION(Runtime_NeverOptimizeFunction) {
 
 RUNTIME_FUNCTION(Runtime_GetOptimizationStatus) {
   HandleScope scope(isolate);
-  RUNTIME_ASSERT(args.length() == 1 || args.length() == 2);
+  DCHECK(args.length() == 1 || args.length() == 2);
   if (!isolate->use_crankshaft()) {
     return Smi::FromInt(4);  // 4 == "never".
   }
+
+  // This function is used by fuzzers to get coverage for optimizations
+  // in compiler. Ignore calls on non-function objects to avoid runtime errors.
+  CONVERT_ARG_HANDLE_CHECKED(Object, function_object, 0);
+  if (!function_object->IsJSFunction()) {
+    return isolate->heap()->undefined_value();
+  }
+  Handle<JSFunction> function = Handle<JSFunction>::cast(function_object);
+
   bool sync_with_compiler_thread = true;
   if (args.length() == 2) {
-    CONVERT_ARG_HANDLE_CHECKED(String, sync, 1);
+    CONVERT_ARG_HANDLE_CHECKED(Object, sync_object, 1);
+    if (!sync_object->IsString()) return isolate->heap()->undefined_value();
+    Handle<String> sync = Handle<String>::cast(sync_object);
     if (sync->IsOneByteEqualTo(STATIC_CHAR_VECTOR("no sync"))) {
       sync_with_compiler_thread = false;
     }
   }
-  CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
+
   if (isolate->concurrent_recompilation_enabled() &&
       sync_with_compiler_thread) {
     while (function->IsInOptimizationQueue()) {
@@ -224,9 +239,10 @@ RUNTIME_FUNCTION(Runtime_GetOptimizationStatus) {
 
 RUNTIME_FUNCTION(Runtime_UnblockConcurrentRecompilation) {
   DCHECK(args.length() == 0);
-  RUNTIME_ASSERT(FLAG_block_concurrent_recompilation);
-  RUNTIME_ASSERT(isolate->concurrent_recompilation_enabled());
-  isolate->optimizing_compile_dispatcher()->Unblock();
+  if (FLAG_block_concurrent_recompilation &&
+      isolate->concurrent_recompilation_enabled()) {
+    isolate->optimizing_compile_dispatcher()->Unblock();
+  }
   return isolate->heap()->undefined_value();
 }
 
@@ -266,6 +282,68 @@ RUNTIME_FUNCTION(Runtime_ClearFunctionTypeFeedback) {
   return isolate->heap()->undefined_value();
 }
 
+RUNTIME_FUNCTION(Runtime_CheckWasmWrapperElision) {
+  // This only supports the case where the function being exported
+  // calls an intermediate function, and the intermediate function
+  // calls exactly one imported function
+  HandleScope scope(isolate);
+  CHECK(args.length() == 2);
+  // It takes two parameters, the first one is the JSFunction,
+  // The second one is the type
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
+  // If type is 0, it means that it is supposed to be a direct call into a WASM
+  // function
+  // If type is 1, it means that it is supposed to have wrappers
+  CONVERT_ARG_HANDLE_CHECKED(Smi, type, 1);
+  Handle<Code> export_code = handle(function->code());
+  CHECK(export_code->kind() == Code::JS_TO_WASM_FUNCTION);
+  int const mask = RelocInfo::ModeMask(RelocInfo::CODE_TARGET);
+  // check the type of the $export_fct
+  Handle<Code> export_fct;
+  int count = 0;
+  for (RelocIterator it(*export_code, mask); !it.done(); it.next()) {
+    RelocInfo* rinfo = it.rinfo();
+    Address target_address = rinfo->target_address();
+    Code* target = Code::GetCodeFromTargetAddress(target_address);
+    if (target->kind() == Code::WASM_FUNCTION) {
+      ++count;
+      export_fct = handle(target);
+    }
+  }
+  CHECK(count == 1);
+  // check the type of the intermediate_fct
+  Handle<Code> intermediate_fct;
+  count = 0;
+  for (RelocIterator it(*export_fct, mask); !it.done(); it.next()) {
+    RelocInfo* rinfo = it.rinfo();
+    Address target_address = rinfo->target_address();
+    Code* target = Code::GetCodeFromTargetAddress(target_address);
+    if (target->kind() == Code::WASM_FUNCTION) {
+      ++count;
+      intermediate_fct = handle(target);
+    }
+  }
+  CHECK(count == 1);
+  // check the type of the imported exported function, it should be also a WASM
+  // function in our case
+  Handle<Code> imported_fct;
+  CHECK(type->value() == 0 || type->value() == 1);
+
+  Code::Kind target_kind =
+      type->value() == 0 ? Code::WASM_FUNCTION : Code::WASM_TO_JS_FUNCTION;
+  count = 0;
+  for (RelocIterator it(*intermediate_fct, mask); !it.done(); it.next()) {
+    RelocInfo* rinfo = it.rinfo();
+    Address target_address = rinfo->target_address();
+    Code* target = Code::GetCodeFromTargetAddress(target_address);
+    if (target->kind() == target_kind) {
+      ++count;
+      imported_fct = handle(target);
+    }
+  }
+  CHECK_LE(count, 1);
+  return isolate->heap()->ToBoolean(count == 1);
+}
 
 RUNTIME_FUNCTION(Runtime_NotifyContextDisposed) {
   HandleScope scope(isolate);
@@ -368,7 +446,7 @@ RUNTIME_FUNCTION(Runtime_SetFlags) {
   SealHandleScope shs(isolate);
   DCHECK(args.length() == 1);
   CONVERT_ARG_CHECKED(String, arg, 0);
-  base::SmartArrayPointer<char> flags =
+  std::unique_ptr<char[]> flags =
       arg->ToCString(DISALLOW_NULLS, ROBUST_STRING_TRAVERSAL);
   FlagList::SetFlagsFromString(flags.get(), StrLength(flags.get()));
   return isolate->heap()->undefined_value();

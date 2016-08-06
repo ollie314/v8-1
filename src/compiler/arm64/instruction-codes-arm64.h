@@ -89,8 +89,6 @@ namespace compiler {
   V(Arm64Float32Sub)               \
   V(Arm64Float32Mul)               \
   V(Arm64Float32Div)               \
-  V(Arm64Float32Max)               \
-  V(Arm64Float32Min)               \
   V(Arm64Float32Abs)               \
   V(Arm64Float32Neg)               \
   V(Arm64Float32Sqrt)              \
@@ -104,7 +102,6 @@ namespace compiler {
   V(Arm64Float64Max)               \
   V(Arm64Float64Min)               \
   V(Arm64Float64Abs)               \
-  V(Arm64Float64Log)               \
   V(Arm64Float64Neg)               \
   V(Arm64Float64Sqrt)              \
   V(Arm64Float64RoundDown)         \
@@ -115,6 +112,7 @@ namespace compiler {
   V(Arm64Float64RoundTruncate)     \
   V(Arm64Float32RoundTiesEven)     \
   V(Arm64Float64RoundTiesEven)     \
+  V(Arm64Float64SilenceNaN)        \
   V(Arm64Float32ToFloat64)         \
   V(Arm64Float64ToFloat32)         \
   V(Arm64Float32ToInt32)           \
@@ -149,6 +147,7 @@ namespace compiler {
   V(Arm64Ldrh)                     \
   V(Arm64Ldrsh)                    \
   V(Arm64Strh)                     \
+  V(Arm64Ldrsw)                    \
   V(Arm64LdrW)                     \
   V(Arm64StrW)                     \
   V(Arm64Ldr)                      \
@@ -177,7 +176,8 @@ namespace compiler {
   V(Operand2_R_UXTB)  /* %r0 UXTB (unsigned extend byte) */     \
   V(Operand2_R_UXTH)  /* %r0 UXTH (unsigned extend halfword) */ \
   V(Operand2_R_SXTB)  /* %r0 SXTB (signed extend byte) */       \
-  V(Operand2_R_SXTH)  /* %r0 SXTH (signed extend halfword) */
+  V(Operand2_R_SXTH)  /* %r0 SXTH (signed extend halfword) */   \
+  V(Operand2_R_SXTW)  /* %r0 SXTW (signed extend word) */
 
 enum ResetJSSPAfterCall { kNoResetJSSP, kResetJSSP };
 

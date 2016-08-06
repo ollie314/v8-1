@@ -18,23 +18,19 @@ namespace wasm {
 // integer entry is the negative offset of the next function name.
 // After these N+1 integer entries, the second part begins, which holds a
 // concatenation of all function names.
-//
-// Returns undefined if the array length would not fit in an integer value.
-Handle<Object> BuildFunctionNamesTable(Isolate* isolate,
-                                       const WasmModule* module) {
+Handle<ByteArray> BuildFunctionNamesTable(Isolate* isolate,
+                                          const WasmModule* module) {
   uint64_t func_names_length = 0;
   for (auto& func : module->functions) func_names_length += func.name_length;
   int num_funcs_int = static_cast<int>(module->functions.size());
   int current_offset = (num_funcs_int + 1) * kIntSize;
   uint64_t total_array_length = current_offset + func_names_length;
   int total_array_length_int = static_cast<int>(total_array_length);
-  // Check for overflow. Just skip function names if it happens.
-  if (total_array_length_int != total_array_length || num_funcs_int < 0 ||
-      num_funcs_int != module->functions.size())
-    return isolate->factory()->undefined_value();
+  // Check for overflow.
+  CHECK(total_array_length_int == total_array_length && num_funcs_int >= 0 &&
+        num_funcs_int == module->functions.size());
   Handle<ByteArray> func_names_array =
       isolate->factory()->NewByteArray(total_array_length_int, TENURED);
-  if (func_names_array.is_null()) return isolate->factory()->undefined_value();
   func_names_array->set_int(0, num_funcs_int);
   int func_index = 0;
   for (const WasmFunction& fun : module->functions) {
@@ -58,7 +54,7 @@ MaybeHandle<String> GetWasmFunctionNameFromTable(
   uint32_t num_funcs = static_cast<uint32_t>(func_names_array->get_int(0));
   DCHECK(static_cast<int>(num_funcs) >= 0);
   Factory* factory = func_names_array->GetIsolate()->factory();
-  DCHECK(func_index < num_funcs);
+  if (func_index >= num_funcs) return {};
   int offset = func_names_array->get_int(func_index + 1);
   if (offset < 0) return {};
   int next_offset = func_index == num_funcs - 1

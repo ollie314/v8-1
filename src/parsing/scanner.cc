@@ -41,8 +41,7 @@ Scanner::Scanner(UnicodeCache* unicode_cache)
       bookmark_c0_(kNoBookmark),
       octal_pos_(Location::invalid()),
       decimal_with_leading_zero_pos_(Location::invalid()),
-      found_html_comment_(false),
-      allow_harmony_exponentiation_operator_(false) {
+      found_html_comment_(false) {
   bookmark_current_.literal_chars = &bookmark_current_literal_;
   bookmark_current_.raw_literal_chars = &bookmark_current_raw_literal_;
   bookmark_next_.literal_chars = &bookmark_next_literal_;
@@ -564,7 +563,7 @@ void Scanner::Scan() {
         Advance();
         if (c0_ == '-') {
           Advance();
-          if (c0_ == '>' && has_line_terminator_before_next_) {
+          if (c0_ == '>' && HasAnyLineTerminatorBeforeNext()) {
             // For compatibility with SpiderMonkey, we skip lines that
             // start with an HTML comment end '-->'.
             token = SkipSingleLineComment();
@@ -581,7 +580,7 @@ void Scanner::Scan() {
       case '*':
         // * *=
         Advance();
-        if (c0_ == '*' && allow_harmony_exponentiation_operator()) {
+        if (c0_ == '*') {
           token = Select('=', Token::ASSIGN_EXP, Token::EXP);
         } else if (c0_ == '=') {
           token = Select(Token::ASSIGN_MUL);
@@ -839,9 +838,6 @@ uc32 Scanner::ScanOctalEscape(uc32 c, int length) {
 }
 
 
-const int kMaxAscii = 127;
-
-
 Token::Value Scanner::ScanString() {
   uc32 quote = c0_;
   Advance<false, false>();  // consume quote
@@ -858,7 +854,7 @@ Token::Value Scanner::ScanString() {
       Advance<false, false>();
       return Token::STRING;
     }
-    uc32 c = c0_;
+    char c = static_cast<char>(c0_);
     if (c == '\\') break;
     Advance<false, false>();
     AddLiteralChar(c);
@@ -1283,7 +1279,7 @@ Token::Value Scanner::ScanIdentifierOrKeyword() {
   LiteralScope literal(this);
   if (IsInRange(c0_, 'a', 'z')) {
     do {
-      uc32 first_char = c0_;
+      char first_char = static_cast<char>(c0_);
       Advance<false, false>();
       AddLiteralChar(first_char);
     } while (IsInRange(c0_, 'a', 'z'));
@@ -1291,11 +1287,11 @@ Token::Value Scanner::ScanIdentifierOrKeyword() {
     if (IsDecimalDigit(c0_) || IsInRange(c0_, 'A', 'Z') || c0_ == '_' ||
         c0_ == '$') {
       // Identifier starting with lowercase.
-      uc32 first_char = c0_;
+      char first_char = static_cast<char>(c0_);
       Advance<false, false>();
       AddLiteralChar(first_char);
       while (IsAsciiIdentifier(c0_)) {
-        uc32 first_char = c0_;
+        char first_char = static_cast<char>(c0_);
         Advance<false, false>();
         AddLiteralChar(first_char);
       }
@@ -1313,7 +1309,7 @@ Token::Value Scanner::ScanIdentifierOrKeyword() {
     HandleLeadSurrogate();
   } else if (IsInRange(c0_, 'A', 'Z') || c0_ == '_' || c0_ == '$') {
     do {
-      uc32 first_char = c0_;
+      char first_char = static_cast<char>(c0_);
       Advance<false, false>();
       AddLiteralChar(first_char);
     } while (IsAsciiIdentifier(c0_));
@@ -1456,7 +1452,6 @@ Maybe<RegExp::Flags> Scanner::ScanRegExpFlags() {
         flag = RegExp::kMultiline;
         break;
       case 'u':
-        if (!FLAG_harmony_unicode_regexps) return Nothing<RegExp::Flags>();
         flag = RegExp::kUnicode;
         break;
       case 'y':
@@ -1590,7 +1585,7 @@ int DuplicateFinder::AddSymbol(Vector<const uint8_t> key,
                                int value) {
   uint32_t hash = Hash(key, is_one_byte);
   byte* encoding = BackupKey(key, is_one_byte);
-  HashMap::Entry* entry = map_.LookupOrInsert(encoding, hash);
+  base::HashMap::Entry* entry = map_.LookupOrInsert(encoding, hash);
   int old_value = static_cast<int>(reinterpret_cast<intptr_t>(entry->value));
   entry->value =
     reinterpret_cast<void*>(static_cast<intptr_t>(value | old_value));

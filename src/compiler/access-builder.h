@@ -58,8 +58,8 @@ class AccessBuilder final : public AllStatic {
   // Provides access to JSGeneratorObject::continuation() field.
   static FieldAccess ForJSGeneratorObjectContinuation();
 
-  // Provides access to JSGeneratorObject::input() field.
-  static FieldAccess ForJSGeneratorObjectInput();
+  // Provides access to JSGeneratorObject::input_or_debug_pos() field.
+  static FieldAccess ForJSGeneratorObjectInputOrDebugPos();
 
   // Provides access to JSGeneratorObject::operand_stack() field.
   static FieldAccess ForJSGeneratorObjectOperandStack();
@@ -79,6 +79,15 @@ class AccessBuilder final : public AllStatic {
   // Provides access to JSArrayBufferView::buffer() field.
   static FieldAccess ForJSArrayBufferViewBuffer();
 
+  // Provides access to JSArrayBufferView::byteLength() field.
+  static FieldAccess ForJSArrayBufferViewByteLength();
+
+  // Provides access to JSArrayBufferView::byteOffset() field.
+  static FieldAccess ForJSArrayBufferViewByteOffset();
+
+  // Provides access to JSTypedArray::length() field.
+  static FieldAccess ForJSTypedArrayLength();
+
   // Provides access to JSDate fields.
   static FieldAccess ForJSDateField(JSDate::FieldIndex index);
 
@@ -96,6 +105,12 @@ class AccessBuilder final : public AllStatic {
 
   // Provides access to FixedArray::length() field.
   static FieldAccess ForFixedArrayLength();
+
+  // Provides access to FixedTypedArrayBase::base_pointer() field.
+  static FieldAccess ForFixedTypedArrayBaseBasePointer();
+
+  // Provides access to FixedTypedArrayBase::external_pointer() field.
+  static FieldAccess ForFixedTypedArrayBaseExternalPointer();
 
   // Provides access to DescriptorArray::enum_cache() field.
   static FieldAccess ForDescriptorArrayEnumCache();
@@ -123,6 +138,33 @@ class AccessBuilder final : public AllStatic {
 
   // Provides access to String::length() field.
   static FieldAccess ForStringLength();
+
+  // Provides access to ConsString::first() field.
+  static FieldAccess ForConsStringFirst();
+
+  // Provides access to ConsString::second() field.
+  static FieldAccess ForConsStringSecond();
+
+  // Provides access to SlicedString::offset() field.
+  static FieldAccess ForSlicedStringOffset();
+
+  // Provides access to SlicedString::parent() field.
+  static FieldAccess ForSlicedStringParent();
+
+  // Provides access to ExternalString::resource_data() field.
+  static FieldAccess ForExternalStringResourceData();
+
+  // Provides access to ExternalOneByteString characters.
+  static ElementAccess ForExternalOneByteStringCharacter();
+
+  // Provides access to ExternalTwoByteString characters.
+  static ElementAccess ForExternalTwoByteStringCharacter();
+
+  // Provides access to SeqOneByteString characters.
+  static ElementAccess ForSeqOneByteStringCharacter();
+
+  // Provides access to SeqTwoByteString characters.
+  static ElementAccess ForSeqTwoByteStringCharacter();
 
   // Provides access to JSGlobalObject::global_proxy() field.
   static FieldAccess ForJSGlobalObjectGlobalProxy();

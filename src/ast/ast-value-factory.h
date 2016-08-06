@@ -29,7 +29,7 @@
 #define V8_AST_AST_VALUE_FACTORY_H_
 
 #include "src/api.h"
-#include "src/hashmap.h"
+#include "src/base/hashmap.h"
 #include "src/utils.h"
 
 // AstString, AstValue and AstValueFactory are for storing strings and values
@@ -146,10 +146,8 @@ class AstValue : public ZoneObject {
   bool ContainsDot() const { return type_ == NUMBER_WITH_DOT; }
 
   const AstRawString* AsString() const {
-    if (type_ == STRING)
-      return string_;
-    UNREACHABLE();
-    return 0;
+    CHECK_EQ(STRING, type_);
+    return string_;
   }
 
   double AsNumber() const {
@@ -161,6 +159,11 @@ class AstValue : public ZoneObject {
     return 0;
   }
 
+  Smi* AsSmi() const {
+    CHECK_EQ(SMI, type_);
+    return Smi::FromInt(smi_);
+  }
+
   bool EqualsString(const AstRawString* string) const {
     return type_ == STRING && string_ == string;
   }
@@ -169,7 +172,12 @@ class AstValue : public ZoneObject {
 
   bool BooleanValue() const;
 
+  bool IsSmi() const { return type_ == SMI; }
+  bool IsFalse() const { return type_ == BOOLEAN && !bool_; }
+  bool IsTrue() const { return type_ == BOOLEAN && bool_; }
+  bool IsUndefined() const { return type_ == UNDEFINED; }
   bool IsTheHole() const { return type_ == THE_HOLE; }
+  bool IsNull() const { return type_ == NULL_TYPE; }
 
   void Internalize(Isolate* isolate);
 
@@ -204,10 +212,17 @@ class AstValue : public ZoneObject {
   explicit AstValue(double n, bool with_dot) {
     if (with_dot) {
       type_ = NUMBER_WITH_DOT;
+      number_ = n;
     } else {
-      type_ = NUMBER;
+      int int_value;
+      if (DoubleToSmiInteger(n, &int_value)) {
+        type_ = SMI;
+        smi_ = int_value;
+      } else {
+        type_ = NUMBER;
+        number_ = n;
+      }
     }
-    number_ = n;
   }
 
   AstValue(Type t, int i) : type_(t) {
@@ -265,9 +280,9 @@ class AstValue : public ZoneObject {
   F(next, "next")                               \
   F(proto, "__proto__")                         \
   F(prototype, "prototype")                     \
-  F(rest_parameter, ".rest_parameter")          \
   F(return, "return")                           \
   F(set_space, "set ")                          \
+  F(star_default_star, "*default*")             \
   F(this, "this")                               \
   F(this_function, ".this_function")            \
   F(throw, "throw")                             \
@@ -352,7 +367,7 @@ class AstValueFactory {
   static bool AstRawStringCompare(void* a, void* b);
 
   // All strings are copied here, one after another (no NULLs inbetween).
-  HashMap string_table_;
+  base::HashMap string_table_;
   // For keeping track of all AstValues and AstRawStrings we've created (so that
   // they can be internalized later).
   List<AstValue*> values_;

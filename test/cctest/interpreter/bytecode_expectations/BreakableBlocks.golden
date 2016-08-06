@@ -19,13 +19,12 @@ snippet: "
 "
 frame size: 1
 parameter count: 1
-bytecode array length: 15
+bytecode array length: 14
 bytecodes: [
   /*   30 E> */ B(StackCheck),
   /*   42 S> */ B(LdaZero),
                 B(Star), R(0),
-  /*   56 S> */ B(LdaSmi), U8(1),
-                B(Add), R(0),
+  /*   56 S> */ B(AddSmi), U8(1), R(0),
                 B(Star), R(0),
   /*   69 S> */ B(Jump), U8(2),
   /*   97 S> */ B(Ldar), R(0),
@@ -51,29 +50,28 @@ snippet: "
 "
 frame size: 5
 parameter count: 1
-bytecode array length: 61
+bytecode array length: 60
 bytecodes: [
   /*   30 E> */ B(StackCheck),
   /*   44 S> */ B(LdaZero),
                 B(Star), R(0),
   /*   71 S> */ B(LdaZero),
-  /*   71 E> */ B(Star), R(1),
+                B(Star), R(1),
   /*   76 S> */ B(LdaSmi), U8(10),
   /*   76 E> */ B(TestLessThan), R(1),
-                B(JumpIfFalse), U8(47),
+                B(JumpIfFalse), U8(46),
   /*   58 E> */ B(StackCheck),
   /*  106 S> */ B(LdaZero),
-  /*  106 E> */ B(Star), R(2),
+                B(Star), R(2),
   /*  111 S> */ B(LdaSmi), U8(3),
   /*  111 E> */ B(TestLessThan), R(2),
-                B(JumpIfFalse), U8(30),
+                B(JumpIfFalse), U8(29),
   /*   93 E> */ B(StackCheck),
   /*  129 S> */ B(Ldar), R(0),
                 B(Inc),
                 B(Star), R(0),
-  /*  142 S> */ B(Nop),
-  /*  150 E> */ B(Ldar), R(2),
-                B(Add), R(1),
+  /*  142 S> */ B(Ldar), R(2),
+  /*  150 E> */ B(Add), R(1),
                 B(Star), R(4),
                 B(LdaSmi), U8(12),
   /*  152 E> */ B(TestEqual), R(4),
@@ -81,12 +79,12 @@ bytecodes: [
   /*  161 S> */ B(Jump), U8(16),
   /*  118 S> */ B(Ldar), R(2),
                 B(Inc),
-  /*  118 E> */ B(Star), R(2),
-                B(Jump), U8(-32),
+                B(Star), R(2),
+                B(Jump), U8(-31),
   /*   84 S> */ B(Ldar), R(1),
                 B(Inc),
-  /*   84 E> */ B(Star), R(1),
-                B(Jump), U8(-49),
+                B(Star), R(1),
+                B(Jump), U8(-48),
   /*  188 S> */ B(Ldar), R(0),
   /*  200 S> */ B(Return),
 ]
@@ -105,7 +103,7 @@ snippet: "
 "
 frame size: 5
 parameter count: 1
-bytecode array length: 50
+bytecode array length: 40
 bytecodes: [
   /*   30 E> */ B(StackCheck),
                 B(LdaConstant), U8(0),
@@ -115,16 +113,12 @@ bytecodes: [
                 B(PushContext), R(2),
                 B(LdaTheHole),
                 B(StaContextSlot), R(context), U8(4),
-                B(CreateClosure), U8(1), U8(0),
+                B(CreateClosure), U8(1), U8(2),
                 B(Star), R(0),
   /*   53 S> */ B(LdaSmi), U8(10),
   /*   53 E> */ B(StaContextSlot), R(context), U8(4),
+                B(Mov), R(0), R(1),
                 B(Ldar), R(0),
-                B(JumpIfNotHole), U8(11),
-                B(LdaConstant), U8(2),
-                B(Star), R(3),
-                B(CallRuntime), U16(Runtime::kThrowReferenceError), R(3), U8(1),
-                B(Star), R(1),
   /*   88 S> */ B(Jump), U8(2),
                 B(PopContext), R(2),
                 B(LdaUndefined),
@@ -133,7 +127,6 @@ bytecodes: [
 constant pool: [
   InstanceType::FIXED_ARRAY_TYPE,
   InstanceType::SHARED_FUNCTION_INFO_TYPE,
-  InstanceType::ONE_BYTE_INTERNALIZED_STRING_TYPE,
 ]
 handlers: [
 ]
@@ -153,9 +146,9 @@ snippet: "
 "
 frame size: 6
 parameter count: 1
-bytecode array length: 130
+bytecode array length: 115
 bytecodes: [
-                B(CallRuntime), U16(Runtime::kNewFunctionContext), R(closure), U8(1),
+                B(CreateFunctionContext), U8(1),
                 B(PushContext), R(2),
                 B(LdaTheHole),
                 B(StaContextSlot), R(context), U8(4),
@@ -169,39 +162,34 @@ bytecodes: [
                 B(PushContext), R(3),
                 B(LdaTheHole),
                 B(StaContextSlot), R(context), U8(4),
-                B(CreateClosure), U8(1), U8(0),
+                B(CreateClosure), U8(1), U8(2),
                 B(Star), R(0),
   /*   76 S> */ B(LdaSmi), U8(2),
   /*   76 E> */ B(StaContextSlot), R(context), U8(4),
-                B(Ldar), R(0),
-                B(JumpIfNotHole), U8(11),
-                B(LdaConstant), U8(2),
-                B(Star), R(4),
-                B(CallRuntime), U16(Runtime::kThrowReferenceError), R(4), U8(1),
-                B(Star), R(1),
+                B(Mov), R(0), R(1),
   /*  118 S> */ B(LdaContextSlot), R(context), U8(4),
                 B(JumpIfNotHole), U8(11),
-                B(LdaConstant), U8(3),
+                B(LdaConstant), U8(2),
                 B(Star), R(4),
                 B(CallRuntime), U16(Runtime::kThrowReferenceError), R(4), U8(1),
                 B(JumpIfToBooleanFalse), U8(6),
   /*  125 S> */ B(PopContext), R(3),
                 B(Jump), U8(27),
   /*  142 S> */ B(LdaSmi), U8(3),
-  /*  144 E> */ B(Star), R(4),
-                B(LdaContextSlot), R(context), U8(4),
+                B(Star), R(4),
+  /*  144 E> */ B(LdaContextSlot), R(context), U8(4),
                 B(JumpIfNotHole), U8(11),
-                B(LdaConstant), U8(3),
+                B(LdaConstant), U8(2),
                 B(Star), R(5),
                 B(CallRuntime), U16(Runtime::kThrowReferenceError), R(5), U8(1),
                 B(Ldar), R(4),
                 B(StaContextSlot), R(context), U8(4),
                 B(PopContext), R(3),
   /*  155 S> */ B(LdaSmi), U8(4),
-  /*  157 E> */ B(Star), R(4),
-                B(LdaContextSlot), R(context), U8(4),
+                B(Star), R(4),
+  /*  157 E> */ B(LdaContextSlot), R(context), U8(4),
                 B(JumpIfNotHole), U8(11),
-                B(LdaConstant), U8(4),
+                B(LdaConstant), U8(3),
                 B(Star), R(5),
                 B(CallRuntime), U16(Runtime::kThrowReferenceError), R(5), U8(1),
                 B(Ldar), R(4),
@@ -212,7 +200,6 @@ bytecodes: [
 constant pool: [
   InstanceType::FIXED_ARRAY_TYPE,
   InstanceType::SHARED_FUNCTION_INFO_TYPE,
-  InstanceType::ONE_BYTE_INTERNALIZED_STRING_TYPE,
   InstanceType::ONE_BYTE_INTERNALIZED_STRING_TYPE,
   InstanceType::ONE_BYTE_INTERNALIZED_STRING_TYPE,
 ]

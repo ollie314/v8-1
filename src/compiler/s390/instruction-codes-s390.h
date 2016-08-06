@@ -12,11 +12,12 @@ namespace compiler {
 // S390-specific opcodes that specify which assembly sequence to emit.
 // Most opcodes specify a single instruction.
 #define TARGET_ARCH_OPCODE_LIST(V) \
-  V(S390_And)                      \
-  V(S390_AndComplement)            \
-  V(S390_Or)                       \
-  V(S390_OrComplement)             \
-  V(S390_Xor)                      \
+  V(S390_And32)                    \
+  V(S390_And64)                    \
+  V(S390_Or32)                     \
+  V(S390_Or64)                     \
+  V(S390_Xor32)                    \
+  V(S390_Xor64)                    \
   V(S390_ShiftLeft32)              \
   V(S390_ShiftLeft64)              \
   V(S390_ShiftLeftPair)            \
@@ -28,7 +29,8 @@ namespace compiler {
   V(S390_ShiftRightArithPair)      \
   V(S390_RotRight32)               \
   V(S390_RotRight64)               \
-  V(S390_Not)                      \
+  V(S390_Not32)                    \
+  V(S390_Not64)                    \
   V(S390_RotLeftAndMask32)         \
   V(S390_RotLeftAndClear64)        \
   V(S390_RotLeftAndClearLeft64)    \
@@ -45,6 +47,7 @@ namespace compiler {
   V(S390_SubPair)                  \
   V(S390_MulPair)                  \
   V(S390_Mul32)                    \
+  V(S390_Mul32WithHigh32)          \
   V(S390_Mul64)                    \
   V(S390_MulHigh32)                \
   V(S390_MulHighU32)               \
@@ -61,7 +64,6 @@ namespace compiler {
   V(S390_ModU32)                   \
   V(S390_ModU64)                   \
   V(S390_ModDouble)                \
-  V(S390_LogDouble)                \
   V(S390_Neg)                      \
   V(S390_NegDouble)                \
   V(S390_SqrtFloat)                \
@@ -108,6 +110,7 @@ namespace compiler {
   V(S390_Float32ToInt32)           \
   V(S390_Float32ToUint32)          \
   V(S390_Float32ToDouble)          \
+  V(S390_Float64SilenceNaN)        \
   V(S390_DoubleToInt32)            \
   V(S390_DoubleToUint32)           \
   V(S390_DoubleToInt64)            \
@@ -128,6 +131,12 @@ namespace compiler {
   V(S390_LoadWordU16)              \
   V(S390_LoadWordS32)              \
   V(S390_LoadWordU32)              \
+  V(S390_LoadReverse16RR)          \
+  V(S390_LoadReverse32RR)          \
+  V(S390_LoadReverse64RR)          \
+  V(S390_LoadReverse16)            \
+  V(S390_LoadReverse32)            \
+  V(S390_LoadReverse64)            \
   V(S390_LoadWord64)               \
   V(S390_LoadFloat32)              \
   V(S390_LoadDouble)               \
@@ -135,6 +144,9 @@ namespace compiler {
   V(S390_StoreWord16)              \
   V(S390_StoreWord32)              \
   V(S390_StoreWord64)              \
+  V(S390_StoreReverse16)           \
+  V(S390_StoreReverse32)           \
+  V(S390_StoreReverse64)           \
   V(S390_StoreFloat32)             \
   V(S390_StoreDouble)
 

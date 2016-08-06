@@ -9,6 +9,7 @@
 #include "src/base/platform/platform.h"
 #include "src/isolate.h"
 #include "src/log-inl.h"
+#include "src/log.h"
 
 namespace v8 {
 namespace internal {
@@ -211,7 +212,10 @@ class RuntimeCallStatEntries {
     Entry("Total", total_time, total_call_count).Print(os);
   }
 
-  void Add(RuntimeCallCounter* counter) {
+  // By default, the compiler will usually inline this, which results in a large
+  // binary size increase: std::vector::push_back expands to a large amount of
+  // instructions, and this function is invoked repeatedly by macros.
+  V8_NOINLINE void Add(RuntimeCallCounter* counter) {
     if (counter->count == 0) return;
     entries.push_back(Entry(counter->name, counter->time, counter->count));
     total_time += counter->time;
@@ -272,6 +276,11 @@ void RuntimeCallCounter::Reset() {
   time = base::TimeDelta();
 }
 
+void RuntimeCallCounter::Dump(std::stringstream& out) {
+  out << "\"" << name << "\":[" << count << "," << time.InMicroseconds()
+      << "],";
+}
+
 // static
 void RuntimeCallStats::Enter(Isolate* isolate, RuntimeCallTimer* timer,
                              CounterId counter_id) {
@@ -284,8 +293,17 @@ void RuntimeCallStats::Enter(Isolate* isolate, RuntimeCallTimer* timer,
 // static
 void RuntimeCallStats::Leave(Isolate* isolate, RuntimeCallTimer* timer) {
   RuntimeCallStats* stats = isolate->counters()->runtime_call_stats();
-  DCHECK_EQ(stats->current_timer_, timer);
-  stats->current_timer_ = timer->Stop();
+
+  if (stats->current_timer_ == timer) {
+    stats->current_timer_ = timer->Stop();
+  } else {
+    // Must be a Threading cctest. Walk the chain of Timers to find the
+    // buried one that's leaving. We don't care about keeping nested timings
+    // accurate, just avoid crashing by keeping the chain intact.
+    RuntimeCallTimer* next = stats->current_timer_;
+    while (next->parent_ != timer) next = next->parent_;
+    next->parent_ = timer->Stop();
+  }
 }
 
 // static
@@ -308,7 +326,7 @@ void RuntimeCallStats::Print(std::ostream& os) {
   FOR_EACH_INTRINSIC(PRINT_COUNTER)
 #undef PRINT_COUNTER
 
-#define PRINT_COUNTER(name, type) entries.Add(&this->Builtin_##name);
+#define PRINT_COUNTER(name) entries.Add(&this->Builtin_##name);
   BUILTIN_LIST_C(PRINT_COUNTER)
 #undef PRINT_COUNTER
 
@@ -333,7 +351,7 @@ void RuntimeCallStats::Reset() {
   FOR_EACH_INTRINSIC(RESET_COUNTER)
 #undef RESET_COUNTER
 
-#define RESET_COUNTER(name, type) this->Builtin_##name.Reset();
+#define RESET_COUNTER(name) this->Builtin_##name.Reset();
   BUILTIN_LIST_C(RESET_COUNTER)
 #undef RESET_COUNTER
 

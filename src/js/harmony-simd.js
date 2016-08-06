@@ -62,7 +62,7 @@ function NAMECheckJS(a) {
 }
 
 function NAMEToString() {
-  var value = %_ValueOf(this);
+  var value = %ValueOf(this);
   if (typeof(value) !== 'TYPE') {
     throw MakeTypeError(kIncompatibleMethodReceiver,
                         "NAME.prototype.toString", this);
@@ -76,7 +76,7 @@ function NAMEToString() {
 }
 
 function NAMEToLocaleString() {
-  var value = %_ValueOf(this);
+  var value = %ValueOf(this);
   if (typeof(value) !== 'TYPE') {
     throw MakeTypeError(kIncompatibleMethodReceiver,
                         "NAME.prototype.toLocaleString", this);
@@ -90,7 +90,7 @@ function NAMEToLocaleString() {
 }
 
 function NAMEValueOf() {
-  var value = %_ValueOf(this);
+  var value = %ValueOf(this);
   if (typeof(value) !== 'TYPE') {
     throw MakeTypeError(kIncompatibleMethodReceiver,
                         "NAME.prototype.valueOf", this);
@@ -924,18 +924,5 @@ utils.InstallFunctions(GlobalBool8x16, DONT_ENUM, [
   'swizzle', Bool8x16SwizzleJS,
   'shuffle', Bool8x16ShuffleJS,
 ]);
-
-utils.Export(function(to) {
-  to.Float32x4ToString = Float32x4ToString;
-  to.Int32x4ToString = Int32x4ToString;
-  to.Uint32x4ToString = Uint32x4ToString;
-  to.Bool32x4ToString = Bool32x4ToString;
-  to.Int16x8ToString = Int16x8ToString;
-  to.Uint16x8ToString = Uint16x8ToString;
-  to.Bool16x8ToString = Bool16x8ToString;
-  to.Int8x16ToString = Int8x16ToString;
-  to.Uint8x16ToString = Uint8x16ToString;
-  to.Bool8x16ToString = Bool8x16ToString;
-});
 
 })

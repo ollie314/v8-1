@@ -8,16 +8,16 @@
 #define V8_PARSING_SCANNER_H_
 
 #include "src/allocation.h"
+#include "src/base/hashmap.h"
 #include "src/base/logging.h"
 #include "src/char-predicates.h"
 #include "src/collector.h"
 #include "src/globals.h"
-#include "src/hashmap.h"
 #include "src/list.h"
 #include "src/messages.h"
 #include "src/parsing/token.h"
-#include "src/unicode.h"
 #include "src/unicode-decoder.h"
+#include "src/unicode.h"
 
 namespace v8 {
 namespace internal {
@@ -143,14 +143,15 @@ class DuplicateFinder {
   UnicodeCache* unicode_constants_;
   // Backing store used to store strings used as hashmap keys.
   SequenceCollector<unsigned char> backing_store_;
-  HashMap map_;
+  base::HashMap map_;
   // Buffer used for string->number->canonical string conversions.
   char number_buffer_[kBufferSize];
 };
 
-
 // ----------------------------------------------------------------------------
 // LiteralBuffer -  Collector of chars of literals.
+
+const int kMaxAscii = 127;
 
 class LiteralBuffer {
  public:
@@ -158,7 +159,16 @@ class LiteralBuffer {
 
   ~LiteralBuffer() { backing_store_.Dispose(); }
 
-  INLINE(void AddChar(uint32_t code_unit)) {
+  INLINE(void AddChar(char code_unit)) {
+    if (position_ >= backing_store_.length()) ExpandBuffer();
+    DCHECK(is_one_byte_);
+    DCHECK(IsValidAscii(code_unit));
+    backing_store_[position_] = static_cast<byte>(code_unit);
+    position_ += kOneByteSize;
+    return;
+  }
+
+  INLINE(void AddChar(uc32 code_unit)) {
     if (position_ >= backing_store_.length()) ExpandBuffer();
     if (is_one_byte_) {
       if (code_unit <= unibrow::Latin1::kMaxChar) {
@@ -241,6 +251,15 @@ class LiteralBuffer {
   static const int kGrowthFactory = 4;
   static const int kMinConversionSlack = 256;
   static const int kMaxGrowth = 1 * MB;
+
+  inline bool IsValidAscii(char code_unit) {
+    // Control characters and printable characters span the range of
+    // valid ASCII characters (0-127). Chars are unsigned on some
+    // platforms which causes compiler warnings if the validity check
+    // tests the lower bound >= 0 as it's always true.
+    return iscntrl(code_unit) || isprint(code_unit);
+  }
+
   inline int NewCapacity(int min_capacity) {
     int capacity = Max(min_capacity, backing_store_.length());
     int new_capacity = Min(capacity * kGrowthFactory, capacity + kMaxGrowth);
@@ -474,12 +493,6 @@ class Scanner {
 
   bool FoundHtmlComment() const { return found_html_comment_; }
 
-#define DECLARE_ACCESSORS(name)                                \
-  inline bool allow_##name() const { return allow_##name##_; } \
-  inline void set_allow_##name(bool allow) { allow_##name##_ = allow; }
-  DECLARE_ACCESSORS(harmony_exponentiation_operator)
-#undef ACCESSOR
-
  private:
   // The current and look-ahead token.
   struct TokenDesc {
@@ -553,6 +566,11 @@ class Scanner {
   }
 
   INLINE(void AddLiteralChar(uc32 c)) {
+    DCHECK_NOT_NULL(next_.literal_chars);
+    next_.literal_chars->AddChar(c);
+  }
+
+  INLINE(void AddLiteralChar(char c)) {
     DCHECK_NOT_NULL(next_.literal_chars);
     next_.literal_chars->AddChar(c);
   }
@@ -803,8 +821,6 @@ class Scanner {
 
   // Whether this scanner encountered an HTML comment.
   bool found_html_comment_;
-
-  bool allow_harmony_exponentiation_operator_;
 
   MessageTemplate::Template scanner_error_;
   Location scanner_error_location_;

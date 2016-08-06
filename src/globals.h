@@ -151,6 +151,9 @@ const bool kRequiresCodeRange = true;
 // region. Used only for large object space.
 const size_t kMaximalCodeRangeSize = 256 * MB;
 const size_t kCodeRangeAreaAlignment = 256 * MB;
+#elif V8_HOST_ARCH_PPC && V8_TARGET_ARCH_PPC && V8_OS_LINUX
+const size_t kMaximalCodeRangeSize = 512 * MB;
+const size_t kCodeRangeAreaAlignment = 64 * KB;  // OS page on PPC Linux
 #else
 const size_t kMaximalCodeRangeSize = 512 * MB;
 const size_t kCodeRangeAreaAlignment = 4 * KB;  // OS page.
@@ -158,6 +161,10 @@ const size_t kCodeRangeAreaAlignment = 4 * KB;  // OS page.
 #if V8_OS_WIN
 const size_t kMinimumCodeRangeSize = 4 * MB;
 const size_t kReservedCodeRangePages = 1;
+// On PPC Linux PageSize is 4MB
+#elif V8_HOST_ARCH_PPC && V8_TARGET_ARCH_PPC && V8_OS_LINUX
+const size_t kMinimumCodeRangeSize = 12 * MB;
+const size_t kReservedCodeRangePages = 0;
 #else
 const size_t kMinimumCodeRangeSize = 3 * MB;
 const size_t kReservedCodeRangePages = 0;
@@ -171,16 +178,24 @@ const uintptr_t kUintptrAllBitsSet = 0xFFFFFFFFu;
 const bool kRequiresCodeRange = true;
 const size_t kMaximalCodeRangeSize = 256 * MB;
 const size_t kMinimumCodeRangeSize = 3 * MB;
-const size_t kReservedCodeRangePages = 0;
 const size_t kCodeRangeAreaAlignment = 4 * KB;  // OS page.
+#elif V8_HOST_ARCH_PPC && V8_TARGET_ARCH_PPC && V8_OS_LINUX
+const bool kRequiresCodeRange = false;
+const size_t kMaximalCodeRangeSize = 0 * MB;
+const size_t kMinimumCodeRangeSize = 0 * MB;
+const size_t kCodeRangeAreaAlignment = 64 * KB;  // OS page on PPC Linux
 #else
 const bool kRequiresCodeRange = false;
 const size_t kMaximalCodeRangeSize = 0 * MB;
 const size_t kMinimumCodeRangeSize = 0 * MB;
-const size_t kReservedCodeRangePages = 0;
 const size_t kCodeRangeAreaAlignment = 4 * KB;  // OS page.
 #endif
+const size_t kReservedCodeRangePages = 0;
 #endif
+
+// The external allocation limit should be below 256 MB on all architectures
+// to avoid that resource-constrained embedders run low on memory.
+const int kExternalAllocationLimit = 192 * 1024 * 1024;
 
 STATIC_ASSERT(kPointerSize == (1 << kPointerSizeLog2));
 
@@ -289,6 +304,11 @@ inline LanguageMode construct_language_mode(bool strict_bit) {
   return static_cast<LanguageMode>(strict_bit);
 }
 
+// This constant is used as an undefined value when passing source positions.
+const int kNoSourcePosition = -1;
+
+// This constant is used to indicate missing deoptimization information.
+const int kNoDeoptimizationId = -1;
 
 // Mask for the sign bit in a smi.
 const intptr_t kSmiSignMask = kIntptrSignBit;
@@ -409,6 +429,7 @@ class OldSpace;
 class ParameterCount;
 class Foreign;
 class Scope;
+class DeclarationScope;
 class ScopeInfo;
 class Script;
 class Smi;
@@ -455,6 +476,26 @@ enum AllocationAlignment {
   kDoubleUnaligned,
   kSimd128Unaligned
 };
+
+// Possible outcomes for decisions.
+enum class Decision : uint8_t { kUnknown, kTrue, kFalse };
+
+inline size_t hash_value(Decision decision) {
+  return static_cast<uint8_t>(decision);
+}
+
+inline std::ostream& operator<<(std::ostream& os, Decision decision) {
+  switch (decision) {
+    case Decision::kUnknown:
+      return os << "Unknown";
+    case Decision::kTrue:
+      return os << "True";
+    case Decision::kFalse:
+      return os << "False";
+  }
+  UNREACHABLE();
+  return os;
+}
 
 // Supported write barrier modes.
 enum WriteBarrierKind : uint8_t {
@@ -553,6 +594,8 @@ struct CodeDesc {
   int instr_size;
   int reloc_size;
   int constant_pool_size;
+  byte* unwinding_info;
+  int unwinding_info_size;
   Assembler* origin;
 };
 
@@ -584,8 +627,6 @@ enum InlineCacheState {
   MEGAMORPHIC,
   // A generic handler is installed and no extra typefeedback is recorded.
   GENERIC,
-  // Special state for debug break or step in prepare stubs.
-  DEBUG_STUB
 };
 
 enum CacheHolderFlag {
@@ -608,18 +649,6 @@ typedef enum {
 typedef void (*StoreBufferCallback)(Heap* heap,
                                     MemoryChunk* page,
                                     StoreBufferEvent event);
-
-
-// Union used for fast testing of specific double values.
-union DoubleRepresentation {
-  double  value;
-  int64_t bits;
-  DoubleRepresentation(double x) { value = x; }
-  bool operator==(const DoubleRepresentation& other) const {
-    return bits == other.bits;
-  }
-};
-
 
 // Union used for customized checking of the IEEE double types
 // inlined within v8 runtime, rather than going to the underlying
@@ -707,7 +736,6 @@ enum CpuFeature {
   ARMv7,
   ARMv8,
   SUDIV,
-  UNALIGNED_ACCESSES,
   MOVW_MOVT_IMMEDIATE_LOADS,
   VFP32DREGS,
   NEON,
@@ -727,6 +755,9 @@ enum CpuFeature {
   DISTINCT_OPS,
   GENERAL_INSTR_EXT,
   FLOATING_POINT_EXT,
+  // PPC/S390
+  UNALIGNED_ACCESSES,
+
   NUMBER_OF_CPU_FEATURES
 };
 
@@ -769,6 +800,14 @@ inline std::ostream& operator<<(std::ostream& os, TailCallMode mode) {
   UNREACHABLE();
   return os;
 }
+
+// Valid hints for the abstract operation OrdinaryToPrimitive,
+// implemented according to ES6, section 7.1.1.
+enum class OrdinaryToPrimitiveHint { kNumber, kString };
+
+// Valid hints for the abstract operation ToPrimitive,
+// implemented according to ES6, section 7.1.1.
+enum class ToPrimitiveHint { kDefault, kNumber, kString };
 
 // Defines specifics about arguments object or rest parameter creation.
 enum class CreateArgumentsType : uint8_t {
@@ -818,8 +857,10 @@ enum ScopeType {
 // Use mips sNaN which is a not used qNaN in x87 port as sNaN to workaround this
 // issue
 // for some test cases.
-#if (V8_TARGET_ARCH_MIPS && !defined(_MIPS_ARCH_MIPS32R6)) ||   \
-    (V8_TARGET_ARCH_MIPS64 && !defined(_MIPS_ARCH_MIPS64R6)) || \
+#if (V8_TARGET_ARCH_MIPS && !defined(_MIPS_ARCH_MIPS32R6) &&           \
+     (!defined(USE_SIMULATOR) || !defined(_MIPS_TARGET_SIMULATOR))) || \
+    (V8_TARGET_ARCH_MIPS64 && !defined(_MIPS_ARCH_MIPS64R6) &&         \
+     (!defined(USE_SIMULATOR) || !defined(_MIPS_TARGET_SIMULATOR))) || \
     (V8_TARGET_ARCH_X87)
 const uint32_t kHoleNanUpper32 = 0xFFFF7FFF;
 const uint32_t kHoleNanLower32 = 0xFFFF7FFF;
@@ -844,6 +885,9 @@ enum VariableMode {
   CONST_LEGACY,  // declared via legacy 'const' declarations
 
   LET,  // declared via 'let' declarations (first lexical)
+
+  // TODO(neis): Is it correct to make this one of the lexical modes?
+  IMPORT,  // declared via 'import' declarations (except namespace imports)
 
   CONST,  // declared via 'const' declarations (last lexical)
 
@@ -880,7 +924,7 @@ inline bool IsLexicalVariableMode(VariableMode mode) {
 
 
 inline bool IsImmutableVariableMode(VariableMode mode) {
-  return mode == CONST || mode == CONST_LEGACY;
+  return mode == CONST || mode == CONST_LEGACY || mode == IMPORT;
 }
 
 
@@ -970,7 +1014,7 @@ enum MinusZeroMode {
 
 enum Signedness { kSigned, kUnsigned };
 
-enum FunctionKind {
+enum FunctionKind : uint16_t {
   kNormalFunction = 0,
   kArrowFunction = 1 << 0,
   kGeneratorFunction = 1 << 1,
@@ -1024,6 +1068,10 @@ inline bool IsGeneratorFunction(FunctionKind kind) {
 inline bool IsAsyncFunction(FunctionKind kind) {
   DCHECK(IsValidFunctionKind(kind));
   return kind & FunctionKind::kAsyncFunction;
+}
+
+inline bool IsResumableFunction(FunctionKind kind) {
+  return IsGeneratorFunction(kind) || IsAsyncFunction(kind);
 }
 
 inline bool IsConciseMethod(FunctionKind kind) {
@@ -1080,6 +1128,20 @@ inline bool IsConstructable(FunctionKind kind, LanguageMode mode) {
   return true;
 }
 
+enum class CallableType : unsigned { kJSFunction, kAny };
+
+inline size_t hash_value(CallableType type) { return bit_cast<unsigned>(type); }
+
+inline std::ostream& operator<<(std::ostream& os, CallableType function_type) {
+  switch (function_type) {
+    case CallableType::kJSFunction:
+      return os << "JSFunction";
+    case CallableType::kAny:
+      return os << "Any";
+  }
+  UNREACHABLE();
+  return os;
+}
 
 inline uint32_t ObjectHash(Address address) {
   // All objects are at least pointer aligned, so we can remove the trailing

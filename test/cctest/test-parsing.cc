@@ -29,6 +29,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <memory>
+
 #include "src/v8.h"
 
 #include "src/ast/ast.h"
@@ -120,15 +122,32 @@ TEST(ScanHTMLEndComments) {
   // whitespace, even a multiline-comment containing a newline).
   // This was not the case if it occurred before the first real token
   // in the input.
+  // clang-format off
   const char* tests[] = {
       // Before first real token.
+      "-->",
+      "--> is eol-comment",
       "--> is eol-comment\nvar y = 37;\n",
       "\n --> is eol-comment\nvar y = 37;\n",
+      "\n-->is eol-comment\nvar y = 37;\n",
+      "\n-->\nvar y = 37;\n",
       "/* precomment */ --> is eol-comment\nvar y = 37;\n",
+      "/* precomment */-->eol-comment\nvar y = 37;\n",
       "\n/* precomment */ --> is eol-comment\nvar y = 37;\n",
+      "\n/*precomment*/-->eol-comment\nvar y = 37;\n",
       // After first real token.
       "var x = 42;\n--> is eol-comment\nvar y = 37;\n",
       "var x = 42;\n/* precomment */ --> is eol-comment\nvar y = 37;\n",
+      "x/* precomment\n */ --> is eol-comment\nvar y = 37;\n",
+      "var x = 42; /* precomment\n */ --> is eol-comment\nvar y = 37;\n",
+      "var x = 42;/*\n*/-->is eol-comment\nvar y = 37;\n",
+      // With multiple comments preceding HTMLEndComment
+      "/* MLC \n */ /* SLDC */ --> is eol-comment\nvar y = 37;\n",
+      "/* MLC \n */ /* SLDC1 */ /* SLDC2 */ --> is eol-comment\nvar y = 37;\n",
+      "/* MLC1 \n */ /* MLC2 \n */ --> is eol-comment\nvar y = 37;\n",
+      "/* SLDC */ /* MLC \n */ --> is eol-comment\nvar y = 37;\n",
+      "/* MLC1 \n */ /* SLDC1 */ /* MLC2 \n */ /* SLDC2 */ --> is eol-comment\n"
+          "var y = 37;\n",
       NULL
   };
 
@@ -136,11 +155,10 @@ TEST(ScanHTMLEndComments) {
       "x --> is eol-comment\nvar y = 37;\n",
       "\"\\n\" --> is eol-comment\nvar y = 37;\n",
       "x/* precomment */ --> is eol-comment\nvar y = 37;\n",
-      "x/* precomment\n */ --> is eol-comment\nvar y = 37;\n",
       "var x = 42; --> is eol-comment\nvar y = 37;\n",
-      "var x = 42; /* precomment\n */ --> is eol-comment\nvar y = 37;\n",
       NULL
   };
+  // clang-format on
 
   // Parser/Scanner needs a stack limit.
   CcTest::i_isolate()->stack_guard()->SetStackLimit(
@@ -512,8 +530,7 @@ TEST(PreParseOverflow) {
       i::GetCurrentStackPosition() - 128 * 1024);
 
   size_t kProgramSize = 1024 * 1024;
-  v8::base::SmartArrayPointer<char> program(
-      i::NewArray<char>(kProgramSize + 1));
+  std::unique_ptr<char[]> program(i::NewArray<char>(kProgramSize + 1));
   memset(program.get(), '(', kProgramSize);
   program[kProgramSize] = '\0';
 
@@ -566,7 +583,7 @@ void TestCharacterStream(const char* one_byte_source, unsigned length,
   i::Isolate* isolate = CcTest::i_isolate();
   i::Factory* factory = isolate->factory();
   i::HandleScope test_scope(isolate);
-  v8::base::SmartArrayPointer<i::uc16> uc16_buffer(new i::uc16[length]);
+  std::unique_ptr<i::uc16[]> uc16_buffer(new i::uc16[length]);
   for (unsigned i = 0; i < length; i++) {
     uc16_buffer[i] = static_cast<i::uc16>(one_byte_source[i]);
   }
@@ -577,9 +594,16 @@ void TestCharacterStream(const char* one_byte_source, unsigned length,
   TestExternalResource resource(uc16_buffer.get(), length);
   i::Handle<i::String> uc16_string(
       factory->NewExternalStringFromTwoByte(&resource).ToHandleChecked());
+  ScriptResource one_byte_resource(one_byte_source, length);
+  i::Handle<i::String> ext_one_byte_string(
+      factory->NewExternalStringFromOneByte(&one_byte_resource)
+          .ToHandleChecked());
 
   i::ExternalTwoByteStringUtf16CharacterStream uc16_stream(
       i::Handle<i::ExternalTwoByteString>::cast(uc16_string), start, end);
+  i::ExternalOneByteStringUtf16CharacterStream one_byte_stream(
+      i::Handle<i::ExternalOneByteString>::cast(ext_one_byte_string), start,
+      end);
   i::GenericStringUtf16CharacterStream string_stream(one_byte_string, start,
                                                      end);
   i::Utf8ToUtf16CharacterStream utf8_stream(
@@ -592,17 +616,21 @@ void TestCharacterStream(const char* one_byte_source, unsigned length,
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
     int32_t c0 = one_byte_source[i];
     int32_t c1 = uc16_stream.Advance();
     int32_t c2 = string_stream.Advance();
     int32_t c3 = utf8_stream.Advance();
+    int32_t c4 = one_byte_stream.Advance();
     i++;
     CHECK_EQ(c0, c1);
     CHECK_EQ(c0, c2);
     CHECK_EQ(c0, c3);
+    CHECK_EQ(c0, c4);
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
   }
   while (i > start + sub_length / 4) {
     // Pushback, re-read, pushback again.
@@ -610,64 +638,80 @@ void TestCharacterStream(const char* one_byte_source, unsigned length,
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
     uc16_stream.PushBack(c0);
     string_stream.PushBack(c0);
     utf8_stream.PushBack(c0);
+    one_byte_stream.PushBack(c0);
     i--;
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
     int32_t c1 = uc16_stream.Advance();
     int32_t c2 = string_stream.Advance();
     int32_t c3 = utf8_stream.Advance();
+    int32_t c4 = one_byte_stream.Advance();
     i++;
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
     CHECK_EQ(c0, c1);
     CHECK_EQ(c0, c2);
     CHECK_EQ(c0, c3);
+    CHECK_EQ(c0, c4);
     uc16_stream.PushBack(c0);
     string_stream.PushBack(c0);
     utf8_stream.PushBack(c0);
+    one_byte_stream.PushBack(c0);
     i--;
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
   }
   unsigned halfway = start + sub_length / 2;
   uc16_stream.SeekForward(halfway - i);
   string_stream.SeekForward(halfway - i);
   utf8_stream.SeekForward(halfway - i);
+  one_byte_stream.SeekForward(halfway - i);
   i = halfway;
   CHECK_EQU(i, uc16_stream.pos());
   CHECK_EQU(i, string_stream.pos());
   CHECK_EQU(i, utf8_stream.pos());
+  CHECK_EQU(i, one_byte_stream.pos());
 
   while (i < end) {
     // Read streams one char at a time
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
     int32_t c0 = one_byte_source[i];
     int32_t c1 = uc16_stream.Advance();
     int32_t c2 = string_stream.Advance();
     int32_t c3 = utf8_stream.Advance();
+    int32_t c4 = one_byte_stream.Advance();
     i++;
     CHECK_EQ(c0, c1);
     CHECK_EQ(c0, c2);
     CHECK_EQ(c0, c3);
+    CHECK_EQ(c0, c4);
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
   }
 
   int32_t c1 = uc16_stream.Advance();
   int32_t c2 = string_stream.Advance();
   int32_t c3 = utf8_stream.Advance();
+  int32_t c4 = one_byte_stream.Advance();
   CHECK_LT(c1, 0);
   CHECK_LT(c2, 0);
   CHECK_LT(c3, 0);
+  CHECK_LT(c4, 0);
 }
 
 
@@ -1073,21 +1117,26 @@ TEST(ScopeUsesArgumentsSuperThis) {
       info.set_global();
       CHECK(parser.Parse(&info));
       CHECK(i::Rewriter::Rewrite(&info));
-      CHECK(i::Scope::Analyze(&info));
+      i::Scope::Analyze(&info);
       CHECK(info.literal() != NULL);
 
-      i::Scope* script_scope = info.literal()->scope();
+      i::DeclarationScope* script_scope = info.literal()->scope();
       CHECK(script_scope->is_script_scope());
-      CHECK_EQ(1, script_scope->inner_scopes()->length());
 
-      i::Scope* scope = script_scope->inner_scopes()->at(0);
+      i::Scope* scope = script_scope->inner_scope();
+      DCHECK_NOT_NULL(scope);
+      DCHECK_NULL(scope->sibling());
       // Adjust for constructor scope.
       if (j == 2) {
-        CHECK_EQ(1, scope->inner_scopes()->length());
-        scope = scope->inner_scopes()->at(0);
+        scope = scope->inner_scope();
+        DCHECK_NOT_NULL(scope);
+        DCHECK_NULL(scope->sibling());
       }
-      CHECK_EQ((source_data[i].expected & ARGUMENTS) != 0,
-               scope->uses_arguments());
+      // Arrows themselves never get an arguments object.
+      if ((source_data[i].expected & ARGUMENTS) != 0 &&
+          !scope->AsDeclarationScope()->is_arrow_scope()) {
+        CHECK_NOT_NULL(scope->AsDeclarationScope()->arguments());
+      }
       CHECK_EQ((source_data[i].expected & SUPER_PROPERTY) != 0,
                scope->uses_super_property());
       if ((source_data[i].expected & THIS) != 0) {
@@ -1396,9 +1445,10 @@ TEST(ScopePositions) {
     CHECK(scope->is_script_scope());
     CHECK_EQ(scope->start_position(), 0);
     CHECK_EQ(scope->end_position(), kProgramSize);
-    CHECK_EQ(scope->inner_scopes()->length(), 1);
 
-    i::Scope* inner_scope = scope->inner_scopes()->at(0);
+    i::Scope* inner_scope = scope->inner_scope();
+    DCHECK_NOT_NULL(inner_scope);
+    DCHECK_NULL(inner_scope->sibling());
     CHECK_EQ(inner_scope->scope_type(), source_data[i].scope_type);
     CHECK_EQ(inner_scope->start_position(), kPrefixLen);
     // The end position of a token is one position after the last
@@ -1507,10 +1557,10 @@ enum ParserFlag {
   kAllowNatives,
   kAllowHarmonyFunctionSent,
   kAllowHarmonyRestrictiveDeclarations,
-  kAllowHarmonyExponentiationOperator,
   kAllowHarmonyForIn,
   kAllowHarmonyAsyncAwait,
   kAllowHarmonyRestrictiveGenerators,
+  kAllowHarmonyTrailingCommas,
 };
 
 enum ParserSyncTestResult {
@@ -1528,13 +1578,13 @@ void SetParserFlags(i::ParserBase<Traits>* parser,
       flags.Contains(kAllowHarmonyFunctionSent));
   parser->set_allow_harmony_restrictive_declarations(
       flags.Contains(kAllowHarmonyRestrictiveDeclarations));
-  parser->set_allow_harmony_exponentiation_operator(
-      flags.Contains(kAllowHarmonyExponentiationOperator));
   parser->set_allow_harmony_for_in(flags.Contains(kAllowHarmonyForIn));
   parser->set_allow_harmony_async_await(
       flags.Contains(kAllowHarmonyAsyncAwait));
   parser->set_allow_harmony_restrictive_generators(
       flags.Contains(kAllowHarmonyRestrictiveGenerators));
+  parser->set_allow_harmony_trailing_commas(
+      flags.Contains(kAllowHarmonyTrailingCommas));
 }
 
 
@@ -1597,6 +1647,7 @@ void TestParserSyncWithFlags(i::Handle<i::String> source,
     i::Handle<i::String> message_string = i::Handle<i::String>::cast(
         i::JSReceiver::GetProperty(isolate, exception_handle, "message")
             .ToHandleChecked());
+    isolate->clear_pending_exception();
 
     if (result == kSuccess) {
       v8::base::OS::Print(
@@ -3341,11 +3392,11 @@ TEST(SerializationOfMaybeAssignmentFlag) {
   const i::AstRawString* name = avf.GetOneByteString("result");
   i::Handle<i::String> str = name->string();
   CHECK(str->IsInternalizedString());
-  i::Scope* script_scope =
-      new (&zone) i::Scope(&zone, NULL, i::SCRIPT_SCOPE, &avf);
-  script_scope->Initialize();
-  i::Scope* s =
-      i::Scope::DeserializeScopeChain(isolate, &zone, context, script_scope);
+  i::DeclarationScope* script_scope =
+      new (&zone) i::DeclarationScope(&zone, nullptr, i::SCRIPT_SCOPE);
+  i::Scope* s = i::Scope::DeserializeScopeChain(
+      isolate, &zone, context, script_scope, &avf,
+      i::Scope::DeserializationMode::kKeepScopeInfo);
   CHECK(s != script_scope);
   CHECK(name != NULL);
 
@@ -3389,11 +3440,11 @@ TEST(IfArgumentsArrayAccessedThenParametersMaybeAssigned) {
   i::AstValueFactory avf(&zone, isolate->heap()->HashSeed());
   avf.Internalize(isolate);
 
-  i::Scope* script_scope =
-      new (&zone) i::Scope(&zone, NULL, i::SCRIPT_SCOPE, &avf);
-  script_scope->Initialize();
-  i::Scope* s =
-      i::Scope::DeserializeScopeChain(isolate, &zone, context, script_scope);
+  i::DeclarationScope* script_scope =
+      new (&zone) i::DeclarationScope(&zone, nullptr, i::SCRIPT_SCOPE);
+  i::Scope* s = i::Scope::DeserializeScopeChain(
+      isolate, &zone, context, script_scope, &avf,
+      i::Scope::DeserializationMode::kKeepScopeInfo);
   CHECK(s != script_scope);
   const i::AstRawString* name_x = avf.GetOneByteString("x");
 
@@ -3533,8 +3584,9 @@ TEST(InnerAssignment) {
           CHECK(info.literal() != NULL);
 
           i::Scope* scope = info.literal()->scope();
-          CHECK_EQ(scope->inner_scopes()->length(), 1);
-          i::Scope* inner_scope = scope->inner_scopes()->at(0);
+          i::Scope* inner_scope = scope->inner_scope();
+          DCHECK_NOT_NULL(inner_scope);
+          DCHECK_NULL(inner_scope->sibling());
           const i::AstRawString* var_name =
               info.ast_value_factory()->GetOneByteString("x");
           i::Variable* var = inner_scope->Lookup(var_name);
@@ -3569,10 +3621,8 @@ TEST(UseAsmUseCount) {
   CcTest::isolate()->SetUseCounterCallback(MockUseCounterCallback);
   CompileRun("\"use asm\";\n"
              "var foo = 1;\n"
-             "\"use asm\";\n"  // Only the first one counts.
              "function bar() { \"use asm\"; var baz = 1; }");
-  // Optimizing will double-count because the source is parsed twice.
-  CHECK_EQ(i::FLAG_always_opt ? 4 : 2, use_counts[v8::Isolate::kUseAsm]);
+  CHECK_LT(0, use_counts[v8::Isolate::kUseAsm]);
 }
 
 
@@ -5509,8 +5559,8 @@ TEST(BasicImportExportParsing) {
       "export default function() {}",
       "export default function*() {}",
       "export default class C {}",
-      "export default class {}"
-      "export default class extends C {}"
+      "export default class {}",
+      "export default class extends C {}",
       "export default 42",
       "var x; export default x = 7",
       "export { Q } from 'somemodule.js';",
@@ -5568,6 +5618,7 @@ TEST(BasicImportExportParsing) {
         i::Handle<i::String> message_string = i::Handle<i::String>::cast(
             i::JSReceiver::GetProperty(isolate, exception_handle, "message")
                 .ToHandleChecked());
+        isolate->clear_pending_exception();
 
         v8::base::OS::Print(
             "Parser failed on:\n"
@@ -5588,6 +5639,7 @@ TEST(BasicImportExportParsing) {
       i::Parser parser(&info);
       info.set_global();
       CHECK(!parser.Parse(&info));
+      isolate->clear_pending_exception();
     }
   }
 }
@@ -5680,6 +5732,7 @@ TEST(ImportExportParsingErrors) {
     i::Parser parser(&info);
     info.set_module();
     CHECK(!parser.Parse(&info));
+    isolate->clear_pending_exception();
   }
 }
 
@@ -5717,6 +5770,7 @@ TEST(ModuleTopLevelFunctionDecl) {
     i::Parser parser(&info);
     info.set_module();
     CHECK(!parser.Parse(&info));
+    isolate->clear_pending_exception();
   }
 }
 
@@ -5873,6 +5927,11 @@ TEST(ModuleParsingInternals) {
       "import n from 'n.js';"
       "export { a as b } from 'm.js';"
       "export * from 'p.js';"
+      "export var foo;"
+      "export function goo() {};"
+      "export let hoo;"
+      "export const joo = 42;"
+      "export default (function koo() {});"
       "import 'q.js'";
   i::Handle<i::String> source = factory->NewStringFromAsciiChecked(kSource);
   i::Handle<i::Script> script = factory->NewScript(source);
@@ -5883,41 +5942,25 @@ TEST(ModuleParsingInternals) {
   CHECK(parser.Parse(&info));
   CHECK(i::Compiler::Analyze(&info));
   i::FunctionLiteral* func = info.literal();
-  i::Scope* module_scope = func->scope();
+  i::DeclarationScope* module_scope = func->scope();
   i::Scope* outer_scope = module_scope->outer_scope();
   CHECK(outer_scope->is_script_scope());
   CHECK_NULL(outer_scope->outer_scope());
   CHECK(module_scope->is_module_scope());
   i::ModuleDescriptor* descriptor = module_scope->module();
   CHECK_NOT_NULL(descriptor);
-  CHECK_EQ(1, descriptor->Length());
-  const i::AstRawString* export_name =
-      info.ast_value_factory()->GetOneByteString("y");
-  const i::AstRawString* local_name =
-      descriptor->LookupLocalExport(export_name, &zone);
-  CHECK_NOT_NULL(local_name);
-  CHECK(local_name->IsOneByteEqualTo("x"));
   i::ZoneList<i::Declaration*>* declarations = module_scope->declarations();
-  CHECK_EQ(3, declarations->length());
+  CHECK_EQ(8, declarations->length());
   CHECK(declarations->at(0)->proxy()->raw_name()->IsOneByteEqualTo("x"));
-  i::ImportDeclaration* import_decl =
-      declarations->at(1)->AsImportDeclaration();
-  CHECK(import_decl->import_name()->IsOneByteEqualTo("q"));
-  CHECK(import_decl->proxy()->raw_name()->IsOneByteEqualTo("z"));
-  CHECK(import_decl->module_specifier()->IsOneByteEqualTo("m.js"));
-  import_decl = declarations->at(2)->AsImportDeclaration();
-  CHECK(import_decl->import_name()->IsOneByteEqualTo("default"));
-  CHECK(import_decl->proxy()->raw_name()->IsOneByteEqualTo("n"));
-  CHECK(import_decl->module_specifier()->IsOneByteEqualTo("n.js"));
-  // TODO(adamk): Add test for indirect exports once they're fully implemented.
-  // TODO(adamk): Add test for star exports once they're fully implemented.
-  const i::ZoneList<const i::AstRawString*>& requested_modules =
-      descriptor->requested_modules();
-  CHECK_EQ(4, requested_modules.length());
-  CHECK(requested_modules[0]->IsOneByteEqualTo("m.js"));
-  CHECK(requested_modules[1]->IsOneByteEqualTo("n.js"));
-  CHECK(requested_modules[2]->IsOneByteEqualTo("p.js"));
-  CHECK(requested_modules[3]->IsOneByteEqualTo("q.js"));
+  CHECK(declarations->at(1)->proxy()->raw_name()->IsOneByteEqualTo("z"));
+  CHECK(declarations->at(2)->proxy()->raw_name()->IsOneByteEqualTo("n"));
+  CHECK(declarations->at(3)->proxy()->raw_name()->IsOneByteEqualTo("foo"));
+  CHECK(declarations->at(4)->proxy()->raw_name()->IsOneByteEqualTo("goo"));
+  CHECK(declarations->at(5)->proxy()->raw_name()->IsOneByteEqualTo("hoo"));
+  CHECK(declarations->at(6)->proxy()->raw_name()->IsOneByteEqualTo("joo"));
+  CHECK(
+      declarations->at(7)->proxy()->raw_name()->IsOneByteEqualTo("*default*"));
+  // TODO(neis): Test more once we can inspect the imports/exports.
 }
 
 
@@ -7431,10 +7474,7 @@ TEST(ExponentiationOperator) {
   };
   // clang-format on
 
-  static const ParserFlag always_flags[] = {
-      kAllowHarmonyExponentiationOperator};
-  RunParserSyncTest(context_data, data, kSuccess, NULL, 0, always_flags,
-                    arraysize(always_flags));
+  RunParserSyncTest(context_data, data, kSuccess);
 }
 
 TEST(ExponentiationOperatorErrors) {
@@ -7481,10 +7521,7 @@ TEST(ExponentiationOperatorErrors) {
   };
   // clang-format on
 
-  static const ParserFlag always_flags[] = {
-      kAllowHarmonyExponentiationOperator};
-  RunParserSyncTest(context_data, error_data, kError, NULL, 0, always_flags,
-                    arraysize(always_flags));
+  RunParserSyncTest(context_data, error_data, kError);
 }
 
 TEST(AsyncAwait) {
@@ -7506,6 +7543,9 @@ TEST(AsyncAwait) {
     "var O = { async 'method'() { await 1; } }",
     "var O = { async 0() { await 1; } }",
     "async function await() {}",
+
+    "var asyncFn = async({ foo = 1 }) => foo;",
+    "var asyncFn = async({ foo = 1 } = {}) => foo;",
     NULL
   };
   // clang-format on
@@ -7642,6 +7682,35 @@ TEST(AsyncAwaitErrors) {
     "var O = { async method() { function await() {} } }",
     "async function foo() { function await() {} }",
 
+    // Henrique Ferreiro's bug (tm)
+    "(async function foo() { } foo => 1)",
+    "(async function foo() { } () => 1)",
+    "(async function foo() { } => 1)",
+    "(async function() { } foo => 1)",
+    "(async function() { } () => 1)",
+    "(async function() { } => 1)",
+    "(async.foo => 1)",
+    "(async.foo foo => 1)",
+    "(async.foo () => 1)",
+    "(async().foo => 1)",
+    "(async().foo foo => 1)",
+    "(async().foo () => 1)",
+    "(async['foo'] => 1)",
+    "(async['foo'] foo => 1)",
+    "(async['foo'] () => 1)",
+    "(async()['foo'] => 1)",
+    "(async()['foo'] foo => 1)",
+    "(async()['foo'] () => 1)",
+    "(async`foo` => 1)",
+    "(async`foo` foo => 1)",
+    "(async`foo` () => 1)",
+    "(async`foo`.bar => 1)",
+    "(async`foo`.bar foo => 1)",
+    "(async`foo`.bar () => 1)",
+
+    // v8:5148 assert that errors are still thrown for calls that may have been
+    // async functions
+    "async({ foo = 1 })",
     NULL
   };
 
@@ -7663,12 +7732,39 @@ TEST(AsyncAwaitErrors) {
 
     NULL
   };
+
+  const char* formal_parameters_data[] = {
+    "var f = async({ await }) => 1;",
+    "var f = async({ await = 1 }) => 1;",
+    "var f = async({ await } = {}) => 1;",
+    "var f = async({ await = 1 } = {}) => 1;",
+    "var f = async([await]) => 1;",
+    "var f = async([await] = []) => 1;",
+    "var f = async([await = 1]) => 1;",
+    "var f = async([await = 1] = []) => 1;",
+    "var f = async(...await) => 1;",
+    "var f = async(await) => 1;",
+    "var f = async(await = 1) => 1;",
+    "var f = async(...[await]) => 1;",
+
+    // v8:5190
+    "var f = async(1) => 1",
+    "var f = async('str') => 1",
+    "var f = async(/foo/) => 1",
+    "var f = async({ foo = async(1) => 1 }) => 1",
+    "var f = async({ foo = async(a) => 1 })",
+
+    NULL
+  };
   // clang-format on
 
   static const ParserFlag always_flags[] = {kAllowHarmonyAsyncAwait};
   RunParserSyncTest(context_data, error_data, kError, NULL, 0, always_flags,
                     arraysize(always_flags));
   RunParserSyncTest(strict_context_data, strict_error_data, kError, NULL, 0,
+                    always_flags, arraysize(always_flags));
+
+  RunParserSyncTest(context_data, formal_parameters_data, kError, NULL, 0,
                     always_flags, arraysize(always_flags));
 }
 
@@ -7790,4 +7886,108 @@ TEST(NoDuplicateAsyncFunctionInBlock) {
                     test_preparser);
   RunParserSyncTest(top_level_context_data, error_data, kSuccess, NULL, 0,
                     always_flags, arraysize(always_flags));
+}
+
+TEST(TrailingCommasInParameters) {
+  // clang-format off
+  const char* context_data[][2] = {
+    { "", "" },
+    { "'use strict';", "" },
+    { "function foo() {", "}" },
+    { "function foo() {'use strict';", "}" },
+    { NULL, NULL }
+  };
+
+  const char* data[] = {
+    " function  a(b,) {}",
+    " function* a(b,) {}",
+    "(function  a(b,) {});",
+    "(function* a(b,) {});",
+    "(function   (b,) {});",
+    "(function*  (b,) {});",
+    " function  a(b,c,d,) {}",
+    " function* a(b,c,d,) {}",
+    "(function  a(b,c,d,) {});",
+    "(function* a(b,c,d,) {});",
+    "(function   (b,c,d,) {});",
+    "(function*  (b,c,d,) {});",
+    "(b,) => {};",
+    "(b,c,d,) => {};",
+    "a(1,);",
+    "a(1,2,3,);",
+    "a(...[],);",
+    "a(1, 2, ...[],);",
+    "a(...[], 2, ...[],);",
+    NULL
+  };
+  // clang-format on
+
+  static const ParserFlag always_flags[] = {kAllowHarmonyTrailingCommas};
+  RunParserSyncTest(context_data, data, kSuccess, NULL, 0, always_flags,
+                    arraysize(always_flags));
+}
+
+TEST(TrailingCommasInParametersErrors) {
+  // clang-format off
+  const char* context_data[][2] = {
+    { "", "" },
+    { "'use strict';", "" },
+    { "function foo() {", "}" },
+    { "function foo() {'use strict';", "}" },
+    { NULL, NULL }
+  };
+
+  const char* data[] = {
+    // too many trailing commas
+    " function  a(b,,) {}",
+    " function* a(b,,) {}",
+    "(function  a(b,,) {});",
+    "(function* a(b,,) {});",
+    "(function   (b,,) {});",
+    "(function*  (b,,) {});",
+    " function  a(b,c,d,,) {}",
+    " function* a(b,c,d,,) {}",
+    "(function  a(b,c,d,,) {});",
+    "(function* a(b,c,d,,) {});",
+    "(function   (b,c,d,,) {});",
+    "(function*  (b,c,d,,) {});",
+    "(b,,) => {};",
+    "(b,c,d,,) => {};",
+    "a(1,,);",
+    "a(1,2,3,,);",
+    // only a trailing comma and no parameters
+    " function  a1(,) {}",
+    " function* a2(,) {}",
+    "(function  a3(,) {});",
+    "(function* a4(,) {});",
+    "(function    (,) {});",
+    "(function*   (,) {});",
+    "(,) => {};",
+    "a1(,);",
+    // no trailing commas after rest parameter declaration
+    " function  a(...b,) {}",
+    " function* a(...b,) {}",
+    "(function  a(...b,) {});",
+    "(function* a(...b,) {});",
+    "(function   (...b,) {});",
+    "(function*  (...b,) {});",
+    " function  a(b, c, ...d,) {}",
+    " function* a(b, c, ...d,) {}",
+    "(function  a(b, c, ...d,) {});",
+    "(function* a(b, c, ...d,) {});",
+    "(function   (b, c, ...d,) {});",
+    "(function*  (b, c, ...d,) {});",
+    "(...b,) => {};",
+    "(b, c, ...d,) => {};",
+    // parenthesized trailing comma without arrow is still an error
+    "(,);",
+    "(a,);",
+    "(a,b,c,);",
+    NULL
+  };
+  // clang-format on
+
+  static const ParserFlag always_flags[] = {kAllowHarmonyTrailingCommas};
+  RunParserSyncTest(context_data, data, kError, NULL, 0, always_flags,
+                    arraysize(always_flags));
 }

@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 '''
-Usage: runtime-call-stats.py [-h] <command> ...
+Usage: callstats.py [-h] <command> ...
 
 Optional arguments:
   -h, --help  show this help message and exit
@@ -317,10 +317,10 @@ def read_stats(path, domain, args):
         ('Group-IC', re.compile(".*IC.*")),
         ('Group-Optimize',
          re.compile("StackGuard|.*Optimize.*|.*Deoptimize.*|Recompile.*")),
-        ('Group-Compile', re.compile("Compile.*")),
-        ('Group-Parse', re.compile("Parse.*")),
-        ('Group-Callback', re.compile("Callback$")),
-        ('Group-API', re.compile("API.*")),
+        ('Group-Compile', re.compile(".*Compile.*")),
+        ('Group-Parse', re.compile(".*Parse.*")),
+        ('Group-Callback', re.compile(".*Callback.*")),
+        ('Group-API', re.compile(".*API.*")),
         ('Group-GC', re.compile("GC|AllocateInTargetSpace")),
         ('Group-JavaScript', re.compile("JS_Execution")),
         ('Group-Runtime', re.compile(".*"))]

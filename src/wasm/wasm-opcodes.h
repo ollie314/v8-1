@@ -22,21 +22,6 @@ enum LocalTypeCode {
   kLocalS128 = 5
 };
 
-// Binary encoding of memory types.
-enum MemTypeCode {
-  kMemI8 = 0,
-  kMemU8 = 1,
-  kMemI16 = 2,
-  kMemU16 = 3,
-  kMemI32 = 4,
-  kMemU32 = 5,
-  kMemI64 = 6,
-  kMemU64 = 7,
-  kMemF32 = 8,
-  kMemF64 = 9,
-  kMemS128 = 10
-};
-
 // We reuse the internal machine type to represent WebAssembly AST types.
 // A typedef improves readability without adding a whole new type system.
 typedef MachineRepresentation LocalType;
@@ -84,8 +69,8 @@ const WasmCodePosition kNoCodePosition = -1;
   V(CallIndirect, 0x17, _)     \
   V(CallImport, 0x18, _)       \
   V(I8Const, 0xcb, _)          \
-  V(LoadGlobal, 0xcc, _)       \
-  V(StoreGlobal, 0xcd, _)
+  V(GetGlobal, 0xbb, _)        \
+  V(SetGlobal, 0xbc, _)
 
 // Load memory expressions.
 #define FOREACH_LOAD_MEM_OPCODE(V) \
@@ -116,9 +101,10 @@ const WasmCodePosition kNoCodePosition = -1;
   V(F32StoreMem, 0x35, f_if)        \
   V(F64StoreMem, 0x36, d_id)
 
+#define FOREACH_SIMPLE_MEM_OPCODE(V) V(GrowMemory, 0x39, i_i)
+
 // Load memory expressions.
 #define FOREACH_MISC_MEM_OPCODE(V) \
-  V(GrowMemory, 0x39, i_i)         \
   V(MemorySize, 0x3b, i_v)
 
 // Expressions with signatures.
@@ -405,16 +391,21 @@ const WasmCodePosition kNoCodePosition = -1;
   V(S128Xor, 0xe578, s_ss)             \
   V(S128Not, 0xe579, s_s)
 
+// For enabling JIT functionality
+#define FOREACH_JIT_OPCODE(V) V(JITSingleFunction, 0xf0, _)
+
 // All opcodes.
 #define FOREACH_OPCODE(V)        \
   FOREACH_CONTROL_OPCODE(V)      \
   FOREACH_MISC_OPCODE(V)         \
   FOREACH_SIMPLE_OPCODE(V)       \
+  FOREACH_SIMPLE_MEM_OPCODE(V)   \
   FOREACH_STORE_MEM_OPCODE(V)    \
   FOREACH_LOAD_MEM_OPCODE(V)     \
   FOREACH_MISC_MEM_OPCODE(V)     \
   FOREACH_ASMJS_COMPAT_OPCODE(V) \
-  FOREACH_SIMD_OPCODE(V)
+  FOREACH_SIMD_OPCODE(V)         \
+  FOREACH_JIT_OPCODE(V)
 
 // All signatures.
 #define FOREACH_SIGNATURE(V)         \
@@ -459,23 +450,29 @@ const WasmCodePosition kNoCodePosition = -1;
   V(s_sii, kAstS128, kAstS128, kAstI32, kAstI32)   \
   V(s_si, kAstS128, kAstS128, kAstI32)
 
+#define FOREACH_PREFIX(V) V(Simd, 0xe5)
+
 enum WasmOpcode {
 // Declare expression opcodes.
 #define DECLARE_NAMED_ENUM(name, opcode, sig) kExpr##name = opcode,
   FOREACH_OPCODE(DECLARE_NAMED_ENUM)
 #undef DECLARE_NAMED_ENUM
+#define DECLARE_PREFIX(name, opcode) k##name##Prefix = opcode,
+      FOREACH_PREFIX(DECLARE_PREFIX)
+#undef DECLARE_PREFIX
 };
 
 // The reason for a trap.
 #define FOREACH_WASM_TRAPREASON(V) \
-  V(TrapUnreachable)          \
-  V(TrapMemOutOfBounds)       \
-  V(TrapDivByZero)            \
-  V(TrapDivUnrepresentable)   \
-  V(TrapRemByZero)            \
-  V(TrapFloatUnrepresentable) \
-  V(TrapFuncInvalid)          \
-  V(TrapFuncSigMismatch)
+  V(TrapUnreachable)               \
+  V(TrapMemOutOfBounds)            \
+  V(TrapDivByZero)                 \
+  V(TrapDivUnrepresentable)        \
+  V(TrapRemByZero)                 \
+  V(TrapFloatUnrepresentable)      \
+  V(TrapFuncInvalid)               \
+  V(TrapFuncSigMismatch)           \
+  V(TrapInvalidIndex)
 
 enum TrapReason {
 #define DECLARE_ENUM(name) k##name,
@@ -515,35 +512,6 @@ class WasmOpcodes {
       default:
         UNREACHABLE();
         return kLocalVoid;
-    }
-  }
-
-  static MemTypeCode MemTypeCodeFor(MachineType type) {
-    if (type == MachineType::Int8()) {
-      return kMemI8;
-    } else if (type == MachineType::Uint8()) {
-      return kMemU8;
-    } else if (type == MachineType::Int16()) {
-      return kMemI16;
-    } else if (type == MachineType::Uint16()) {
-      return kMemU16;
-    } else if (type == MachineType::Int32()) {
-      return kMemI32;
-    } else if (type == MachineType::Uint32()) {
-      return kMemU32;
-    } else if (type == MachineType::Int64()) {
-      return kMemI64;
-    } else if (type == MachineType::Uint64()) {
-      return kMemU64;
-    } else if (type == MachineType::Float32()) {
-      return kMemF32;
-    } else if (type == MachineType::Float64()) {
-      return kMemF64;
-    } else if (type == MachineType::Simd128()) {
-      return kMemS128;
-    } else {
-      UNREACHABLE();
-      return kMemI32;
     }
   }
 

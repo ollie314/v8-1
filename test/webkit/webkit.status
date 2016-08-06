@@ -74,6 +74,10 @@
   # Too slow.
   'dfg-int-overflow-in-loop': [SKIP],
 }],  # 'arch == s390 or arch == s390x'
+['arch == x87', {
+  # Too slow.
+  'dfg-negative-array-index': [SKIP],
+}], # 'arch == x87'
 
 ##############################################################################
 ['asan == True', {
@@ -108,11 +112,11 @@
 }],  # msan
 
 ##############################################################################
-['(ignition or ignition_turbofan) and msan', {
+['variant == ignition_turbofan and msan', {
   # TODO(mythria,4680): Too slow and timeout on ignition.
   'dfg-double-vote-fuzz': [SKIP],
   'dfg-int-overflow-in-loop': [SKIP],
-}],  # (ignition or ignition_turbofan) and msan
+}],  # variant == ignition_turbofan and msan
 
 ##############################################################################
 ['gcov_coverage', {

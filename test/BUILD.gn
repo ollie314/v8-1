@@ -15,14 +15,16 @@ group("gn_all") {
     # These items don't compile for Android on Mac.
     deps += [
       "cctest:cctest",
+      "cctest:generate-bytecode-expectations",
       "unittests:unittests",
+      "inspector_protocol_parser_test:inspector_protocol_parser_test",
     ]
   }
 
   if (v8_test_isolation_mode != "noop") {
     deps += [
-      ":bot_default_run",
       ":benchmarks_run",
+      ":bot_default_run",
       ":default_run",
       ":mozilla_run",
       ":simdjs_run",
@@ -42,6 +44,7 @@ group("default_tests") {
     deps = [
       ":cctest_run",
       ":fuzzer_run",
+      ":inspector_protocol_parser_test_run",
       ":intl_run",
       ":message_run",
       ":mjsunit_run",
@@ -53,7 +56,7 @@ group("default_tests") {
 
 v8_isolate_run("bot_default") {
   deps = [
-    ":default_tests", 
+    ":default_tests",
     ":webkit_run",
   ]
 
@@ -66,15 +69,6 @@ v8_isolate_run("default") {
   ]
 
   isolate = "default.isolate"
-}
-
-v8_isolate_run("ignition") {
-  deps = [
-    ":cctest_run",
-    ":mjsunit_run",
-  ]
-
-  isolate = "ignition.isolate"
 }
 
 v8_isolate_run("optimize_for_size") {
@@ -130,11 +124,19 @@ v8_isolate_run("fuzzer") {
     "..:v8_simple_json_fuzzer",
     "..:v8_simple_parser_fuzzer",
     "..:v8_simple_regexp_fuzzer",
-    "..:v8_simple_wasm_fuzzer",
     "..:v8_simple_wasm_asmjs_fuzzer",
+    "..:v8_simple_wasm_fuzzer",
   ]
 
   isolate = "fuzzer/fuzzer.isolate"
+}
+
+v8_isolate_run("inspector_protocol_parser_test") {
+  deps = [
+    "inspector_protocol_parser_test:inspector_protocol_parser_test",
+  ]
+
+  isolate = "inspector_protocol_parser_test/inspector_protocol_parser_test.isolate"
 }
 
 v8_isolate_run("intl") {

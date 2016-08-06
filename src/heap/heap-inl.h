@@ -252,11 +252,6 @@ AllocationResult Heap::AllocateRaw(int size_in_bytes, AllocationSpace space,
     old_gen_exhausted_ = true;
   }
 
-  if (!old_gen_exhausted_ && incremental_marking()->black_allocation() &&
-      space != OLD_SPACE) {
-    Marking::MarkBlack(Marking::MarkBitFrom(object));
-    MemoryChunk::IncrementLiveBytesFromGC(object, size_in_bytes);
-  }
   return allocation;
 }
 
@@ -399,7 +394,7 @@ bool Heap::ShouldBePromoted(Address old_address, int object_size) {
   Address age_mark = new_space_.age_mark();
 
   if (promotion_mode == PROMOTE_MARKED) {
-    MarkBit mark_bit = Marking::MarkBitFrom(old_address);
+    MarkBit mark_bit = ObjectMarking::MarkBitFrom(old_address);
     if (!Marking::IsWhite(mark_bit)) {
       return true;
     }
@@ -426,6 +421,12 @@ void Heap::RecordWrite(Object* object, int offset, Object* o) {
       HeapObject::cast(object)->address() + offset);
 }
 
+void Heap::RecordWriteIntoCode(Code* host, RelocInfo* rinfo, Object* value) {
+  if (InNewSpace(value)) {
+    RecordWriteIntoCodeSlow(host, rinfo, value);
+  }
+}
+
 void Heap::RecordFixedArrayElements(FixedArray* array, int offset, int length) {
   if (InNewSpace(array)) return;
   Page* page = Page::FromAddress(reinterpret_cast<Address>(array));
@@ -437,6 +438,9 @@ void Heap::RecordFixedArrayElements(FixedArray* array, int offset, int length) {
   }
 }
 
+Address* Heap::store_buffer_top_address() {
+  return store_buffer()->top_address();
+}
 
 bool Heap::AllowedToBeMigrated(HeapObject* obj, AllocationSpace dst) {
   // Object migration is governed by the following rules:
@@ -478,12 +482,10 @@ void Heap::CopyBlock(Address dst, Address src, int byte_size) {
 
 template <Heap::FindMementoMode mode>
 AllocationMemento* Heap::FindAllocationMemento(HeapObject* object) {
-  // Check if there is potentially a memento behind the object. If
-  // the last word of the memento is on another page we return
-  // immediately.
   Address object_address = object->address();
   Address memento_address = object_address + object->Size();
   Address last_memento_word_address = memento_address + kPointerSize;
+  // If the memento would be on another page, bail out immediately.
   if (!Page::OnSamePage(object_address, last_memento_word_address)) {
     return nullptr;
   }
@@ -496,6 +498,22 @@ AllocationMemento* Heap::FindAllocationMemento(HeapObject* object) {
   if (candidate_map != allocation_memento_map()) {
     return nullptr;
   }
+
+  // Bail out if the memento is below the age mark, which can happen when
+  // mementos survived because a page got moved within new space.
+  Page* object_page = Page::FromAddress(object_address);
+  if (object_page->IsFlagSet(Page::NEW_SPACE_BELOW_AGE_MARK)) {
+    Address age_mark =
+        reinterpret_cast<SemiSpace*>(object_page->owner())->age_mark();
+    if (!object_page->Contains(age_mark)) {
+      return nullptr;
+    }
+    // Do an exact check in the case where the age mark is on the same page.
+    if (object_address < age_mark) {
+      return nullptr;
+    }
+  }
+
   AllocationMemento* memento_candidate = AllocationMemento::cast(candidate);
 
   // Depending on what the memento is used for, we might need to perform
@@ -526,7 +544,7 @@ AllocationMemento* Heap::FindAllocationMemento(HeapObject* object) {
 
 template <Heap::UpdateAllocationSiteMode mode>
 void Heap::UpdateAllocationSite(HeapObject* object,
-                                HashMap* pretenuring_feedback) {
+                                base::HashMap* pretenuring_feedback) {
   DCHECK(InFromSpace(object));
   if (!FLAG_allocation_site_pretenuring ||
       !AllocationSite::CanTrack(object->map()->instance_type()))
@@ -554,7 +572,7 @@ void Heap::UpdateAllocationSite(HeapObject* object,
     // to dereference the allocation site and rather have to postpone all checks
     // till actually merging the data.
     Address key = memento_candidate->GetAllocationSiteUnchecked();
-    HashMap::Entry* e =
+    base::HashMap::Entry* e =
         pretenuring_feedback->LookupOrInsert(key, ObjectHash(key));
     DCHECK(e != nullptr);
     (*bit_cast<intptr_t*>(&e->value))++;
@@ -724,6 +742,17 @@ void Heap::SetSetterStubDeoptPCOffset(int pc_offset) {
 void Heap::SetInterpreterEntryReturnPCOffset(int pc_offset) {
   DCHECK(interpreter_entry_return_pc_offset() == Smi::FromInt(0));
   set_interpreter_entry_return_pc_offset(Smi::FromInt(pc_offset));
+}
+
+int Heap::GetNextTemplateSerialNumber() {
+  int next_serial_number = next_template_serial_number()->value() + 1;
+  set_next_template_serial_number(Smi::FromInt(next_serial_number));
+  return next_serial_number;
+}
+
+void Heap::SetSerializedTemplates(FixedArray* templates) {
+  DCHECK_EQ(empty_fixed_array(), serialized_templates());
+  set_serialized_templates(templates);
 }
 
 AlwaysAllocateScope::AlwaysAllocateScope(Isolate* isolate)

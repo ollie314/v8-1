@@ -9,6 +9,7 @@
 #include "src/compiler/bytecode-branch-analysis.h"
 #include "src/compiler/js-graph.h"
 #include "src/interpreter/bytecode-array-iterator.h"
+#include "src/interpreter/bytecode-flags.h"
 #include "src/interpreter/bytecodes.h"
 
 namespace v8 {
@@ -124,6 +125,7 @@ class BytecodeGraphBuilder {
   void BuildCall(TailCallMode tail_call_mode);
   void BuildThrow();
   void BuildBinaryOp(const Operator* op);
+  void BuildBinaryOpWithImmediate(const Operator* op);
   void BuildCompareOp(const Operator* op);
   void BuildDelete(LanguageMode language_mode);
   void BuildCastOperator(const Operator* op);
@@ -153,9 +155,6 @@ class BytecodeGraphBuilder {
   // new nodes.
   static const int kInputBufferSizeIncrement = 64;
 
-  // The catch prediction from the handler table is reused.
-  typedef HandlerTable::CatchPrediction CatchPrediction;
-
   // An abstract representation for an exception handler that is being
   // entered and exited while the graph builder is iterating over the
   // underlying bytecode. The exception handlers within the bytecode are
@@ -165,7 +164,6 @@ class BytecodeGraphBuilder {
     int end_offset_;        // End offset of the handled area in the bytecode.
     int handler_offset_;    // Handler entry offset within the bytecode.
     int context_register_;  // Index of register holding handler context.
-    CatchPrediction pred_;  // Prediction of whether handler is catching.
   };
 
   // Field accessors
@@ -218,6 +216,7 @@ class BytecodeGraphBuilder {
   const interpreter::BytecodeArrayIterator* bytecode_iterator_;
   const BytecodeBranchAnalysis* branch_analysis_;
   Environment* environment_;
+  BailoutId osr_ast_id_;
 
   // Merge environments are snapshots of the environment at points where the
   // control flow merges. This models a forward data flow propagation of all

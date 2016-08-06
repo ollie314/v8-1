@@ -41,9 +41,12 @@ class JSGraph : public ZoneObject {
   // Canonicalized global constants.
   Node* AllocateInNewSpaceStubConstant();
   Node* AllocateInOldSpaceStubConstant();
+  Node* ToNumberBuiltinConstant();
   Node* CEntryStubConstant(int result_size);
   Node* EmptyFixedArrayConstant();
   Node* EmptyLiteralsArrayConstant();
+  Node* EmptyStringConstant();
+  Node* FixedArrayMapConstant();
   Node* HeapNumberMapConstant();
   Node* OptimizedOutConstant();
   Node* StaleRegisterConstant();
@@ -70,6 +73,9 @@ class JSGraph : public ZoneObject {
 
   // Creates a NumberConstant node, usually canonicalized.
   Node* Constant(int32_t value);
+
+  // Creates a NumberConstant node, usually canonicalized.
+  Node* Constant(uint32_t value);
 
   // Creates a Int32Constant node, usually canonicalized.
   Node* Int32Constant(int32_t value);
@@ -146,9 +152,12 @@ class JSGraph : public ZoneObject {
   enum CachedNode {
     kAllocateInNewSpaceStubConstant,
     kAllocateInOldSpaceStubConstant,
+    kToNumberBuiltinConstant,
     kCEntryStubConstant,
     kEmptyFixedArrayConstant,
     kEmptyLiteralsArrayConstant,
+    kEmptyStringConstant,
+    kFixedArrayMapConstant,
     kHeapNumberMapConstant,
     kOptimizedOutConstant,
     kStaleRegisterConstant,

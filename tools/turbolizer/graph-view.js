@@ -122,68 +122,14 @@ class GraphView extends View {
         graph.dragmove.call(graph, args);
       })
 
-    d3.select("#upload").on("click", function(){
-      document.getElementById("hidden-file-upload").click();
-    });
-
-    d3.select("#layout").on("click", function(){
-      graph.updateGraphVisibility();
-      graph.layoutGraph();
-      graph.updateGraphVisibility();
-      graph.viewWholeGraph();
-    });
-
-    d3.select("#show-all").on("click", function(){
-      graph.nodes.filter(function(n) { n.visible = true; })
-      graph.edges.filter(function(e) { e.visible = true; })
-      graph.updateGraphVisibility();
-      graph.viewWholeGraph();
-    });
-
-    d3.select("#hide-unselected").on("click", function() {
-      var unselected = graph.visibleNodes.filter(function(n) {
-        return !this.classList.contains("selected");
-      });
-      unselected.each(function(n) {
-        n.visible = false;
-      });
-      graph.updateGraphVisibility();
-    });
-
-    d3.select("#hide-selected").on("click", function() {
-      var selected = graph.visibleNodes.filter(function(n) {
-        return this.classList.contains("selected");
-      });
-      selected.each(function(n) {
-        n.visible = false;
-      });
-      graph.state.selection.clear();
-      graph.updateGraphVisibility();
-    });
-
-    d3.select("#zoom-selection").on("click", function() {
-      graph.viewSelection();
-    });
-
-    d3.select("#toggle-types").on("click", function() {
-      graph.toggleTypes();
-    });
-
-    d3.select("#search-input").on("keydown", function() {
-      if (d3.event.keyCode == 13) {
-        graph.state.selection.clear();
-        var reg = new RegExp(this.value);
-        var selected = graph.visibleNodes.each(function(n) {
-          if (reg.exec(n.getDisplayLabel()) != null ||
-              (graph.state.showTypes && reg.exec(n.getDisplayType())) ||
-              reg.exec(n.opcode) != null) {
-            graph.state.selection.select(this, true);
-          }
-        });
-        this.blur();
-        graph.viewSelection();
-      }
-    });
+    d3.select("#upload").on("click", partial(this.uploadAction, graph));
+    d3.select("#layout").on("click", partial(this.layoutAction, graph));
+    d3.select("#show-all").on("click", partial(this.showAllAction, graph));
+    d3.select("#hide-unselected").on("click", partial(this.hideUnselectedAction, graph));
+    d3.select("#hide-selected").on("click", partial(this.hideSelectedAction, graph));
+    d3.select("#zoom-selection").on("click", partial(this.zoomSelectionAction, graph));
+    d3.select("#toggle-types").on("click", partial(this.toggleTypesAction, graph));
+    d3.select("#search-input").on("keydown", partial(this.searchInputAction, graph));
 
     // listen for key events
     d3.select(window).on("keydown", function(e){
@@ -235,6 +181,52 @@ class GraphView extends View {
     }
   }
 
+  getEdgeFrontier(nodes, inEdges, edgeFilter) {
+    let frontier = new Set();
+    nodes.forEach(function(element) {
+      var edges = inEdges ? element.__data__.inputs : element.__data__.outputs;
+      var edgeNumber = 0;
+      edges.forEach(function(edge) {
+        if (edgeFilter == undefined || edgeFilter(edge, edgeNumber)) {
+          frontier.add(edge);
+        }
+        ++edgeNumber;
+      });
+    });
+    return frontier;
+  }
+
+  getNodeFrontier(nodes, inEdges, edgeFilter) {
+    let graph = this;
+    var frontier = new Set();
+    var newState = true;
+    var edgeFrontier = graph.getEdgeFrontier(nodes, inEdges, edgeFilter);
+    // Control key toggles edges rather than just turning them on
+    if (d3.event.ctrlKey) {
+      edgeFrontier.forEach(function(edge) {
+        if (edge.visible) {
+          newState = false;
+        }
+      });
+    }
+    edgeFrontier.forEach(function(edge) {
+      edge.visible = newState;
+      if (newState) {
+        var node = inEdges ? edge.source : edge.target;
+        node.visible = true;
+        frontier.add(node);
+      }
+    });
+    graph.updateGraphVisibility();
+    if (newState) {
+      return graph.visibleNodes.filter(function(n) {
+        return frontier.has(n);
+      });
+    } else {
+      return undefined;
+    }
+  }
+
   dragmove(d) {
     var graph = this;
     d.x += d3.event.dx;
@@ -243,9 +235,10 @@ class GraphView extends View {
   }
 
   initializeContent(data, rememberedSelection) {
-    this.createGraph(data);
+    this.createGraph(data, rememberedSelection);
     if (rememberedSelection != null) {
       this.attachSelection(rememberedSelection);
+      this.connectVisibleSelectedNodes();
     }
     this.updateGraphVisibility();
   }
@@ -259,7 +252,7 @@ class GraphView extends View {
     }
   };
 
-  createGraph(data) {
+  createGraph(data, initiallyVisibileIds) {
     var g = this;
     g.nodes = data.nodes;
     g.nodeMap = [];
@@ -298,12 +291,34 @@ class GraphView extends View {
     });
     g.nodes.forEach(function(n, i) {
       n.visible = isNodeInitiallyVisible(n);
+      if (initiallyVisibileIds != undefined) {
+        if (initiallyVisibileIds.has(n.id)) {
+          n.visible = true;
+        }
+      }
     });
     g.fitGraphViewToWindow();
     g.updateGraphVisibility();
     g.layoutGraph();
     g.updateGraphVisibility();
     g.viewWholeGraph();
+  }
+
+  connectVisibleSelectedNodes() {
+    var graph = this;
+    graph.state.selection.selection.forEach(function(element) {
+      var edgeNumber = 0;
+      element.__data__.inputs.forEach(function(edge) {
+        if (edge.source.visible && edge.target.visible) {
+          edge.visible = true;
+        }
+      });
+      element.__data__.outputs.forEach(function(edge) {
+        if (edge.source.visible && edge.target.visible) {
+          edge.visible = true;
+        }
+      });
+    });
   }
 
   updateInputAndOutputBubbles() {
@@ -359,11 +374,11 @@ class GraphView extends View {
 
   detachSelection() {
     var selection = this.state.selection.detachSelection();
-    var result = new Set();
+    var s = new Set();
     for (var i of selection) {
-      result.add(i.__data__.id);
+      s.add(i.__data__.id);
     };
-    return result;
+    return s;
   }
 
   pathMouseDown(path, d) {
@@ -386,33 +401,18 @@ class GraphView extends View {
 
     if (!mouseDownNode) return;
 
-    if (mouseDownNode !== d){
-      // we're in a different node: create new edge for mousedown edge and add to graph
-      var newEdge = {source: mouseDownNode, target: d};
-      var filtRes = graph.visibleEdges.filter(function(d){
-        if (d.source === newEdge.target && d.target === newEdge.source){
-          graph.edges.splice(graph.edges.indexOf(d), 1);
-        }
-        return d.source === newEdge.source && d.target === newEdge.target;
-      });
-      if (!filtRes[0].length){
-        graph.edges.push(newEdge);
-        graph.updateGraphVisibility();
-      }
+    if (state.justDragged) {
+      // dragged, not clicked
+      redetermineGraphBoundingBox(graph);
+      state.justDragged = false;
     } else{
-      // we're in the same node
-      if (state.justDragged) {
-        // dragged, not clicked
-        state.justDragged = false;
-      } else{
-        // clicked, not dragged
-        var extend = d3.event.shiftKey;
-        var selection = graph.state.selection;
-        if (!extend) {
-          selection.clear();
-        }
-        selection.select(d3node[0][0], true);
+      // clicked, not dragged
+      var extend = d3.event.shiftKey;
+      var selection = graph.state.selection;
+      if (!extend) {
+        selection.clear();
       }
+      selection.select(d3node[0][0], true);
     }
   }
 
@@ -434,6 +434,95 @@ class GraphView extends View {
         var selection = graph.state.selection;
         selection.select(d3.select(this), selected);
       });
+  }
+
+  selectAllNodes(inEdges, filter) {
+    var graph = this;
+    if (!d3.event.shiftKey) {
+      graph.state.selection.clear();
+    }
+    graph.state.selection.select(graph.visibleNodes[0], true);
+    graph.updateGraphVisibility();
+  }
+
+  uploadAction(graph) {
+    document.getElementById("hidden-file-upload").click();
+  }
+
+  layoutAction(graph) {
+    graph.updateGraphVisibility();
+    graph.layoutGraph();
+    graph.updateGraphVisibility();
+    graph.viewWholeGraph();
+  }
+
+  showAllAction(graph) {
+    graph.nodes.filter(function(n) { n.visible = true; })
+    graph.edges.filter(function(e) { e.visible = true; })
+    graph.updateGraphVisibility();
+    graph.viewWholeGraph();
+  }
+
+  hideUnselectedAction(graph) {
+    var unselected = graph.visibleNodes.filter(function(n) {
+      return !this.classList.contains("selected");
+    });
+    unselected.each(function(n) {
+      n.visible = false;
+    });
+    graph.updateGraphVisibility();
+  }
+
+  hideSelectedAction(graph) {
+    var selected = graph.visibleNodes.filter(function(n) {
+      return this.classList.contains("selected");
+    });
+    selected.each(function(n) {
+      n.visible = false;
+    });
+    graph.state.selection.clear();
+    graph.updateGraphVisibility();
+  }
+
+  zoomSelectionAction(graph) {
+    graph.viewSelection();
+  }
+
+  toggleTypesAction(graph) {
+    graph.toggleTypes();
+  }
+
+  searchInputAction(graph) {
+    if (d3.event.keyCode == 13) {
+      graph.state.selection.clear();
+      var query = this.value;
+      window.sessionStorage.setItem("lastSearch", query);
+
+      var reg = new RegExp(query);
+      var filterFunction = function(n) {
+        return (reg.exec(n.getDisplayLabel()) != null ||
+                (graph.state.showTypes && reg.exec(n.getDisplayType())) ||
+                reg.exec(n.opcode) != null);
+      };
+      if (d3.event.ctrlKey) {
+        graph.nodes.forEach(function(n, i) {
+          if (filterFunction(n)) {
+            n.visible = true;
+          }
+        });
+        graph.updateGraphVisibility();
+      }
+      var selected = graph.visibleNodes.each(function(n) {
+        if (filterFunction(n)) {
+          graph.state.selection.select(this, true);
+        }
+      });
+      graph.connectVisibleSelectedNodes();
+      graph.updateGraphVisibility();
+      this.blur();
+      graph.viewSelection();
+    }
+    d3.event.stopPropagation();
   }
 
   svgMouseDown() {
@@ -463,38 +552,86 @@ class GraphView extends View {
     // Don't handle key press repetition
     if(state.lastKeyDown !== -1) return;
 
-    var getEdgeFrontier = function(inEdges) {
-      var frontierSet = new Set();
-      state.selection.selection.forEach(function(element) {
-        var nodes = inEdges ? element.__data__.inputs : element.__data__.outputs;
-        nodes.forEach(function(i) {
-          i.visible = true;
-          var candidate = inEdges ? i.source : i.target;
-          candidate.visible = true;
-          frontierSet.add(candidate);
-        });
-      });
-      graph.updateGraphVisibility();
-      return graph.visibleNodes.filter(function(n) {
-        return frontierSet.has(n);
-      });
+    var showSelectionFrontierNodes = function(inEdges, filter, select) {
+      var frontier = graph.getNodeFrontier(state.selection.selection, inEdges, filter);
+      if (frontier != undefined) {
+        if (select) {
+          if (!d3.event.shiftKey) {
+            state.selection.clear();
+          }
+          state.selection.select(frontier[0], true);
+        }
+        graph.updateGraphVisibility();
+      }
+      allowRepetition = false;
     }
 
     var allowRepetition = true;
+    var eventHandled = true; // unless the below switch defaults
     switch(d3.event.keyCode) {
-    case 38:
-    case 40: {
-      var frontier = getEdgeFrontier(d3.event.keyCode == 38);
-      if (!d3.event.shiftKey) {
-        state.selection.clear();
-      }
-      frontier.each(function(n) {
-        state.selection.select(this, true);
-      });
-      graph.updateGraphVisibility();
+    case 49:
+    case 50:
+    case 51:
+    case 52:
+    case 53:
+    case 54:
+    case 55:
+    case 56:
+    case 57:
+      // '1'-'9'
+      showSelectionFrontierNodes(true,
+          (edge, index) => { return index == (d3.event.keyCode - 49); },
+          false);
+      break;
+    case 67:
+      // 'c'
+      showSelectionFrontierNodes(true,
+          (edge, index) => { return edge.type == 'control'; },
+          false);
+      break;
+    case 69:
+      // 'e'
+      showSelectionFrontierNodes(true,
+          (edge, index) => { return edge.type == 'effect'; },
+          false);
+      break;
+    case 79:
+      // 'o'
+      showSelectionFrontierNodes(false, undefined, false);
+      break;
+    case 73:
+      // 'i'
+      showSelectionFrontierNodes(true, undefined, false);
+      break;
+    case 65:
+      // 'a'
+      graph.selectAllNodes();
       allowRepetition = false;
       break;
+    case 38:
+    case 40: {
+      showSelectionFrontierNodes(d3.event.keyCode == 38, undefined, true);
+      break;
     }
+    case 82:
+      // 'r'
+      if (!d3.event.ctrlKey) {
+        this.layoutAction(this);
+      } else {
+        eventHandled = false;
+      }
+      break;
+    case 191:
+      // '/'
+      document.getElementById("search-input").focus();
+      document.getElementById("search-input").select();
+      break;
+    default:
+      eventHandled = false;
+      break;
+    }
+    if (eventHandled) {
+      d3.event.preventDefault();
     }
     if (!allowRepetition) {
       state.lastKeyDown = d3.event.keyCode;
@@ -661,7 +798,7 @@ class GraphView extends View {
         })
         .append("title")
         .text(function(l) {
-          return d.getLabel();
+          return d.getTitle();
         })
       if (d.type != undefined) {
         d3.select(this).append("text")

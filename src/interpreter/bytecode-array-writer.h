@@ -6,22 +6,26 @@
 #define V8_INTERPRETER_BYTECODE_ARRAY_WRITER_H_
 
 #include "src/interpreter/bytecode-pipeline.h"
-#include "src/interpreter/source-position-table.h"
+#include "src/source-position-table.h"
 
 namespace v8 {
 namespace internal {
+
+class SourcePositionTableBuilder;
+
 namespace interpreter {
 
 class BytecodeLabel;
-class SourcePositionTableBuilder;
 class ConstantArrayBuilder;
 
 // Class for emitting bytecode as the final stage of the bytecode
 // generation pipeline.
 class BytecodeArrayWriter final : public BytecodePipelineStage {
  public:
-  BytecodeArrayWriter(Isolate* isolate, Zone* zone,
-                      ConstantArrayBuilder* constant_array_builder);
+  BytecodeArrayWriter(
+      Isolate* isolate, Zone* zone,
+      ConstantArrayBuilder* constant_array_builder,
+      SourcePositionTableBuilder::RecordingMode source_position_mode);
   virtual ~BytecodeArrayWriter();
 
   // BytecodePipelineStage interface.
@@ -34,6 +38,22 @@ class BytecodeArrayWriter final : public BytecodePipelineStage {
       Handle<FixedArray> handler_table) override;
 
  private:
+  // Maximum sized packed bytecode is comprised of a prefix bytecode,
+  // plus the actual bytecode, plus the maximum number of operands times
+  // the maximum operand size.
+  static const size_t kMaxSizeOfPackedBytecode =
+      2 * sizeof(Bytecode) +
+      Bytecodes::kMaxOperands * static_cast<size_t>(OperandSize::kLast);
+
+  // Constants that act as placeholders for jump operands to be
+  // patched. These have operand sizes that match the sizes of
+  // reserved constant pool entries.
+  const uint32_t k8BitJumpPlaceholder = 0x7f;
+  const uint32_t k16BitJumpPlaceholder =
+      k8BitJumpPlaceholder | (k8BitJumpPlaceholder << 8);
+  const uint32_t k32BitJumpPlaceholder =
+      k16BitJumpPlaceholder | (k16BitJumpPlaceholder << 16);
+
   void PatchJump(size_t jump_target, size_t jump_location);
   void PatchJumpWith8BitOperand(size_t jump_location, int delta);
   void PatchJumpWith16BitOperand(size_t jump_location, int delta);

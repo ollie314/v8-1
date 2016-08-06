@@ -121,12 +121,19 @@
       # also controls coverage granularity (1 for function-level, 2 for
       # block-level, 3 for edge-level).
       'sanitizer_coverage%': 0,
+
+      # Use dynamic libraries instrumented by one of the sanitizers
+      # instead of the standard system libraries. Set this flag to download
+      # prebuilt binaries from GCS.
+      'use_prebuilt_instrumented_libraries%': 0,
+
       # Use libc++ (buildtools/third_party/libc++ and
       # buildtools/third_party/libc++abi) instead of stdlibc++ as standard
       # library. This is intended to be used for instrumented builds.
       'use_custom_libcxx%': 0,
 
       'clang_dir%': '<(base_dir)/third_party/llvm-build/Release+Asserts',
+      'make_clang_dir%': '<(base_dir)/third_party/llvm-build/Release+Asserts',
 
       'use_lto%': 0,
 
@@ -149,6 +156,9 @@
 
       'test_isolation_mode%': 'noop',
 
+      # By default, use ICU data file (icudtl.dat).
+      'icu_use_data_file_flag%': 1,
+
       'conditions': [
         # Set default gomadir.
         ['OS=="win"', {
@@ -166,7 +176,7 @@
         # are using a custom toolchain and need to control -B in ldflags.
         # Do not use 32-bit gold on 32-bit hosts as it runs out address space
         # for component=static_library builds.
-        ['(OS=="linux" or OS=="android") and (target_arch=="x64" or target_arch=="arm" or (target_arch=="ia32" and host_arch=="x64"))', {
+        ['((OS=="linux" or OS=="android") and (target_arch=="x64" or target_arch=="arm" or (target_arch=="ia32" and host_arch=="x64"))) or (OS=="linux" and target_arch=="mipsel")', {
           'linux_use_bundled_gold%': 1,
         }, {
           'linux_use_bundled_gold%': 0,
@@ -175,6 +185,7 @@
     },
     'base_dir%': '<(base_dir)',
     'clang_dir%': '<(clang_dir)',
+    'make_clang_dir%': '<(make_clang_dir)',
     'host_arch%': '<(host_arch)',
     'host_clang%': '<(host_clang)',
     'target_arch%': '<(target_arch)',
@@ -187,6 +198,7 @@
     'msan%': '<(msan)',
     'tsan%': '<(tsan)',
     'sanitizer_coverage%': '<(sanitizer_coverage)',
+    'use_prebuilt_instrumented_libraries%': '<(use_prebuilt_instrumented_libraries)',
     'use_custom_libcxx%': '<(use_custom_libcxx)',
     'linux_use_bundled_gold%': '<(linux_use_bundled_gold)',
     'use_lto%': '<(use_lto)',
@@ -197,6 +209,7 @@
     'fastbuild%': '<(fastbuild)',
     'coverage%': '<(coverage)',
     'sysroot%': '<(sysroot)',
+    'icu_use_data_file_flag%': '<(icu_use_data_file_flag)',
 
     # Add a simple extras solely for the purpose of the cctests
     'v8_extra_library_files': ['../test/cctest/test-extra.js'],
@@ -229,6 +242,9 @@
     # Relative path to icu.gyp from this file.
     'icu_gyp_path': '../third_party/icu/icu.gyp',
 
+    # Relative path to inspector.gyp from this file.
+    'inspector_gyp_path': '../src/v8-inspector/inspector.gyp',
+
     'conditions': [
       ['(v8_target_arch=="arm" and host_arch!="arm") or \
         (v8_target_arch=="arm64" and host_arch!="arm64") or \
@@ -239,6 +255,18 @@
         'want_separate_host_toolset': 1,
       }, {
         'want_separate_host_toolset': 0,
+      }],
+      ['(v8_target_arch=="arm" and host_arch!="arm") or \
+        (v8_target_arch=="arm64" and host_arch!="arm64") or \
+        (v8_target_arch=="mipsel" and host_arch!="mipsel") or \
+        (v8_target_arch=="mips64el" and host_arch!="mips64el") or \
+        (v8_target_arch=="mips" and host_arch!="mips") or \
+        (v8_target_arch=="mips64" and host_arch!="mips64") or \
+        (v8_target_arch=="x64" and host_arch!="x64") or \
+        (OS=="android" or OS=="qnx")', {
+        'want_separate_host_toolset_mkpeephole': 1,
+      }, {
+        'want_separate_host_toolset_mkpeephole': 0,
       }],
       ['OS == "win"', {
         'os_posix%': 0,
@@ -425,6 +453,8 @@
       'clang_warning_flags': [
         # TODO(thakis): https://crbug.com/604888
         '-Wno-undefined-var-template',
+        # TODO(yangguo): issue 5258
+        '-Wno-nonportable-include-path',
       ],
       'conditions':[
         ['OS=="android"', {
@@ -633,6 +663,11 @@
                   'MEMORY_SANITIZER',
                 ],
               }],
+            ],
+          }],
+          ['use_prebuilt_instrumented_libraries==1', {
+            'dependencies': [
+              '<(DEPTH)/third_party/instrumented_libraries/instrumented_libraries.gyp:prebuilt_instrumented_libraries',
             ],
           }],
           ['use_custom_libcxx==1', {
@@ -983,10 +1018,6 @@
                   # pattern.
                   '-Wno-missing-field-initializers',
 
-                  # Many files use intrinsics without including this header.
-                  # TODO(hans): Fix those files, or move this to sub-GYPs.
-                  '/FIIntrin.h',
-
                   # TODO(hans): Make this list shorter eventually, http://crbug.com/504657
                   '-Qunused-arguments',  # http://crbug.com/504658
                   '-Wno-microsoft-enum-value',  # http://crbug.com/505296
@@ -1087,7 +1118,6 @@
       'target_defaults': {
         'defines': [
           'ANDROID',
-          'V8_ANDROID_LOG_STDOUT',
         ],
         'configurations': {
           'Release': {

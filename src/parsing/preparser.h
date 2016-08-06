@@ -7,7 +7,7 @@
 
 #include "src/ast/scopes.h"
 #include "src/bailout-reason.h"
-#include "src/hashmap.h"
+#include "src/base/hashmap.h"
 #include "src/messages.h"
 #include "src/parsing/expression-classifier.h"
 #include "src/parsing/func-name-inferrer.h"
@@ -117,8 +117,10 @@ class PreParserIdentifier {
 
 class PreParserExpression {
  public:
+  PreParserExpression() : code_(TypeField::encode(kExpression)) {}
+
   static PreParserExpression Default() {
-    return PreParserExpression(TypeField::encode(kExpression));
+    return PreParserExpression();
   }
 
   static PreParserExpression Spread(PreParserExpression expression) {
@@ -292,7 +294,7 @@ class PreParserExpression {
   void set_index(int index) {}  // For YieldExpressions
   void set_should_eager_compile() {}
 
-  int position() const { return RelocInfo::kNoPosition; }
+  int position() const { return kNoSourcePosition; }
   void set_function_token_position(int position) {}
 
  private:
@@ -502,8 +504,8 @@ class PreParserFactory {
     return PreParserExpression::Assignment();
   }
   PreParserExpression NewYield(PreParserExpression generator_object,
-                               PreParserExpression expression,
-                               int pos) {
+                               PreParserExpression expression, int pos,
+                               Yield::OnException on_exception) {
     return PreParserExpression::Default();
   }
   PreParserExpression NewConditional(PreParserExpression condition,
@@ -572,7 +574,7 @@ class PreParserFactory {
 
 
 struct PreParserFormalParameters : FormalParametersBase {
-  explicit PreParserFormalParameters(Scope* scope)
+  explicit PreParserFormalParameters(DeclarationScope* scope)
       : FormalParametersBase(scope) {}
   int arity = 0;
 
@@ -759,6 +761,9 @@ class PreParserTraits {
                        const char* arg = NULL,
                        ParseErrorType error_type = kSyntaxError);
 
+  // A dummy function, just useful as an argument to CHECK_OK_CUSTOM.
+  static void Void() {}
+
   // "null" return type creators.
   static PreParserIdentifier EmptyIdentifier() {
     return PreParserIdentifier::Default();
@@ -802,15 +807,14 @@ class PreParserTraits {
     return PreParserExpression::This();
   }
 
-  static PreParserExpression SuperPropertyReference(Scope* scope,
-                                                    PreParserFactory* factory,
-                                                    int pos) {
+  static PreParserExpression NewSuperPropertyReference(
+      Scope* scope, PreParserFactory* factory, int pos) {
     return PreParserExpression::Default();
   }
 
-  static PreParserExpression SuperCallReference(Scope* scope,
-                                                PreParserFactory* factory,
-                                                int pos) {
+  static PreParserExpression NewSuperCallReference(Scope* scope,
+                                                   PreParserFactory* factory,
+                                                   int pos) {
     return PreParserExpression::SuperCallReference();
   }
 
@@ -874,9 +878,9 @@ class PreParserTraits {
       FunctionLiteral::FunctionType function_type, bool* ok);
 
   V8_INLINE void ParseArrowFunctionFormalParameterList(
-      PreParserFormalParameters* parameters,
-      PreParserExpression expression, const Scanner::Location& params_loc,
-      Scanner::Location* duplicate_loc, bool* ok);
+      PreParserFormalParameters* parameters, PreParserExpression expression,
+      const Scanner::Location& params_loc, Scanner::Location* duplicate_loc,
+      const Scope::Snapshot& scope_snapshot, bool* ok);
 
   void ParseAsyncArrowSingleExpressionBody(
       PreParserStatementList body, bool accept_IN,
@@ -916,7 +920,8 @@ class PreParserTraits {
                           int initializer_end_position, bool is_rest) {
     ++parameters->arity;
   }
-  void DeclareFormalParameter(Scope* scope, PreParserIdentifier parameter,
+  void DeclareFormalParameter(DeclarationScope* scope,
+                              PreParserIdentifier parameter,
                               Type::ExpressionClassifier* classifier) {
     if (!classifier->is_simple_parameter_list()) {
       scope->SetHasNonSimpleParameters();
@@ -974,7 +979,7 @@ class PreParserTraits {
   }
 
   inline void QueueDestructuringAssignmentForRewriting(PreParserExpression) {}
-  inline void QueueNonPatternForRewriting(PreParserExpression) {}
+  inline void QueueNonPatternForRewriting(PreParserExpression, bool* ok) {}
 
   void SetFunctionNameFromPropertyName(PreParserExpression,
                                        PreParserIdentifier) {}
@@ -987,6 +992,8 @@ class PreParserTraits {
   inline PreParserExpression RewriteAwaitExpression(PreParserExpression value,
                                                     int pos);
 
+  V8_INLINE ZoneList<typename Type::ExpressionClassifier::Error>*
+      GetReportedErrorList() const;
   V8_INLINE Zone* zone() const;
   V8_INLINE ZoneList<PreParserExpression>* GetNonPatternList() const;
 
@@ -1033,18 +1040,16 @@ class PreParser : public ParserBase<PreParserTraits> {
   // during parsing.
   PreParseResult PreParseProgram(int* materialized_literals = 0,
                                  bool is_module = false) {
-    Scope* scope = NewScope(scope_, SCRIPT_SCOPE);
+    DCHECK_NULL(scope_state_);
+    Scope* scope = NewScriptScope();
 
     // ModuleDeclarationInstantiation for Source Text Module Records creates a
     // new Module Environment Record whose outer lexical environment record is
     // the global scope.
-    if (is_module) {
-      scope = NewScope(scope, MODULE_SCOPE);
-    }
+    if (is_module) scope = NewModuleScope(scope);
 
-    PreParserFactory factory(NULL);
-    FunctionState top_scope(&function_state_, &scope_, scope, kNormalFunction,
-                            &factory);
+    FunctionState top_scope(&function_state_, &scope_state_, scope,
+                            kNormalFunction);
     bool ok = true;
     int start_position = scanner()->peek_location().beg_pos;
     parsing_module_ = is_module;
@@ -1052,7 +1057,7 @@ class PreParser : public ParserBase<PreParserTraits> {
     if (stack_overflow()) return kPreParseStackOverflow;
     if (!ok) {
       ReportUnexpectedToken(scanner()->current_token());
-    } else if (is_strict(scope_->language_mode())) {
+    } else if (is_strict(this->scope()->language_mode())) {
       CheckStrictOctalLiteral(start_position, scanner()->location().end_pos,
                               &ok);
       CheckDecimalLiteralWithLeadingZero(use_counts_, start_position,
@@ -1186,11 +1191,10 @@ PreParserExpression PreParserTraits::SpreadCallNew(PreParserExpression function,
   return pre_parser_->factory()->NewCallNew(function, args, pos);
 }
 
-
 void PreParserTraits::ParseArrowFunctionFormalParameterList(
-    PreParserFormalParameters* parameters,
-    PreParserExpression params, const Scanner::Location& params_loc,
-    Scanner::Location* duplicate_loc, bool* ok) {
+    PreParserFormalParameters* parameters, PreParserExpression params,
+    const Scanner::Location& params_loc, Scanner::Location* duplicate_loc,
+    const Scope::Snapshot& scope_snapshot, bool* ok) {
   // TODO(wingo): Detect duplicated identifiers in paramlists.  Detect parameter
   // lists that are too long.
 }
@@ -1214,13 +1218,19 @@ PreParserExpression PreParserTraits::RewriteAwaitExpression(
   return value;
 }
 
-Zone* PreParserTraits::zone() const {
-  return pre_parser_->function_state_->scope()->zone();
+ZoneList<PreParserExpression>* PreParserTraits::GetNonPatternList() const {
+  return pre_parser_->function_state_->non_patterns_to_rewrite();
 }
 
 
-ZoneList<PreParserExpression>* PreParserTraits::GetNonPatternList() const {
-  return pre_parser_->function_state_->non_patterns_to_rewrite();
+ZoneList<typename PreParserTraits::Type::ExpressionClassifier::Error>*
+PreParserTraits::GetReportedErrorList() const {
+  return pre_parser_->function_state_->GetReportedErrorList();
+}
+
+
+Zone* PreParserTraits::zone() const {
+  return pre_parser_->function_state_->scope()->zone();
 }
 
 
@@ -1235,11 +1245,11 @@ PreParserStatementList PreParser::ParseEagerFunctionBody(
     FunctionLiteral::FunctionType function_type, bool* ok) {
   ParsingModeScope parsing_mode(this, PARSE_EAGERLY);
 
-  Scope* inner_scope = scope_;
-  if (!parameters.is_simple) inner_scope = NewScope(scope_, BLOCK_SCOPE);
+  Scope* inner_scope = scope();
+  if (!parameters.is_simple) inner_scope = NewScope(BLOCK_SCOPE);
 
   {
-    BlockState block_state(&scope_, inner_scope);
+    BlockState block_state(&scope_state_, inner_scope);
     ParseStatementList(Token::RBRACE, ok);
     if (!*ok) return PreParserStatementList();
   }

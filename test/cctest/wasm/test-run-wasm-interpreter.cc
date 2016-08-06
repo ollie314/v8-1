@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <memory>
+
 #include "src/wasm/wasm-macro-gen.h"
 
 #include "src/wasm/wasm-interpreter.h"
@@ -138,11 +140,11 @@ TEST(Run_Wasm_nested_ifs_i) {
 // Make tests more robust by not hard-coding offsets of various operations.
 // The {Find} method finds the offsets for the given bytecodes, returning
 // the offsets in an array.
-SmartArrayPointer<int> Find(byte* code, size_t code_size, int n, ...) {
+std::unique_ptr<int[]> Find(byte* code, size_t code_size, int n, ...) {
   va_list vl;
   va_start(vl, n);
 
-  SmartArrayPointer<int> offsets(new int[n]);
+  std::unique_ptr<int[]> offsets(new int[n]);
 
   for (int i = 0; i < n; i++) {
     offsets[i] = -1;
@@ -166,7 +168,7 @@ TEST(Breakpoint_I32Add) {
   static const int kLocalsDeclSize = 1;
   static const int kNumBreakpoints = 3;
   byte code[] = {WASM_I32_ADD(WASM_GET_LOCAL(0), WASM_GET_LOCAL(1))};
-  SmartArrayPointer<int> offsets =
+  std::unique_ptr<int[]> offsets =
       Find(code, sizeof(code), kNumBreakpoints, kExprGetLocal, kExprGetLocal,
            kExprI32Add);
 
@@ -176,7 +178,7 @@ TEST(Breakpoint_I32Add) {
   r.Build(code, code + arraysize(code));
 
   WasmInterpreter* interpreter = r.interpreter();
-  WasmInterpreter::Thread& thread = interpreter->GetThread(0);
+  WasmInterpreter::Thread* thread = interpreter->GetThread(0);
   for (int i = 0; i < kNumBreakpoints; i++) {
     interpreter->SetBreakpoint(r.function(), kLocalsDeclSize + offsets[i],
                                true);
@@ -184,23 +186,23 @@ TEST(Breakpoint_I32Add) {
 
   FOR_UINT32_INPUTS(a) {
     for (uint32_t b = 11; b < 3000000000u; b += 1000000000u) {
-      thread.Reset();
+      thread->Reset();
       WasmVal args[] = {WasmVal(*a), WasmVal(b)};
-      thread.PushFrame(r.function(), args);
+      thread->PushFrame(r.function(), args);
 
       for (int i = 0; i < kNumBreakpoints; i++) {
-        thread.Run();  // run to next breakpoint
+        thread->Run();  // run to next breakpoint
         // Check the thread stopped at the right pc.
-        CHECK_EQ(WasmInterpreter::PAUSED, thread.state());
-        CHECK_EQ(kLocalsDeclSize + offsets[i], thread.GetBreakpointPc());
+        CHECK_EQ(WasmInterpreter::PAUSED, thread->state());
+        CHECK_EQ(kLocalsDeclSize + offsets[i], thread->GetBreakpointPc());
       }
 
-      thread.Run();  // run to completion
+      thread->Run();  // run to completion
 
       // Check the thread finished with the right value.
-      CHECK_EQ(WasmInterpreter::FINISHED, thread.state());
+      CHECK_EQ(WasmInterpreter::FINISHED, thread->state());
       uint32_t expected = (*a) + (b);
-      CHECK_EQ(expected, thread.GetReturnValue().to<uint32_t>());
+      CHECK_EQ(expected, thread->GetReturnValue().to<uint32_t>());
     }
   }
 }
@@ -215,28 +217,28 @@ TEST(Step_I32Mul) {
   r.Build(code, code + arraysize(code));
 
   WasmInterpreter* interpreter = r.interpreter();
-  WasmInterpreter::Thread& thread = interpreter->GetThread(0);
+  WasmInterpreter::Thread* thread = interpreter->GetThread(0);
 
   FOR_UINT32_INPUTS(a) {
     for (uint32_t b = 33; b < 3000000000u; b += 1000000000u) {
-      thread.Reset();
+      thread->Reset();
       WasmVal args[] = {WasmVal(*a), WasmVal(b)};
-      thread.PushFrame(r.function(), args);
+      thread->PushFrame(r.function(), args);
 
       // Run instructions one by one.
       for (int i = 0; i < kTraceLength - 1; i++) {
-        thread.Step();
+        thread->Step();
         // Check the thread stopped.
-        CHECK_EQ(WasmInterpreter::PAUSED, thread.state());
+        CHECK_EQ(WasmInterpreter::PAUSED, thread->state());
       }
 
       // Run last instruction.
-      thread.Step();
+      thread->Step();
 
       // Check the thread finished with the right value.
-      CHECK_EQ(WasmInterpreter::FINISHED, thread.state());
+      CHECK_EQ(WasmInterpreter::FINISHED, thread->state());
       uint32_t expected = (*a) * (b);
-      CHECK_EQ(expected, thread.GetReturnValue().to<uint32_t>());
+      CHECK_EQ(expected, thread->GetReturnValue().to<uint32_t>());
     }
   }
 }
@@ -245,7 +247,7 @@ TEST(Breakpoint_I32And_disable) {
   static const int kLocalsDeclSize = 1;
   static const int kNumBreakpoints = 1;
   byte code[] = {WASM_I32_AND(WASM_GET_LOCAL(0), WASM_GET_LOCAL(1))};
-  SmartArrayPointer<int> offsets =
+  std::unique_ptr<int[]> offsets =
       Find(code, sizeof(code), kNumBreakpoints, kExprI32And);
 
   WasmRunner<int32_t> r(kExecuteInterpreted, MachineType::Uint32(),
@@ -254,7 +256,7 @@ TEST(Breakpoint_I32And_disable) {
   r.Build(code, code + arraysize(code));
 
   WasmInterpreter* interpreter = r.interpreter();
-  WasmInterpreter::Thread& thread = interpreter->GetThread(0);
+  WasmInterpreter::Thread* thread = interpreter->GetThread(0);
 
   FOR_UINT32_INPUTS(a) {
     for (uint32_t b = 11; b < 3000000000u; b += 1000000000u) {
@@ -262,23 +264,23 @@ TEST(Breakpoint_I32And_disable) {
       for (int do_break = 0; do_break < 2; do_break++) {
         interpreter->SetBreakpoint(r.function(), kLocalsDeclSize + offsets[0],
                                    do_break);
-        thread.Reset();
+        thread->Reset();
         WasmVal args[] = {WasmVal(*a), WasmVal(b)};
-        thread.PushFrame(r.function(), args);
+        thread->PushFrame(r.function(), args);
 
         if (do_break) {
-          thread.Run();  // run to next breakpoint
+          thread->Run();  // run to next breakpoint
           // Check the thread stopped at the right pc.
-          CHECK_EQ(WasmInterpreter::PAUSED, thread.state());
-          CHECK_EQ(kLocalsDeclSize + offsets[0], thread.GetBreakpointPc());
+          CHECK_EQ(WasmInterpreter::PAUSED, thread->state());
+          CHECK_EQ(kLocalsDeclSize + offsets[0], thread->GetBreakpointPc());
         }
 
-        thread.Run();  // run to completion
+        thread->Run();  // run to completion
 
         // Check the thread finished with the right value.
-        CHECK_EQ(WasmInterpreter::FINISHED, thread.state());
+        CHECK_EQ(WasmInterpreter::FINISHED, thread->state());
         uint32_t expected = (*a) & (b);
-        CHECK_EQ(expected, thread.GetReturnValue().to<uint32_t>());
+        CHECK_EQ(expected, thread->GetReturnValue().to<uint32_t>());
       }
     }
   }

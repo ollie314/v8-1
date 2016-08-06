@@ -29,6 +29,7 @@ STATIC_CONST_MEMBER_DEFINITION const size_t
     ConstantArrayBuilderTest::k8BitCapacity;
 
 TEST_F(ConstantArrayBuilderTest, AllocateAllEntries) {
+  CanonicalHandleScope canonical(isolate());
   ConstantArrayBuilder builder(isolate(), zone());
   for (size_t i = 0; i < k16BitCapacity; i++) {
     builder.Insert(handle(Smi::FromInt(static_cast<int>(i)), isolate()));
@@ -40,6 +41,7 @@ TEST_F(ConstantArrayBuilderTest, AllocateAllEntries) {
 }
 
 TEST_F(ConstantArrayBuilderTest, AllocateEntriesWithIdx8Reservations) {
+  CanonicalHandleScope canonical(isolate());
   for (size_t reserved = 1; reserved < k8BitCapacity; reserved *= 3) {
     ConstantArrayBuilder builder(isolate(), zone());
     for (size_t i = 0; i < reserved; i++) {
@@ -109,6 +111,7 @@ TEST_F(ConstantArrayBuilderTest, AllocateEntriesWithIdx8Reservations) {
 }
 
 TEST_F(ConstantArrayBuilderTest, AllocateEntriesWithWideReservations) {
+  CanonicalHandleScope canonical(isolate());
   for (size_t reserved = 1; reserved < k8BitCapacity; reserved *= 3) {
     ConstantArrayBuilder builder(isolate(), zone());
     for (size_t i = 0; i < k8BitCapacity; i++) {
@@ -145,6 +148,7 @@ TEST_F(ConstantArrayBuilderTest, AllocateEntriesWithWideReservations) {
 
 
 TEST_F(ConstantArrayBuilderTest, ToFixedArray) {
+  CanonicalHandleScope canonical(isolate());
   ConstantArrayBuilder builder(isolate(), zone());
   static const size_t kNumberOfElements = 37;
   for (size_t i = 0; i < kNumberOfElements; i++) {
@@ -160,6 +164,7 @@ TEST_F(ConstantArrayBuilderTest, ToFixedArray) {
 }
 
 TEST_F(ConstantArrayBuilderTest, ToLargeFixedArray) {
+  CanonicalHandleScope canonical(isolate());
   ConstantArrayBuilder builder(isolate(), zone());
   static const size_t kNumberOfElements = 37373;
   for (size_t i = 0; i < kNumberOfElements; i++) {
@@ -175,6 +180,7 @@ TEST_F(ConstantArrayBuilderTest, ToLargeFixedArray) {
 }
 
 TEST_F(ConstantArrayBuilderTest, GapFilledWhenLowReservationCommitted) {
+  CanonicalHandleScope canonical(isolate());
   ConstantArrayBuilder builder(isolate(), zone());
   for (size_t i = 0; i < k8BitCapacity; i++) {
     OperandSize operand_size = builder.CreateReservedEntry();
@@ -201,6 +207,7 @@ TEST_F(ConstantArrayBuilderTest, GapFilledWhenLowReservationCommitted) {
 }
 
 TEST_F(ConstantArrayBuilderTest, GapNotFilledWhenLowReservationDiscarded) {
+  CanonicalHandleScope canonical(isolate());
   ConstantArrayBuilder builder(isolate(), zone());
   for (size_t i = 0; i < k8BitCapacity; i++) {
     OperandSize operand_size = builder.CreateReservedEntry();
@@ -227,6 +234,7 @@ TEST_F(ConstantArrayBuilderTest, GapNotFilledWhenLowReservationDiscarded) {
 }
 
 TEST_F(ConstantArrayBuilderTest, HolesWithUnusedReservations) {
+  CanonicalHandleScope canonical(isolate());
   static int kNumberOfHoles = 128;
   ConstantArrayBuilder builder(isolate(), zone());
   for (int i = 0; i < kNumberOfHoles; ++i) {
@@ -250,6 +258,7 @@ TEST_F(ConstantArrayBuilderTest, HolesWithUnusedReservations) {
 }
 
 TEST_F(ConstantArrayBuilderTest, ReservationsAtAllScales) {
+  CanonicalHandleScope canonical(isolate());
   ConstantArrayBuilder builder(isolate(), zone());
   for (int i = 0; i < 256; i++) {
     CHECK_EQ(builder.CreateReservedEntry(), OperandSize::kByte);
@@ -280,6 +289,41 @@ TEST_F(ConstantArrayBuilderTest, ReservationsAtAllScales) {
       expected = isolate()->factory()->the_hole_value();
     }
     CHECK(constant_array->get(i)->SameValue(*expected));
+  }
+}
+
+TEST_F(ConstantArrayBuilderTest, AllocateEntriesWithFixedReservations) {
+  CanonicalHandleScope canonical(isolate());
+  ConstantArrayBuilder builder(isolate(), zone());
+  for (size_t i = 0; i < k16BitCapacity; i++) {
+    if ((i % 2) == 0) {
+      CHECK_EQ(i, builder.AllocateEntry());
+    } else {
+      builder.Insert(handle(Smi::FromInt(static_cast<int>(i)), isolate()));
+    }
+  }
+  CHECK_EQ(builder.size(), k16BitCapacity);
+
+  // Check values before reserved entries are inserted.
+  for (size_t i = 0; i < k16BitCapacity; i++) {
+    if ((i % 2) == 0) {
+      // Check reserved values are the hole.
+      Handle<Object> empty = builder.At(i);
+      CHECK(empty->SameValue(isolate()->heap()->the_hole_value()));
+    } else {
+      CHECK_EQ(Handle<Smi>::cast(builder.At(i))->value(), i);
+    }
+  }
+
+  // Insert reserved entries.
+  for (size_t i = 0; i < k16BitCapacity; i += 2) {
+    builder.InsertAllocatedEntry(
+        i, handle(Smi::FromInt(static_cast<int>(i)), isolate()));
+  }
+
+  // Check values after reserved entries are inserted.
+  for (size_t i = 0; i < k16BitCapacity; i++) {
+    CHECK_EQ(Handle<Smi>::cast(builder.At(i))->value(), i);
   }
 }
 

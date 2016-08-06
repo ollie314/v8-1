@@ -44,14 +44,11 @@ namespace compiler {
   V(X87Ror)                        \
   V(X87Lzcnt)                      \
   V(X87Popcnt)                     \
-  V(X87Float64Log)                 \
   V(X87Float32Cmp)                 \
   V(X87Float32Add)                 \
   V(X87Float32Sub)                 \
   V(X87Float32Mul)                 \
   V(X87Float32Div)                 \
-  V(X87Float32Max)                 \
-  V(X87Float32Min)                 \
   V(X87Float32Abs)                 \
   V(X87Float32Sqrt)                \
   V(X87Float32Round)               \
@@ -81,6 +78,7 @@ namespace compiler {
   V(X87Float64Sqrt)                \
   V(X87Float64Round)               \
   V(X87Float64Cmp)                 \
+  V(X87Float64SilenceNaN)          \
   V(X87Movsxbl)                    \
   V(X87Movzxbl)                    \
   V(X87Movb)                       \

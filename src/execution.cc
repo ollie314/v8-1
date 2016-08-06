@@ -59,6 +59,19 @@ MUST_USE_RESULT MaybeHandle<Object> Invoke(Isolate* isolate, bool is_construct,
                                            Handle<Object> new_target) {
   DCHECK(!receiver->IsJSGlobalObject());
 
+#ifdef USE_SIMULATOR
+  // Simulators use separate stacks for C++ and JS. JS stack overflow checks
+  // are performed whenever a JS function is called. However, it can be the case
+  // that the C++ stack grows faster than the JS stack, resulting in an overflow
+  // there. Add a check here to make that less likely.
+  StackLimitCheck check(isolate);
+  if (check.HasOverflowed()) {
+    isolate->StackOverflow();
+    isolate->ReportPendingMessages();
+    return MaybeHandle<Object>();
+  }
+#endif
+
   // Entering JavaScript.
   VMState<JS> state(isolate);
   CHECK(AllowJavascriptExecution::IsAllowed(isolate));
@@ -86,6 +99,8 @@ MUST_USE_RESULT MaybeHandle<Object> Invoke(Isolate* isolate, bool is_construct,
     SealHandleScope shs(isolate);
     JSEntryFunction stub_entry = FUNCTION_CAST<JSEntryFunction>(code->entry());
 
+    if (FLAG_clear_exceptions_on_js_entry) isolate->clear_pending_exception();
+
     // Call the function through the right JS entry stub.
     Object* orig_func = *new_target;
     Object* func = *target;
@@ -95,6 +110,8 @@ MUST_USE_RESULT MaybeHandle<Object> Invoke(Isolate* isolate, bool is_construct,
       PrintDeserializedCodeInfo(Handle<JSFunction>::cast(target));
     }
     RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::JS_Execution);
+    TRACE_EVENT_RUNTIME_CALL_STATS_TRACING_SCOPED(
+        isolate, &tracing::TraceEventStatsTable::JS_Execution);
     value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv,
                                 argc, argv);
   }
@@ -106,7 +123,7 @@ MUST_USE_RESULT MaybeHandle<Object> Invoke(Isolate* isolate, bool is_construct,
 #endif
 
   // Update the pending exception flag and return the value.
-  bool has_exception = value->IsException();
+  bool has_exception = value->IsException(isolate);
   DCHECK(has_exception == isolate->has_pending_exception());
   if (has_exception) {
     isolate->ReportPendingMessages();
@@ -140,7 +157,8 @@ MaybeHandle<Object> Execution::Call(Isolate* isolate, Handle<Object> callable,
     SaveContext save(isolate);
     isolate->set_context(function->context());
     DCHECK(function->context()->global_object()->IsJSGlobalObject());
-    auto value = Builtins::InvokeApiFunction(function, receiver, argc, argv);
+    auto value =
+        Builtins::InvokeApiFunction(isolate, function, receiver, argc, argv);
     bool has_exception = value.is_null();
     DCHECK(has_exception == isolate->has_pending_exception());
     if (has_exception) {
@@ -417,16 +435,23 @@ Handle<String> Execution::GetStackTraceLine(Handle<Object> recv,
                                             Handle<Object> pos,
                                             Handle<Object> is_global) {
   Isolate* isolate = fun->GetIsolate();
-  Handle<Object> args[] = { recv, fun, pos, is_global };
-  MaybeHandle<Object> maybe_result =
-      TryCall(isolate, isolate->get_stack_trace_line_fun(),
-              isolate->factory()->undefined_value(), arraysize(args), args);
-  Handle<Object> result;
-  if (!maybe_result.ToHandle(&result) || !result->IsString()) {
+  Handle<Object> strict_mode = isolate->factory()->ToBoolean(false);
+
+  MaybeHandle<Object> maybe_callsite =
+      CallSiteUtils::Construct(isolate, recv, fun, pos, strict_mode);
+  if (maybe_callsite.is_null()) {
+    isolate->clear_pending_exception();
     return isolate->factory()->empty_string();
   }
 
-  return Handle<String>::cast(result);
+  MaybeHandle<String> maybe_to_string =
+      CallSiteUtils::ToString(isolate, maybe_callsite.ToHandleChecked());
+  if (maybe_to_string.is_null()) {
+    isolate->clear_pending_exception();
+    return isolate->factory()->empty_string();
+  }
+
+  return maybe_to_string.ToHandleChecked();
 }
 
 

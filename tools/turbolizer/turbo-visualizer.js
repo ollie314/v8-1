@@ -44,8 +44,23 @@ document.onload = (function(d3){
     }
   }
 
+  function getLastExpandedState(type, default_state) {
+    var state = window.sessionStorage.getItem("expandedState-"+type);
+    if (state === null) return default_state;
+    return state === 'true';
+  }
+
+  function setLastExpandedState(type, state) {
+    window.sessionStorage.setItem("expandedState-"+type, state);
+  }
+
+  function toggleSourceExpanded() {
+    setSourceExpanded(!sourceExpanded);
+  }
+
   function setSourceExpanded(newState) {
     sourceExpanded = newState;
+    setLastExpandedState("source", newState);
     updatePanes();
     if (newState) {
       sourceCollapseClassList.add(COLLAPSE_PANE_BUTTON_VISIBLE);
@@ -60,8 +75,13 @@ document.onload = (function(d3){
     }
   }
 
+  function toggleDisassemblyExpanded() {
+    setDisassemblyExpanded(!disassemblyExpanded);
+  }
+
   function setDisassemblyExpanded(newState) {
     disassemblyExpanded = newState;
+    setLastExpandedState("disassembly", newState);
     updatePanes();
     if (newState) {
       disassemblyCollapseClassList.add(COLLAPSE_PANE_BUTTON_VISIBLE);
@@ -118,26 +138,14 @@ document.onload = (function(d3){
   selectionBroker = new SelectionBroker();
 
   function initializeHandlers(g) {
-    d3.select("#source-expand").on("click", function(){
-      setSourceExpanded(true);
+    d3.select("#source-collapse").on("click", function(){
+      toggleSourceExpanded(true);
       setTimeout(function(){
         g.fitGraphViewToWindow();
       }, 1000);
     });
-    d3.select("#source-shrink").on("click", function(){
-      setSourceExpanded(false);
-      setTimeout(function(){
-        g.fitGraphViewToWindow();
-      }, 1000);
-    });
-    d3.select("#disassembly-expand").on("click", function(){
-      setDisassemblyExpanded(true);
-      setTimeout(function(){
-        g.fitGraphViewToWindow();
-      }, 1000);
-    });
-    d3.select("#disassembly-shrink").on("click", function(){
-      setDisassemblyExpanded(false);
+    d3.select("#disassembly-collapse").on("click", function(){
+      toggleDisassemblyExpanded();
       setTimeout(function(){
         g.fitGraphViewToWindow();
       }, 1000);
@@ -161,6 +169,7 @@ document.onload = (function(d3){
             jsonObj = JSON.parse(txtRes);
 
             sourceView.initializeCode(jsonObj.source, jsonObj.sourcePosition);
+            disassemblyView.initializeCode(jsonObj.source, jsonObj.sourcePosition);
             schedule.setNodePositionMap(jsonObj.nodePositions);
 
             var selectMenu = document.getElementById('display-selector');
@@ -175,18 +184,49 @@ document.onload = (function(d3){
                 selectMenu.add(optionElement, null);
               }
             }
+
+            var eventMenu = document.getElementById('event-selector');
+            eventMenu.innerHTML = '';
+            for (var event in jsonObj.eventCounts) {
+              var optionElement = document.createElement("option");
+              optionElement.text = event;
+              eventMenu.add(optionElement, null);
+            }
+            disassemblyView.initializePerfProfile(jsonObj.eventCounts);
             disassemblyView.setNodePositionMap(jsonObj.nodePositions);
             disassemblyView.show(disassemblyPhase.data, null);
 
+            var initialPhaseIndex = +window.sessionStorage.getItem("lastSelectedPhase");
+            if (!(initialPhaseIndex in jsonObj.phases)) {
+              initialPhaseIndex = 0;
+            }
+
+            // We wish to show the remembered phase {lastSelectedPhase}, but
+            // this will crash if the first view we switch to is a
+            // ScheduleView. So we first switch to the first phase, which
+            // should never be a ScheduleView.
             displayPhase(jsonObj.phases[0]);
+            displayPhase(jsonObj.phases[initialPhaseIndex]);
+            selectMenu.selectedIndex = initialPhaseIndex;
 
             selectMenu.onchange = function(item) {
+              window.sessionStorage.setItem("lastSelectedPhase", selectMenu.selectedIndex);
               displayPhase(jsonObj.phases[selectMenu.selectedIndex]);
             }
 
+            eventMenu.onchange = function(item) {
+              disassemblyView.show(disassemblyView.data, null);
+            }
+
             fitPanesToParents();
+
+            d3.select("#search-input").attr("value", window.sessionStorage.getItem("lastSearch") || "");
+
           }
           catch(err) {
+            window.console.log("caught exception, clearing session storage just in case");
+            window.sessionStorage.clear(); // just in case
+            window.console.log("showing error");
             window.alert("Invalid TurboFan JSON file\n" +
                          "error: " + err.message);
             return;
@@ -207,8 +247,8 @@ document.onload = (function(d3){
 
   initializeHandlers(graph);
 
-  setSourceExpanded(true);
-  setDisassemblyExpanded(false);
+  setSourceExpanded(getLastExpandedState("source", true));
+  setDisassemblyExpanded(getLastExpandedState("disassembly", false));
 
   displayPhaseView(empty, null);
   fitPanesToParents();

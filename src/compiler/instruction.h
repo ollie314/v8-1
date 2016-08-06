@@ -103,6 +103,8 @@ class InstructionOperand {
     return this->GetCanonicalizedValue() < that.GetCanonicalizedValue();
   }
 
+  bool InterferesWith(const InstructionOperand& that) const;
+
   void Print(const RegisterConfiguration* config) const;
   void Print() const;
 
@@ -437,8 +439,9 @@ class LocationOperand : public InstructionOperand {
   }
 
   DoubleRegister GetDoubleRegister() const {
-    // TODO(bbudge) Tighten this test to IsDoubleRegister when all code
-    // generators are changed to use the correct Get*Register method.
+    // On platforms where FloatRegister, DoubleRegister, and Simd128Register
+    // are all the same type, it's convenient to treat everything as a
+    // DoubleRegister, so be lax about type checking here.
     DCHECK(IsFPRegister());
     return DoubleRegister::from_code(register_code());
   }
@@ -602,19 +605,17 @@ bool InstructionOperand::IsSimd128StackSlot() const {
 
 uint64_t InstructionOperand::GetCanonicalizedValue() const {
   if (IsAllocated() || IsExplicit()) {
-    // TODO(dcarney): put machine type last and mask.
-    MachineRepresentation canonicalized_representation =
-        IsFloatingPoint(LocationOperand::cast(this)->representation())
-            ? MachineRepresentation::kFloat64
-            : MachineRepresentation::kNone;
+    MachineRepresentation canonical = MachineRepresentation::kNone;
+    if (IsFPRegister()) {
+      // We treat all FP register operands the same for simple aliasing.
+      canonical = MachineRepresentation::kFloat64;
+    }
     return InstructionOperand::KindField::update(
-        LocationOperand::RepresentationField::update(
-            this->value_, canonicalized_representation),
+        LocationOperand::RepresentationField::update(this->value_, canonical),
         LocationOperand::EXPLICIT);
   }
   return this->value_;
 }
-
 
 // Required for maps that don't care about machine type.
 struct CompareOperandModuloType {
@@ -650,9 +651,9 @@ class MoveOperands final : public ZoneObject {
   }
   void SetPending() { destination_ = InstructionOperand(); }
 
-  // True if this move a move into the given destination operand.
-  bool Blocks(const InstructionOperand& operand) const {
-    return !IsEliminated() && source().EqualsCanonicalized(operand);
+  // True if this move is a move into the given destination operand.
+  bool Blocks(const InstructionOperand& destination) const {
+    return !IsEliminated() && source().InterferesWith(destination);
   }
 
   // A move is redundant if it's been eliminated or if its source and
@@ -1142,6 +1143,8 @@ class FrameStateDescriptor : public ZoneObject {
   }
   StateValueDescriptor* GetStateValueDescriptor() { return &values_; }
 
+  static const int kImpossibleValue = 0xdead;
+
  private:
   FrameStateType type_;
   BailoutId bailout_id_;
@@ -1154,9 +1157,23 @@ class FrameStateDescriptor : public ZoneObject {
   FrameStateDescriptor* outer_state_;
 };
 
+// A deoptimization entry is a pair of the reason why we deoptimize and the
+// frame state descriptor that we have to go back to.
+class DeoptimizationEntry final {
+ public:
+  DeoptimizationEntry() {}
+  DeoptimizationEntry(FrameStateDescriptor* descriptor, DeoptimizeReason reason)
+      : descriptor_(descriptor), reason_(reason) {}
 
-typedef ZoneVector<FrameStateDescriptor*> DeoptimizationVector;
+  FrameStateDescriptor* descriptor() const { return descriptor_; }
+  DeoptimizeReason reason() const { return reason_; }
 
+ private:
+  FrameStateDescriptor* descriptor_ = nullptr;
+  DeoptimizeReason reason_ = DeoptimizeReason::kNoReason;
+};
+
+typedef ZoneVector<DeoptimizationEntry> DeoptimizationVector;
 
 class PhiInstruction final : public ZoneObject {
  public:
@@ -1407,21 +1424,11 @@ class InstructionSequence final : public ZoneObject {
     return Constant(static_cast<int32_t>(0));
   }
 
-  class StateId {
-   public:
-    static StateId FromInt(int id) { return StateId(id); }
-    int ToInt() const { return id_; }
-
-   private:
-    explicit StateId(int id) : id_(id) {}
-    int id_;
-  };
-
-  StateId AddFrameStateDescriptor(FrameStateDescriptor* descriptor);
-  FrameStateDescriptor* GetFrameStateDescriptor(StateId deoptimization_id);
-  int GetFrameStateDescriptorCount();
-  DeoptimizationVector const& frame_state_descriptors() const {
-    return deoptimization_entries_;
+  int AddDeoptimizationEntry(FrameStateDescriptor* descriptor,
+                             DeoptimizeReason reason);
+  DeoptimizationEntry const& GetDeoptimizationEntry(int deoptimization_id);
+  int GetDeoptimizationEntryCount() const {
+    return static_cast<int>(deoptimization_entries_.size());
   }
 
   RpoNumber InputRpo(Instruction* instr, size_t index);

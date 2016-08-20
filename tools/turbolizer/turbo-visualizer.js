@@ -142,13 +142,13 @@ document.onload = (function(d3){
       toggleSourceExpanded(true);
       setTimeout(function(){
         g.fitGraphViewToWindow();
-      }, 1000);
+      }, 300);
     });
     d3.select("#disassembly-collapse").on("click", function(){
       toggleDisassemblyExpanded();
       setTimeout(function(){
         g.fitGraphViewToWindow();
-      }, 1000);
+      }, 300);
     });
     window.onresize = function(){
       fitPanesToParents();
@@ -168,9 +168,12 @@ document.onload = (function(d3){
           try{
             jsonObj = JSON.parse(txtRes);
 
+            hideCurrentPhase();
+
+            selectionBroker.setNodePositionMap(jsonObj.nodePositions);
+
             sourceView.initializeCode(jsonObj.source, jsonObj.sourcePosition);
-            disassemblyView.initializeCode(jsonObj.source, jsonObj.sourcePosition);
-            schedule.setNodePositionMap(jsonObj.nodePositions);
+            disassemblyView.initializeCode(jsonObj.source);
 
             var selectMenu = document.getElementById('display-selector');
             var disassemblyPhase = null;
@@ -193,7 +196,6 @@ document.onload = (function(d3){
               eventMenu.add(optionElement, null);
             }
             disassemblyView.initializePerfProfile(jsonObj.eventCounts);
-            disassemblyView.setNodePositionMap(jsonObj.nodePositions);
             disassemblyView.show(disassemblyPhase.data, null);
 
             var initialPhaseIndex = +window.sessionStorage.getItem("lastSelectedPhase");

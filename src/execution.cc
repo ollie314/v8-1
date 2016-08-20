@@ -6,8 +6,10 @@
 
 #include "src/bootstrapper.h"
 #include "src/codegen.h"
+#include "src/compiler-dispatcher/optimizing-compile-dispatcher.h"
 #include "src/isolate-inl.h"
 #include "src/messages.h"
+#include "src/runtime-profiler.h"
 #include "src/vm-state-inl.h"
 
 namespace v8 {
@@ -71,6 +73,30 @@ MUST_USE_RESULT MaybeHandle<Object> Invoke(Isolate* isolate, bool is_construct,
     return MaybeHandle<Object>();
   }
 #endif
+
+  // api callbacks can be called directly.
+  if (target->IsJSFunction()) {
+    Handle<JSFunction> function = Handle<JSFunction>::cast(target);
+    if ((!is_construct || function->IsConstructor()) &&
+        function->shared()->IsApiFunction()) {
+      SaveContext save(isolate);
+      isolate->set_context(function->context());
+      DCHECK(function->context()->global_object()->IsJSGlobalObject());
+      if (is_construct) receiver = isolate->factory()->the_hole_value();
+      auto value = Builtins::InvokeApiFunction(
+          isolate, is_construct, function, receiver, argc, args,
+          Handle<HeapObject>::cast(new_target));
+      bool has_exception = value.is_null();
+      DCHECK(has_exception == isolate->has_pending_exception());
+      if (has_exception) {
+        isolate->ReportPendingMessages();
+        return MaybeHandle<Object>();
+      } else {
+        isolate->clear_pending_message();
+      }
+      return value;
+    }
+  }
 
   // Entering JavaScript.
   VMState<JS> state(isolate);
@@ -148,26 +174,6 @@ MaybeHandle<Object> Execution::Call(Isolate* isolate, Handle<Object> callable,
   if (receiver->IsJSGlobalObject()) {
     receiver =
         handle(Handle<JSGlobalObject>::cast(receiver)->global_proxy(), isolate);
-  }
-
-  // api callbacks can be called directly.
-  if (callable->IsJSFunction() &&
-      Handle<JSFunction>::cast(callable)->shared()->IsApiFunction()) {
-    Handle<JSFunction> function = Handle<JSFunction>::cast(callable);
-    SaveContext save(isolate);
-    isolate->set_context(function->context());
-    DCHECK(function->context()->global_object()->IsJSGlobalObject());
-    auto value =
-        Builtins::InvokeApiFunction(isolate, function, receiver, argc, argv);
-    bool has_exception = value.is_null();
-    DCHECK(has_exception == isolate->has_pending_exception());
-    if (has_exception) {
-      isolate->ReportPendingMessages();
-      return MaybeHandle<Object>();
-    } else {
-      isolate->clear_pending_message();
-    }
-    return value;
   }
   return Invoke(isolate, false, callable, receiver, argc, argv,
                 isolate->factory()->undefined_value());

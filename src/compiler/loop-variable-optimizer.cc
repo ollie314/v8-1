@@ -149,8 +149,7 @@ class LoopVariableOptimizer::VariableLimits : public ZoneObject {
 };
 
 void InductionVariable::AddUpperBound(Node* bound,
-                                      InductionVariable::ConstraintKind kind,
-                                      Zone* graph_zone) {
+                                      InductionVariable::ConstraintKind kind) {
   if (FLAG_trace_turbo_loop) {
     OFStream os(stdout);
     os << "New upper bound for " << phi()->id() << " (loop "
@@ -161,8 +160,7 @@ void InductionVariable::AddUpperBound(Node* bound,
 }
 
 void InductionVariable::AddLowerBound(Node* bound,
-                                      InductionVariable::ConstraintKind kind,
-                                      Zone* graph_zone) {
+                                      InductionVariable::ConstraintKind kind) {
   if (FLAG_trace_turbo_loop) {
     OFStream os(stdout);
     os << "New lower bound for " << phi()->id() << " (loop "
@@ -183,16 +181,14 @@ void LoopVariableOptimizer::VisitBackedge(Node* from, Node* loop) {
         NodeProperties::GetControlInput(constraint->left()) == loop) {
       auto var = induction_vars_.find(constraint->left()->id());
       if (var != induction_vars_.end()) {
-        var->second->AddUpperBound(constraint->right(), constraint->kind(),
-                                   graph()->zone());
+        var->second->AddUpperBound(constraint->right(), constraint->kind());
       }
     }
     if (constraint->right()->opcode() == IrOpcode::kPhi &&
         NodeProperties::GetControlInput(constraint->right()) == loop) {
       auto var = induction_vars_.find(constraint->right()->id());
       if (var != induction_vars_.end()) {
-        var->second->AddUpperBound(constraint->left(), constraint->kind(),
-                                   graph()->zone());
+        var->second->AddUpperBound(constraint->left(), constraint->kind());
       }
     }
   }
@@ -221,7 +217,7 @@ void LoopVariableOptimizer::VisitMerge(Node* node) {
   // Merge the limits of all incoming edges.
   VariableLimits* merged = limits_[node->InputAt(0)->id()]->Copy(zone());
   for (int i = 1; i < node->InputCount(); i++) {
-    merged->Merge(limits_[node->InputAt(0)->id()]);
+    merged->Merge(limits_[node->InputAt(i)->id()]);
   }
   limits_[node->id()] = merged;
 }

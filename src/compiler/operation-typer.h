@@ -67,7 +67,8 @@ class OperationTyper {
   Type* Rangify(Type*);
   Type* AddRanger(double lhs_min, double lhs_max, double rhs_min,
                   double rhs_max);
-  Type* SubtractRanger(RangeType* lhs, RangeType* rhs);
+  Type* SubtractRanger(double lhs_min, double lhs_max, double rhs_min,
+                       double rhs_max);
   Type* MultiplyRanger(Type* lhs, Type* rhs);
 
   Zone* zone() const { return zone_; }
@@ -75,6 +76,8 @@ class OperationTyper {
   Zone* const zone_;
   TypeCache const& cache_;
 
+  Type* infinity_;
+  Type* minus_infinity_;
   Type* singleton_false_;
   Type* singleton_true_;
   Type* singleton_the_hole_;

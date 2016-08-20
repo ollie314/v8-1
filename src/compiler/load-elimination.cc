@@ -18,6 +18,9 @@ enum Aliasing { kNoAlias, kMayAlias, kMustAlias };
 
 Aliasing QueryAlias(Node* a, Node* b) {
   if (a == b) return kMustAlias;
+  if (!NodeProperties::GetType(a)->Maybe(NodeProperties::GetType(b))) {
+    return kNoAlias;
+  }
   if (b->opcode() == IrOpcode::kAllocate) {
     switch (a->opcode()) {
       case IrOpcode::kAllocate:
@@ -56,6 +59,8 @@ Reduction LoadElimination::Reduce(Node* node) {
       return ReduceCheckMaps(node);
     case IrOpcode::kEnsureWritableFastElements:
       return ReduceEnsureWritableFastElements(node);
+    case IrOpcode::kMaybeGrowFastElements:
+      return ReduceMaybeGrowFastElements(node);
     case IrOpcode::kTransitionElementsKind:
       return ReduceTransitionElementsKind(node);
     case IrOpcode::kLoadField:
@@ -109,6 +114,7 @@ LoadElimination::AbstractElements::Kill(Node* object, Node* index,
           that->elements_[that->next_index_++] = element;
         }
       }
+      that->next_index_ %= arraysize(elements_);
       return that;
     }
   }
@@ -162,6 +168,7 @@ LoadElimination::AbstractElements::Merge(AbstractElements const* that,
       }
     }
   }
+  copy->next_index_ %= arraysize(elements_);
   return copy;
 }
 
@@ -352,6 +359,32 @@ Reduction LoadElimination::ReduceEnsureWritableFastElements(Node* node) {
   return UpdateState(node, state);
 }
 
+Reduction LoadElimination::ReduceMaybeGrowFastElements(Node* node) {
+  GrowFastElementsFlags flags = GrowFastElementsFlagsOf(node->op());
+  Node* const object = NodeProperties::GetValueInput(node, 0);
+  Node* const effect = NodeProperties::GetEffectInput(node);
+  AbstractState const* state = node_states_.Get(effect);
+  if (state == nullptr) return NoChange();
+  if (flags & GrowFastElementsFlag::kDoubleElements) {
+    // We know that the resulting elements have the fixed double array map.
+    Node* fixed_double_array_map = jsgraph()->FixedDoubleArrayMapConstant();
+    state = state->AddField(node, 0, fixed_double_array_map, zone());
+  } else {
+    // We know that the resulting elements have the fixed array map.
+    Node* fixed_array_map = jsgraph()->FixedArrayMapConstant();
+    state = state->AddField(node, 0, fixed_array_map, zone());
+  }
+  if (flags & GrowFastElementsFlag::kArrayObject) {
+    // Kill the previous Array::length on {object}.
+    state = state->KillField(object, 3, zone());
+  }
+  // Kill the previous elements on {object}.
+  state = state->KillField(object, 2, zone());
+  // Add the new elements on {object}.
+  state = state->AddField(object, 2, node, zone());
+  return UpdateState(node, state);
+}
+
 Reduction LoadElimination::ReduceTransitionElementsKind(Node* node) {
   Node* const object = NodeProperties::GetValueInput(node, 0);
   Node* const source_map = NodeProperties::GetValueInput(node, 1);
@@ -360,6 +393,11 @@ Reduction LoadElimination::ReduceTransitionElementsKind(Node* node) {
   AbstractState const* state = node_states_.Get(effect);
   if (state == nullptr) return NoChange();
   if (Node* const object_map = state->LookupField(object, 0)) {
+    if (target_map == object_map) {
+      // The {object} already has the {target_map}, so this TransitionElements
+      // {node} is fully redundant (independent of what {source_map} is).
+      return Replace(effect);
+    }
     state = state->KillField(object, 0, zone());
     if (source_map == object_map) {
       state = state->AddField(object, 0, target_map, zone());
@@ -476,6 +514,8 @@ Reduction LoadElimination::ReduceStoreElement(Node* node) {
       break;
     case MachineRepresentation::kFloat64:
     case MachineRepresentation::kSimd128:
+    case MachineRepresentation::kTaggedSigned:
+    case MachineRepresentation::kTaggedPointer:
     case MachineRepresentation::kTagged:
       state = state->AddElement(object, index, new_value, zone());
       break;
@@ -580,9 +620,17 @@ LoadElimination::AbstractState const* LoadElimination::ComputeLoopState(
         switch (current->opcode()) {
           case IrOpcode::kEnsureWritableFastElements: {
             Node* const object = NodeProperties::GetValueInput(current, 0);
-            Node* const elements = NodeProperties::GetValueInput(current, 1);
-            state = state->KillField(elements, 0, zone());
             state = state->KillField(object, 2, zone());
+            break;
+          }
+          case IrOpcode::kMaybeGrowFastElements: {
+            GrowFastElementsFlags flags =
+                GrowFastElementsFlagsOf(current->op());
+            Node* const object = NodeProperties::GetValueInput(current, 0);
+            state = state->KillField(object, 2, zone());
+            if (flags & GrowFastElementsFlag::kArrayObject) {
+              state = state->KillField(object, 3, zone());
+            }
             break;
           }
           case IrOpcode::kTransitionElementsKind: {
@@ -642,6 +690,9 @@ int LoadElimination::FieldIndexOf(FieldAccess const& access) {
       return -1;  // Currently untracked.
     case MachineRepresentation::kFloat64:
     case MachineRepresentation::kSimd128:
+      return -1;  // Currently untracked.
+    case MachineRepresentation::kTaggedSigned:
+    case MachineRepresentation::kTaggedPointer:
     case MachineRepresentation::kTagged:
       // TODO(bmeurer): Check that we never do overlapping load/stores of
       // individual parts of Float64/Simd128 values.

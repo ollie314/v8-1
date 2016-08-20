@@ -166,6 +166,7 @@ using v8::MemoryPressureLevel;
   V(Cell, species_protector, SpeciesProtector)                                 \
   /* Special numbers */                                                        \
   V(HeapNumber, nan_value, NanValue)                                           \
+  V(HeapNumber, hole_nan_value, HoleNanValue)                                  \
   V(HeapNumber, infinity_value, InfinityValue)                                 \
   V(HeapNumber, minus_zero_value, MinusZeroValue)                              \
   V(HeapNumber, minus_infinity_value, MinusInfinityValue)                      \
@@ -449,6 +450,8 @@ enum ArrayStorageAllocationMode {
 
 enum class ClearRecordedSlots { kYes, kNo };
 
+enum class ClearBlackArea { kYes, kNo };
+
 class Heap {
  public:
   // Declare all the root indices.  This defines the root list order.
@@ -519,9 +522,6 @@ class Heap {
   };
   typedef List<Chunk> Reservation;
 
-  static const intptr_t kMinimumOldGenerationAllocationLimit =
-      8 * (Page::kPageSize > MB ? Page::kPageSize : MB);
-
   static const int kInitalOldGenerationLimitFactor = 2;
 
 #if V8_OS_ANDROID
@@ -563,6 +563,7 @@ class Heap {
   static const double kMaxHeapGrowingFactor;
   static const double kMaxHeapGrowingFactorMemoryConstrained;
   static const double kMaxHeapGrowingFactorIdle;
+  static const double kConservativeHeapGrowingFactor;
   static const double kTargetMutatorUtilization;
 
   static const int kNoGCFlags = 0;
@@ -674,8 +675,12 @@ class Heap {
   // Initialize a filler object to keep the ability to iterate over the heap
   // when introducing gaps within pages. If slots could have been recorded in
   // the freed area, then pass ClearRecordedSlots::kYes as the mode. Otherwise,
-  // pass ClearRecordedSlots::kNo.
-  void CreateFillerObjectAt(Address addr, int size, ClearRecordedSlots mode);
+  // pass ClearRecordedSlots::kNo. If the filler was created in a black area
+  // we may want to clear the corresponding mark bits with ClearBlackArea::kYes,
+  // which is the default. ClearBlackArea::kNo does not clear the mark bits.
+  void CreateFillerObjectAt(
+      Address addr, int size, ClearRecordedSlots mode,
+      ClearBlackArea black_area_mode = ClearBlackArea::kYes);
 
   bool CanMoveObjectStart(HeapObject* object);
 
@@ -756,7 +761,7 @@ class Heap {
   inline AllocationMemento* FindAllocationMemento(HeapObject* object);
 
   // Returns false if not able to reserve.
-  bool ReserveSpace(Reservation* reservations);
+  bool ReserveSpace(Reservation* reservations, List<Address>* maps);
 
   void SetEmbedderHeapTracer(EmbedderHeapTracer* tracer);
 
@@ -888,11 +893,18 @@ class Heap {
   bool HasHighFragmentation();
   bool HasHighFragmentation(intptr_t used, intptr_t committed);
 
-  void SetOptimizeForLatency() { optimize_for_memory_usage_ = false; }
-  void SetOptimizeForMemoryUsage();
-  bool ShouldOptimizeForMemoryUsage() {
-    return optimize_for_memory_usage_ || HighMemoryPressure();
+  void ActivateMemoryReducerIfNeeded();
+
+  bool ShouldOptimizeForMemoryUsage();
+
+  bool IsLowMemoryDevice() {
+    return max_old_generation_size_ <= kMaxOldSpaceSizeLowMemoryDevice;
   }
+
+  bool IsMemoryConstrainedDevice() {
+    return max_old_generation_size_ <= kMaxOldSpaceSizeMediumMemoryDevice;
+  }
+
   bool HighMemoryPressure() {
     return memory_pressure_level_.Value() != MemoryPressureLevel::kNone;
   }
@@ -1795,6 +1807,15 @@ class Heap {
   void SetOldGenerationAllocationLimit(intptr_t old_gen_size, double gc_speed,
                                        double mutator_speed);
 
+  intptr_t MinimumAllocationLimitGrowingStep() {
+    const double kRegularAllocationLimitGrowingStep = 8;
+    const double kLowMemoryAllocationLimitGrowingStep = 2;
+    intptr_t limit = (Page::kPageSize > MB ? Page::kPageSize : MB);
+    return limit * (ShouldOptimizeForMemoryUsage()
+                        ? kLowMemoryAllocationLimitGrowingStep
+                        : kRegularAllocationLimitGrowingStep);
+  }
+
   // ===========================================================================
   // Idle notification. ========================================================
   // ===========================================================================
@@ -2119,10 +2140,6 @@ class Heap {
   // last GC.
   bool old_gen_exhausted_;
 
-  // Indicates that memory usage is more important than latency.
-  // TODO(ulan): Merge it with memory reducer once chromium:490559 is fixed.
-  bool optimize_for_memory_usage_;
-
   // Indicates that inline bump-pointer allocation has been globally disabled
   // for all spaces. This is used to disable allocations in generated code.
   bool inline_allocation_disabled_;
@@ -2314,29 +2331,31 @@ class HeapStats {
   static const int kStartMarker = 0xDECADE00;
   static const int kEndMarker = 0xDECADE01;
 
-  int* start_marker;                       //  0
-  int* new_space_size;                     //  1
-  int* new_space_capacity;                 //  2
-  intptr_t* old_space_size;                //  3
-  intptr_t* old_space_capacity;            //  4
-  intptr_t* code_space_size;               //  5
-  intptr_t* code_space_capacity;           //  6
-  intptr_t* map_space_size;                //  7
-  intptr_t* map_space_capacity;            //  8
-  intptr_t* lo_space_size;                 //  9
-  int* global_handle_count;                // 10
-  int* weak_global_handle_count;           // 11
-  int* pending_global_handle_count;        // 12
-  int* near_death_global_handle_count;     // 13
-  int* free_global_handle_count;           // 14
-  intptr_t* memory_allocator_size;         // 15
-  intptr_t* memory_allocator_capacity;     // 16
-  int* objects_per_type;                   // 17
-  int* size_per_type;                      // 18
-  int* os_error;                           // 19
-  char* last_few_messages;                 // 20
-  char* js_stacktrace;                     // 21
-  int* end_marker;                         // 22
+  intptr_t* start_marker;                  //  0
+  size_t* new_space_size;                  //  1
+  size_t* new_space_capacity;              //  2
+  size_t* old_space_size;                  //  3
+  size_t* old_space_capacity;              //  4
+  size_t* code_space_size;                 //  5
+  size_t* code_space_capacity;             //  6
+  size_t* map_space_size;                  //  7
+  size_t* map_space_capacity;              //  8
+  size_t* lo_space_size;                   //  9
+  size_t* global_handle_count;             // 10
+  size_t* weak_global_handle_count;        // 11
+  size_t* pending_global_handle_count;     // 12
+  size_t* near_death_global_handle_count;  // 13
+  size_t* free_global_handle_count;        // 14
+  size_t* memory_allocator_size;           // 15
+  size_t* memory_allocator_capacity;       // 16
+  size_t* malloced_memory;                 // 17
+  size_t* malloced_peak_memory;            // 18
+  size_t* objects_per_type;                // 19
+  size_t* size_per_type;                   // 20
+  int* os_error;                           // 21
+  char* last_few_messages;                 // 22
+  char* js_stacktrace;                     // 23
+  intptr_t* end_marker;                    // 24
 };
 
 

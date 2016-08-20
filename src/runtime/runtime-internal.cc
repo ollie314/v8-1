@@ -368,22 +368,6 @@ RUNTIME_FUNCTION(Runtime_AllocateSeqTwoByteString) {
 }
 
 
-RUNTIME_FUNCTION(Runtime_MessageGetStartPosition) {
-  SealHandleScope shs(isolate);
-  DCHECK(args.length() == 1);
-  CONVERT_ARG_CHECKED(JSMessageObject, message, 0);
-  return Smi::FromInt(message->start_position());
-}
-
-
-RUNTIME_FUNCTION(Runtime_MessageGetScript) {
-  SealHandleScope shs(isolate);
-  DCHECK(args.length() == 1);
-  CONVERT_ARG_CHECKED(JSMessageObject, message, 0);
-  return message->script();
-}
-
-
 RUNTIME_FUNCTION(Runtime_IS_VAR) {
   UNREACHABLE();  // implemented as macro in the parser
   return NULL;
@@ -466,7 +450,6 @@ RUNTIME_FUNCTION(Runtime_ThrowConstructedNonConstructable) {
       isolate, NewTypeError(MessageTemplate::kNotConstructor, callsite));
 }
 
-
 RUNTIME_FUNCTION(Runtime_ThrowDerivedConstructorReturnedNonObject) {
   HandleScope scope(isolate);
   DCHECK_EQ(0, args.length());
@@ -474,6 +457,13 @@ RUNTIME_FUNCTION(Runtime_ThrowDerivedConstructorReturnedNonObject) {
       isolate, NewTypeError(MessageTemplate::kDerivedConstructorReturn));
 }
 
+RUNTIME_FUNCTION(Runtime_ThrowUndefinedOrNullToObject) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(String, name, 0);
+  THROW_NEW_ERROR_RETURN_FAILURE(
+      isolate, NewTypeError(MessageTemplate::kUndefinedOrNullToObject, name));
+}
 
 // ES6 section 7.3.17 CreateListFromArrayLike (obj)
 RUNTIME_FUNCTION(Runtime_CreateListFromArrayLike) {

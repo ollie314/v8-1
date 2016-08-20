@@ -714,6 +714,9 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
     case IrOpcode::kCheckTaggedHole:
       state = LowerCheckTaggedHole(node, frame_state, *effect, *control);
       break;
+    case IrOpcode::kConvertTaggedHoleToUndefined:
+      state = LowerConvertTaggedHoleToUndefined(node, *effect, *control);
+      break;
     case IrOpcode::kPlainPrimitiveToNumber:
       state = LowerPlainPrimitiveToNumber(node, *effect, *control);
       break;
@@ -725,6 +728,9 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
       break;
     case IrOpcode::kEnsureWritableFastElements:
       state = LowerEnsureWritableFastElements(node, *effect, *control);
+      break;
+    case IrOpcode::kMaybeGrowFastElements:
+      state = LowerMaybeGrowFastElements(node, frame_state, *effect, *control);
       break;
     case IrOpcode::kTransitionElementsKind:
       state = LowerTransitionElementsKind(node, *effect, *control);
@@ -756,6 +762,7 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
 EffectControlLinearizer::ValueEffectControl
 EffectControlLinearizer::LowerChangeFloat64ToTagged(Node* node, Node* effect,
                                                     Node* control) {
+  CheckForMinusZeroMode mode = CheckMinusZeroModeOf(node->op());
   Node* value = node->InputAt(0);
 
   Node* value32 = graph()->NewNode(machine()->RoundFloat64ToInt32(), value);
@@ -768,29 +775,32 @@ EffectControlLinearizer::LowerChangeFloat64ToTagged(Node* node, Node* effect,
   Node* vsmi;
   Node* if_box = graph()->NewNode(common()->IfFalse(), branch_same);
 
-  // Check if {value} is -0.
-  Node* check_zero = graph()->NewNode(machine()->Word32Equal(), value32,
-                                      jsgraph()->Int32Constant(0));
-  Node* branch_zero = graph()->NewNode(common()->Branch(BranchHint::kFalse),
-                                       check_zero, if_smi);
+  if (mode == CheckForMinusZeroMode::kCheckForMinusZero) {
+    // Check if {value} is -0.
+    Node* check_zero = graph()->NewNode(machine()->Word32Equal(), value32,
+                                        jsgraph()->Int32Constant(0));
+    Node* branch_zero = graph()->NewNode(common()->Branch(BranchHint::kFalse),
+                                         check_zero, if_smi);
 
-  Node* if_zero = graph()->NewNode(common()->IfTrue(), branch_zero);
-  Node* if_notzero = graph()->NewNode(common()->IfFalse(), branch_zero);
+    Node* if_zero = graph()->NewNode(common()->IfTrue(), branch_zero);
+    Node* if_notzero = graph()->NewNode(common()->IfFalse(), branch_zero);
 
-  // In case of 0, we need to check the high bits for the IEEE -0 pattern.
-  Node* check_negative = graph()->NewNode(
-      machine()->Int32LessThan(),
-      graph()->NewNode(machine()->Float64ExtractHighWord32(), value),
-      jsgraph()->Int32Constant(0));
-  Node* branch_negative = graph()->NewNode(common()->Branch(BranchHint::kFalse),
-                                           check_negative, if_zero);
+    // In case of 0, we need to check the high bits for the IEEE -0 pattern.
+    Node* check_negative = graph()->NewNode(
+        machine()->Int32LessThan(),
+        graph()->NewNode(machine()->Float64ExtractHighWord32(), value),
+        jsgraph()->Int32Constant(0));
+    Node* branch_negative = graph()->NewNode(
+        common()->Branch(BranchHint::kFalse), check_negative, if_zero);
 
-  Node* if_negative = graph()->NewNode(common()->IfTrue(), branch_negative);
-  Node* if_notnegative = graph()->NewNode(common()->IfFalse(), branch_negative);
+    Node* if_negative = graph()->NewNode(common()->IfTrue(), branch_negative);
+    Node* if_notnegative =
+        graph()->NewNode(common()->IfFalse(), branch_negative);
 
-  // We need to create a box for negative 0.
-  if_smi = graph()->NewNode(common()->Merge(2), if_notzero, if_notnegative);
-  if_box = graph()->NewNode(common()->Merge(2), if_box, if_negative);
+    // We need to create a box for negative 0.
+    if_smi = graph()->NewNode(common()->Merge(2), if_notzero, if_notnegative);
+    if_box = graph()->NewNode(common()->Merge(2), if_box, if_negative);
+  }
 
   // On 64-bit machines we can just wrap the 32-bit integer in a smi, for 32-bit
   // machines we need to deal with potential overflow and fallback to boxing.
@@ -1304,132 +1314,109 @@ EffectControlLinearizer::ValueEffectControl
 EffectControlLinearizer::LowerCheckedInt32Mod(Node* node, Node* frame_state,
                                               Node* effect, Node* control) {
   Node* zero = jsgraph()->Int32Constant(0);
-  Node* minusone = jsgraph()->Int32Constant(-1);
-  Node* minint = jsgraph()->Int32Constant(std::numeric_limits<int32_t>::min());
+  Node* one = jsgraph()->Int32Constant(1);
 
   // General case for signed integer modulus, with optimization for (unknown)
   // power of 2 right hand side.
   //
-  //   if 0 < rhs then
-  //     msk = rhs - 1
-  //     if rhs & msk == 0 then
-  //       if lhs < 0 then
-  //         -(-lhs & msk)
-  //       else
-  //         lhs & msk
-  //     else
-  //       lhs % rhs
+  //   if rhs <= 0 then
+  //     rhs = -rhs
+  //     deopt if rhs == 0
+  //   if lhs < 0 then
+  //     let res = lhs % rhs in
+  //     deopt if res == 0
+  //     res
   //   else
-  //     if rhs < -1 then
-  //       lhs % rhs
+  //     let msk = rhs - 1 in
+  //     if rhs & msk == 0 then
+  //       lhs & msk
   //     else
-  //       deopt if rhs == 0
-  //       deopt if lhs == minint
-  //       zero
+  //       lhs % rhs
   //
   Node* lhs = node->InputAt(0);
   Node* rhs = node->InputAt(1);
 
-  // Check if {rhs} is strictly positive.
-  Node* check0 = graph()->NewNode(machine()->Int32LessThan(), zero, rhs);
+  // Check if {rhs} is not strictly positive.
+  Node* check0 = graph()->NewNode(machine()->Int32LessThanOrEqual(), rhs, zero);
   Node* branch0 =
-      graph()->NewNode(common()->Branch(BranchHint::kTrue), check0, control);
+      graph()->NewNode(common()->Branch(BranchHint::kFalse), check0, control);
 
   Node* if_true0 = graph()->NewNode(common()->IfTrue(), branch0);
   Node* etrue0 = effect;
   Node* vtrue0;
   {
-    Node* msk = graph()->NewNode(machine()->Int32Add(), rhs, minusone);
+    // Negate {rhs}, might still produce a negative result in case of
+    // -2^31, but that is handled safely below.
+    vtrue0 = graph()->NewNode(machine()->Int32Sub(), zero, rhs);
 
-    // Check if {rhs} minus one is a valid mask.
-    Node* check1 = graph()->NewNode(
-        machine()->Word32Equal(),
-        graph()->NewNode(machine()->Word32And(), rhs, msk), zero);
-    Node* branch1 = graph()->NewNode(common()->Branch(), check1, if_true0);
-
-    Node* if_true1 = graph()->NewNode(common()->IfTrue(), branch1);
-    Node* vtrue1;
-    {
-      // Check if {lhs} is negative.
-      Node* check2 = graph()->NewNode(machine()->Int32LessThan(), lhs, zero);
-      Node* branch2 = graph()->NewNode(common()->Branch(BranchHint::kFalse),
-                                       check2, if_true1);
-
-      // Compute the remainder as {-(-lhs & msk)}.
-      Node* if_true2 = graph()->NewNode(common()->IfTrue(), branch2);
-      Node* vtrue2 = graph()->NewNode(
-          machine()->Int32Sub(), zero,
-          graph()->NewNode(machine()->Word32And(),
-                           graph()->NewNode(machine()->Int32Sub(), zero, lhs),
-                           msk));
-
-      // Compute the remainder as {lhs & msk}.
-      Node* if_false2 = graph()->NewNode(common()->IfFalse(), branch2);
-      Node* vfalse2 = graph()->NewNode(machine()->Word32And(), lhs, msk);
-
-      if_true1 = graph()->NewNode(common()->Merge(2), if_true2, if_false2);
-      vtrue1 =
-          graph()->NewNode(common()->Phi(MachineRepresentation::kWord32, 2),
-                           vtrue2, vfalse2, if_true1);
-    }
-
-    // Compute the remainder using the generic {lhs % rhs}.
-    Node* if_false1 = graph()->NewNode(common()->IfFalse(), branch1);
-    Node* vfalse1 =
-        graph()->NewNode(machine()->Int32Mod(), lhs, rhs, if_false1);
-
-    if_true0 = graph()->NewNode(common()->Merge(2), if_true1, if_false1);
-    vtrue0 = graph()->NewNode(common()->Phi(MachineRepresentation::kWord32, 2),
-                              vtrue1, vfalse1, if_true0);
+    // Ensure that {rhs} is not zero, otherwise we'd have to return NaN.
+    Node* check = graph()->NewNode(machine()->Word32Equal(), vtrue0, zero);
+    if_true0 = etrue0 = graph()->NewNode(
+        common()->DeoptimizeIf(DeoptimizeReason::kDivisionByZero), check,
+        frame_state, etrue0, if_true0);
   }
 
   Node* if_false0 = graph()->NewNode(common()->IfFalse(), branch0);
   Node* efalse0 = effect;
-  Node* vfalse0;
-  {
-    // Check if {rhs} is strictly less than -1.
-    Node* check1 = graph()->NewNode(machine()->Int32LessThan(), rhs, minusone);
-    Node* branch1 = graph()->NewNode(common()->Branch(BranchHint::kTrue),
-                                     check1, if_false0);
+  Node* vfalse0 = rhs;
 
-    // Compute the remainder using the generic {lhs % rhs}.
-    Node* if_true1 = graph()->NewNode(common()->IfTrue(), branch1);
-    Node* etrue1 = efalse0;
-    Node* vtrue1 = graph()->NewNode(machine()->Int32Mod(), lhs, rhs, if_true1);
-
-    Node* if_false1 = graph()->NewNode(common()->IfFalse(), branch1);
-    Node* efalse1 = efalse0;
-    Node* vfalse1;
-    {
-      // Ensure that {rhs} is not zero.
-      Node* check2 = graph()->NewNode(machine()->Word32Equal(), rhs, zero);
-      if_false1 = efalse1 = graph()->NewNode(
-          common()->DeoptimizeIf(DeoptimizeReason::kDivisionByZero), check2,
-          frame_state, efalse1, if_false1);
-
-      // Now we know that {rhs} is -1, so make sure {lhs} is not kMinInt, as
-      // we would otherwise have to return -0.
-      Node* check3 = graph()->NewNode(machine()->Word32Equal(), lhs, minint);
-      if_false1 = efalse1 =
-          graph()->NewNode(common()->DeoptimizeIf(DeoptimizeReason::kMinusZero),
-                           check3, frame_state, efalse1, if_false1);
-
-      // The remainder is zero.
-      vfalse1 = zero;
-    }
-
-    if_false0 = graph()->NewNode(common()->Merge(2), if_true1, if_false1);
-    efalse0 =
-        graph()->NewNode(common()->EffectPhi(2), etrue1, efalse1, if_false0);
-    vfalse0 = graph()->NewNode(common()->Phi(MachineRepresentation::kWord32, 2),
-                               vtrue1, vfalse1, if_false0);
-  }
-
+  // At this point {rhs} is either greater than zero or -2^31, both are
+  // fine for the code that follows.
   control = graph()->NewNode(common()->Merge(2), if_true0, if_false0);
   effect = graph()->NewNode(common()->EffectPhi(2), etrue0, efalse0, control);
+  rhs = graph()->NewNode(common()->Phi(MachineRepresentation::kWord32, 2),
+                         vtrue0, vfalse0, control);
+
+  // Check if {lhs} is negative.
+  Node* check1 = graph()->NewNode(machine()->Int32LessThan(), lhs, zero);
+  Node* branch1 =
+      graph()->NewNode(common()->Branch(BranchHint::kFalse), check1, control);
+
+  Node* if_true1 = graph()->NewNode(common()->IfTrue(), branch1);
+  Node* etrue1 = effect;
+  Node* vtrue1;
+  {
+    // Compute the remainder using {lhs % msk}.
+    vtrue1 = graph()->NewNode(machine()->Int32Mod(), lhs, rhs, if_true1);
+
+    // Check if we would have to return -0.
+    Node* check = graph()->NewNode(machine()->Word32Equal(), vtrue1, zero);
+    if_true1 = etrue1 =
+        graph()->NewNode(common()->DeoptimizeIf(DeoptimizeReason::kMinusZero),
+                         check, frame_state, etrue1, if_true1);
+  }
+
+  Node* if_false1 = graph()->NewNode(common()->IfFalse(), branch1);
+  Node* efalse1 = effect;
+  Node* vfalse1;
+  {
+    Node* msk = graph()->NewNode(machine()->Int32Sub(), rhs, one);
+
+    // Check if {rhs} minus one is a valid mask.
+    Node* check2 = graph()->NewNode(
+        machine()->Word32Equal(),
+        graph()->NewNode(machine()->Word32And(), rhs, msk), zero);
+    Node* branch2 = graph()->NewNode(common()->Branch(), check2, if_false1);
+
+    // Compute the remainder using {lhs & msk}.
+    Node* if_true2 = graph()->NewNode(common()->IfTrue(), branch2);
+    Node* vtrue2 = graph()->NewNode(machine()->Word32And(), lhs, msk);
+
+    // Compute the remainder using the generic {lhs % rhs}.
+    Node* if_false2 = graph()->NewNode(common()->IfFalse(), branch2);
+    Node* vfalse2 =
+        graph()->NewNode(machine()->Int32Mod(), lhs, rhs, if_false2);
+
+    if_false1 = graph()->NewNode(common()->Merge(2), if_true2, if_false2);
+    vfalse1 = graph()->NewNode(common()->Phi(MachineRepresentation::kWord32, 2),
+                               vtrue2, vfalse2, if_false1);
+  }
+
+  control = graph()->NewNode(common()->Merge(2), if_true1, if_false1);
+  effect = graph()->NewNode(common()->EffectPhi(2), etrue1, efalse1, control);
   Node* value =
-      graph()->NewNode(common()->Phi(MachineRepresentation::kWord32, 2), vtrue0,
-                       vfalse0, control);
+      graph()->NewNode(common()->Phi(MachineRepresentation::kWord32, 2), vtrue1,
+                       vfalse1, control);
 
   return ValueEffectControl(value, effect, control);
 }
@@ -1664,41 +1651,54 @@ EffectControlLinearizer::LowerCheckedTaggedToInt32(Node* node,
 
 EffectControlLinearizer::ValueEffectControl
 EffectControlLinearizer::BuildCheckedHeapNumberOrOddballToFloat64(
-    Node* value, Node* frame_state, Node* effect, Node* control) {
+    CheckTaggedInputMode mode, Node* value, Node* frame_state, Node* effect,
+    Node* control) {
   Node* value_map = effect = graph()->NewNode(
       simplified()->LoadField(AccessBuilder::ForMap()), value, effect, control);
+
   Node* check_number = graph()->NewNode(machine()->WordEqual(), value_map,
                                         jsgraph()->HeapNumberMapConstant());
 
-  Node* branch = graph()->NewNode(common()->Branch(BranchHint::kTrue),
-                                  check_number, control);
+  switch (mode) {
+    case CheckTaggedInputMode::kNumber: {
+      control = effect = graph()->NewNode(
+          common()->DeoptimizeUnless(DeoptimizeReason::kNotAHeapNumber),
+          check_number, frame_state, effect, control);
+      break;
+    }
+    case CheckTaggedInputMode::kNumberOrOddball: {
+      Node* branch = graph()->NewNode(common()->Branch(BranchHint::kTrue),
+                                      check_number, control);
 
-  Node* if_true = graph()->NewNode(common()->IfTrue(), branch);
-  Node* etrue = effect;
+      Node* if_true = graph()->NewNode(common()->IfTrue(), branch);
+      Node* etrue = effect;
 
-  Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
-  // For oddballs also contain the numeric value, let us just check that
-  // we have an oddball here.
-  Node* efalse = effect;
-  Node* instance_type = efalse = graph()->NewNode(
-      simplified()->LoadField(AccessBuilder::ForMapInstanceType()), value_map,
-      efalse, if_false);
-  Node* check_oddball =
-      graph()->NewNode(machine()->Word32Equal(), instance_type,
-                       jsgraph()->Int32Constant(ODDBALL_TYPE));
-  if_false = efalse =
-      graph()->NewNode(common()->DeoptimizeUnless(
-                           DeoptimizeReason::kNotAHeapNumberUndefinedBoolean),
-                       check_oddball, frame_state, efalse, if_false);
-  STATIC_ASSERT(HeapNumber::kValueOffset == Oddball::kToNumberRawOffset);
+      Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
+      // For oddballs also contain the numeric value, let us just check that
+      // we have an oddball here.
+      Node* efalse = effect;
+      Node* instance_type = efalse = graph()->NewNode(
+          simplified()->LoadField(AccessBuilder::ForMapInstanceType()),
+          value_map, efalse, if_false);
+      Node* check_oddball =
+          graph()->NewNode(machine()->Word32Equal(), instance_type,
+                           jsgraph()->Int32Constant(ODDBALL_TYPE));
+      if_false = efalse = graph()->NewNode(
+          common()->DeoptimizeUnless(
+              DeoptimizeReason::kNotAHeapNumberUndefinedBoolean),
+          check_oddball, frame_state, efalse, if_false);
+      STATIC_ASSERT(HeapNumber::kValueOffset == Oddball::kToNumberRawOffset);
 
-  control = graph()->NewNode(common()->Merge(2), if_true, if_false);
-  effect = graph()->NewNode(common()->EffectPhi(2), etrue, efalse, control);
+      control = graph()->NewNode(common()->Merge(2), if_true, if_false);
+      effect = graph()->NewNode(common()->EffectPhi(2), etrue, efalse, control);
+      break;
+    }
+  }
 
-  Node* result = effect = graph()->NewNode(
+  value = effect = graph()->NewNode(
       simplified()->LoadField(AccessBuilder::ForHeapNumberValue()), value,
       effect, control);
-  return ValueEffectControl(result, effect, control);
+  return ValueEffectControl(value, effect, control);
 }
 
 EffectControlLinearizer::ValueEffectControl
@@ -1706,6 +1706,7 @@ EffectControlLinearizer::LowerCheckedTaggedToFloat64(Node* node,
                                                      Node* frame_state,
                                                      Node* effect,
                                                      Node* control) {
+  CheckTaggedInputMode mode = CheckTaggedInputModeOf(node->op());
   Node* value = node->InputAt(0);
 
   Node* check = ObjectIsSmi(value);
@@ -1721,7 +1722,7 @@ EffectControlLinearizer::LowerCheckedTaggedToFloat64(Node* node,
   // Otherwise, check heap numberness and load the number.
   Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
   ValueEffectControl number_state = BuildCheckedHeapNumberOrOddballToFloat64(
-      value, frame_state, effect, if_false);
+      mode, value, frame_state, effect, if_false);
 
   Node* merge =
       graph()->NewNode(common()->Merge(2), if_true, number_state.control);
@@ -1786,7 +1787,8 @@ EffectControlLinearizer::LowerCheckedTruncateTaggedToWord32(Node* node,
   // to int32.
   Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
   ValueEffectControl false_state = BuildCheckedHeapNumberOrOddballToFloat64(
-      value, frame_state, effect, if_false);
+      CheckTaggedInputMode::kNumberOrOddball, value, frame_state, effect,
+      if_false);
   false_state.value =
       graph()->NewNode(machine()->TruncateFloat64ToWord32(), false_state.value);
 
@@ -2400,22 +2402,35 @@ EffectControlLinearizer::LowerCheckFloat64Hole(Node* node, Node* frame_state,
 EffectControlLinearizer::ValueEffectControl
 EffectControlLinearizer::LowerCheckTaggedHole(Node* node, Node* frame_state,
                                               Node* effect, Node* control) {
-  CheckTaggedHoleMode mode = CheckTaggedHoleModeOf(node->op());
   Node* value = node->InputAt(0);
   Node* check = graph()->NewNode(machine()->WordEqual(), value,
                                  jsgraph()->TheHoleConstant());
-  switch (mode) {
-    case CheckTaggedHoleMode::kConvertHoleToUndefined:
-      value = graph()->NewNode(
-          common()->Select(MachineRepresentation::kTagged, BranchHint::kFalse),
-          check, jsgraph()->UndefinedConstant(), value);
-      break;
-    case CheckTaggedHoleMode::kNeverReturnHole:
-      control = effect =
-          graph()->NewNode(common()->DeoptimizeIf(DeoptimizeReason::kHole),
-                           check, frame_state, effect, control);
-      break;
-  }
+  control = effect =
+      graph()->NewNode(common()->DeoptimizeIf(DeoptimizeReason::kHole), check,
+                       frame_state, effect, control);
+
+  return ValueEffectControl(value, effect, control);
+}
+
+EffectControlLinearizer::ValueEffectControl
+EffectControlLinearizer::LowerConvertTaggedHoleToUndefined(Node* node,
+                                                           Node* effect,
+                                                           Node* control) {
+  Node* value = node->InputAt(0);
+  Node* check = graph()->NewNode(machine()->WordEqual(), value,
+                                 jsgraph()->TheHoleConstant());
+  Node* branch =
+      graph()->NewNode(common()->Branch(BranchHint::kFalse), check, control);
+
+  Node* if_true = graph()->NewNode(common()->IfTrue(), branch);
+  Node* vtrue = jsgraph()->UndefinedConstant();
+
+  Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
+  Node* vfalse = value;
+
+  control = graph()->NewNode(common()->Merge(2), if_true, if_false);
+  value = graph()->NewNode(common()->Phi(MachineRepresentation::kTagged, 2),
+                           vtrue, vfalse, control);
 
   return ValueEffectControl(value, effect, control);
 }
@@ -2486,7 +2501,7 @@ EffectControlLinearizer::LowerPlainPrimitiveToNumber(Node* node, Node* effect,
   Node* value = node->InputAt(0);
   Node* result = effect =
       graph()->NewNode(ToNumberOperator(), jsgraph()->ToNumberBuiltinConstant(),
-                       value, jsgraph()->NoContextConstant(), effect, control);
+                       value, jsgraph()->NoContextConstant(), effect);
   return ValueEffectControl(result, effect, control);
 }
 
@@ -2509,7 +2524,7 @@ EffectControlLinearizer::LowerPlainPrimitiveToWord32(Node* node, Node* effect,
   {
     vfalse0 = efalse0 = graph()->NewNode(
         ToNumberOperator(), jsgraph()->ToNumberBuiltinConstant(), value,
-        jsgraph()->NoContextConstant(), efalse0, if_false0);
+        jsgraph()->NoContextConstant(), efalse0);
 
     Node* check1 = ObjectIsSmi(vfalse0);
     Node* branch1 = graph()->NewNode(common()->Branch(), check1, if_false0);
@@ -2565,7 +2580,7 @@ EffectControlLinearizer::LowerPlainPrimitiveToFloat64(Node* node, Node* effect,
   {
     vfalse0 = efalse0 = graph()->NewNode(
         ToNumberOperator(), jsgraph()->ToNumberBuiltinConstant(), value,
-        jsgraph()->NoContextConstant(), efalse0, if_false0);
+        jsgraph()->NoContextConstant(), efalse0);
 
     Node* check1 = ObjectIsSmi(vfalse0);
     Node* branch1 = graph()->NewNode(common()->Branch(), check1, if_false0);
@@ -2632,25 +2647,129 @@ EffectControlLinearizer::LowerEnsureWritableFastElements(Node* node,
   {
     // We need to create a copy of the {elements} for {object}.
     Operator::Properties properties = Operator::kEliminatable;
-    Callable callable = CodeFactory::CopyFixedArray(isolate());
+    Callable callable = CodeFactory::CopyFastSmiOrObjectElements(isolate());
     CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
     CallDescriptor const* const desc = Linkage::GetStubCallDescriptor(
         isolate(), graph()->zone(), callable.descriptor(), 0, flags,
         properties);
     vfalse = efalse = graph()->NewNode(
-        common()->Call(desc), jsgraph()->HeapConstant(callable.code()),
-        elements, jsgraph()->NoContextConstant(), efalse);
-
-    // Store the new {elements} into {object}.
-    efalse = graph()->NewNode(
-        simplified()->StoreField(AccessBuilder::ForJSObjectElements()), object,
-        vfalse, efalse, if_false);
+        common()->Call(desc), jsgraph()->HeapConstant(callable.code()), object,
+        jsgraph()->NoContextConstant(), efalse);
   }
 
   control = graph()->NewNode(common()->Merge(2), if_true, if_false);
   effect = graph()->NewNode(common()->EffectPhi(2), etrue, efalse, control);
   Node* value = graph()->NewNode(
       common()->Phi(MachineRepresentation::kTagged, 2), vtrue, vfalse, control);
+
+  return ValueEffectControl(value, effect, control);
+}
+
+EffectControlLinearizer::ValueEffectControl
+EffectControlLinearizer::LowerMaybeGrowFastElements(Node* node,
+                                                    Node* frame_state,
+                                                    Node* effect,
+                                                    Node* control) {
+  GrowFastElementsFlags flags = GrowFastElementsFlagsOf(node->op());
+  Node* object = node->InputAt(0);
+  Node* elements = node->InputAt(1);
+  Node* index = node->InputAt(2);
+  Node* length = node->InputAt(3);
+
+  Node* check0 = graph()->NewNode((flags & GrowFastElementsFlag::kHoleyElements)
+                                      ? machine()->Uint32LessThanOrEqual()
+                                      : machine()->Word32Equal(),
+                                  length, index);
+  Node* branch0 = graph()->NewNode(common()->Branch(), check0, control);
+
+  Node* if_true0 = graph()->NewNode(common()->IfTrue(), branch0);
+  Node* etrue0 = effect;
+  Node* vtrue0 = elements;
+  {
+    // Load the length of the {elements} backing store.
+    Node* elements_length = etrue0 = graph()->NewNode(
+        simplified()->LoadField(AccessBuilder::ForFixedArrayLength()), elements,
+        etrue0, if_true0);
+    elements_length = ChangeSmiToInt32(elements_length);
+
+    // Check if we need to grow the {elements} backing store.
+    Node* check1 =
+        graph()->NewNode(machine()->Uint32LessThan(), index, elements_length);
+    Node* branch1 =
+        graph()->NewNode(common()->Branch(BranchHint::kTrue), check1, if_true0);
+
+    Node* if_true1 = graph()->NewNode(common()->IfTrue(), branch1);
+    Node* etrue1 = etrue0;
+    Node* vtrue1 = vtrue0;
+
+    Node* if_false1 = graph()->NewNode(common()->IfFalse(), branch1);
+    Node* efalse1 = etrue0;
+    Node* vfalse1 = vtrue0;
+    {
+      // We need to grow the {elements} for {object}.
+      Operator::Properties properties = Operator::kEliminatable;
+      Callable callable =
+          (flags & GrowFastElementsFlag::kDoubleElements)
+              ? CodeFactory::GrowFastDoubleElements(isolate())
+              : CodeFactory::GrowFastSmiOrObjectElements(isolate());
+      CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
+      CallDescriptor const* const desc = Linkage::GetStubCallDescriptor(
+          isolate(), graph()->zone(), callable.descriptor(), 0, flags,
+          properties);
+      vfalse1 = efalse1 = graph()->NewNode(
+          common()->Call(desc), jsgraph()->HeapConstant(callable.code()),
+          object, ChangeInt32ToSmi(index), jsgraph()->NoContextConstant(),
+          efalse1);
+
+      // Ensure that we were able to grow the {elements}.
+      // TODO(turbofan): We use kSmi as reason here similar to Crankshaft,
+      // but maybe we should just introduce a reason that makes sense.
+      efalse1 = if_false1 = graph()->NewNode(
+          common()->DeoptimizeIf(DeoptimizeReason::kSmi), ObjectIsSmi(vfalse1),
+          frame_state, efalse1, if_false1);
+    }
+
+    if_true0 = graph()->NewNode(common()->Merge(2), if_true1, if_false1);
+    etrue0 =
+        graph()->NewNode(common()->EffectPhi(2), etrue1, efalse1, if_true0);
+    vtrue0 = graph()->NewNode(common()->Phi(MachineRepresentation::kTagged, 2),
+                              vtrue1, vfalse1, if_true0);
+
+    // For JSArray {object}s we also need to update the "length".
+    if (flags & GrowFastElementsFlag::kArrayObject) {
+      // Compute the new {length}.
+      Node* object_length = ChangeInt32ToSmi(graph()->NewNode(
+          machine()->Int32Add(), index, jsgraph()->Int32Constant(1)));
+
+      // Update the "length" property of the {object}.
+      etrue0 =
+          graph()->NewNode(simplified()->StoreField(
+                               AccessBuilder::ForJSArrayLength(FAST_ELEMENTS)),
+                           object, object_length, etrue0, if_true0);
+    }
+  }
+
+  Node* if_false0 = graph()->NewNode(common()->IfFalse(), branch0);
+  Node* efalse0 = effect;
+  Node* vfalse0 = elements;
+  {
+    // In case of non-holey {elements}, we need to verify that the {index} is
+    // in-bounds, otherwise for holey {elements}, the check above already
+    // guards the index (and the operator forces {index} to be unsigned).
+    if (!(flags & GrowFastElementsFlag::kHoleyElements)) {
+      Node* check1 =
+          graph()->NewNode(machine()->Uint32LessThan(), index, length);
+      efalse0 = if_false0 = graph()->NewNode(
+          common()->DeoptimizeUnless(DeoptimizeReason::kOutOfBounds), check1,
+          frame_state, efalse0, if_false0);
+    }
+  }
+
+  control = graph()->NewNode(common()->Merge(2), if_true0, if_false0);
+  effect = graph()->NewNode(common()->EffectPhi(2), etrue0, efalse0, control);
+  Node* value =
+      graph()->NewNode(common()->Phi(MachineRepresentation::kTagged, 2), vtrue0,
+                       vfalse0, control);
 
   return ValueEffectControl(value, effect, control);
 }
@@ -3165,7 +3284,7 @@ Operator const* EffectControlLinearizer::ToNumberOperator() {
     CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
     CallDescriptor* desc = Linkage::GetStubCallDescriptor(
         isolate(), graph()->zone(), callable.descriptor(), 0, flags,
-        Operator::kNoThrow);
+        Operator::kEliminatable);
     to_number_operator_.set(common()->Call(desc));
   }
   return to_number_operator_.get();

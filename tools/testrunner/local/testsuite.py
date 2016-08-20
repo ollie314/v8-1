@@ -38,7 +38,6 @@ from variants import ALL_VARIANTS, ALL_VARIANT_FLAGS, FAST_VARIANT_FLAGS
 
 FAST_VARIANTS = set(["default", "turbofan"])
 STANDARD_VARIANT = set(["default"])
-IGNITION_VARIANT = set(["ignition"])
 
 
 class VariantGenerator(object):
@@ -55,8 +54,6 @@ class VariantGenerator(object):
         return self.standard_variant
       if statusfile.OnlyFastVariants(testcase.outcomes):
         result = self.fast_variants
-      if statusfile.NoIgnitionVariant(testcase.outcomes):
-        result = result - IGNITION_VARIANT
     return result
 
   def GetFlagSets(self, testcase, variant):
@@ -124,6 +121,14 @@ class TestSuite(object):
     Returns: An object of type VariantGenerator.
     """
     return self._VariantGeneratorFactory()(self, set(variants))
+
+  def PrepareSources(self):
+    """Called once before multiprocessing for doing file-system operations.
+
+    This should not access the network. For network access use the method
+    below.
+    """
+    pass
 
   def DownloadData(self):
     pass

@@ -563,6 +563,8 @@
         'compiler/bytecode-branch-analysis.h',
         'compiler/bytecode-graph-builder.cc',
         'compiler/bytecode-graph-builder.h',
+        'compiler/bytecode-loop-analysis.cc',
+        'compiler/bytecode-loop-analysis.h',
         'compiler/c-linkage.cc',
         'compiler/checkpoint-elimination.cc',
         'compiler/checkpoint-elimination.h',
@@ -713,8 +715,6 @@
         'compiler/scheduler.h',
         'compiler/select-lowering.cc',
         'compiler/select-lowering.h',
-        'compiler/simd-lowering.cc',
-        'compiler/simd-lowering.h',
         'compiler/simplified-lowering.cc',
         'compiler/simplified-lowering.h',
         'compiler/simplified-operator-reducer.cc',
@@ -985,6 +985,7 @@
         'interpreter/bytecode-flags.h',
         'interpreter/bytecode-generator.cc',
         'interpreter/bytecode-generator.h',
+        'interpreter/bytecode-label.cc',
         'interpreter/bytecode-label.h',
         'interpreter/bytecode-peephole-optimizer.cc',
         'interpreter/bytecode-peephole-optimizer.h',
@@ -1231,6 +1232,8 @@
         'v8memory.h',
         'v8threads.cc',
         'v8threads.h',
+        'value-serializer.cc',
+        'value-serializer.h',
         'vector.h',
         'version.cc',
         'version.h',
@@ -1764,10 +1767,13 @@
         'base/cpu.h',
         'base/division-by-constant.cc',
         'base/division-by-constant.h',
+        'base/debug/stack_trace.cc',
+        'base/debug/stack_trace.h',
         'base/file-utils.cc',
         'base/file-utils.h',
         'base/flags.h',
         'base/format-macros.h',
+        'base/free_deleter.h',
         'base/functional.cc',
         'base/functional.h',
         'base/hashmap.h',
@@ -1814,14 +1820,16 @@
               ],
             },
             'sources': [
+              'base/debug/stack_trace_posix.cc',
               'base/platform/platform-linux.cc',
-              'base/platform/platform-posix.cc'
+              'base/platform/platform-posix.cc',
             ],
           }
         ],
         ['OS=="android"', {
             'sources': [
-              'base/platform/platform-posix.cc'
+              'base/debug/stack_trace_android.cc',
+              'base/platform/platform-posix.cc',
             ],
             'link_settings': {
               'target_conditions': [
@@ -1875,8 +1883,9 @@
               ],
             },
             'sources': [
+              'base/debug/stack_trace_posix.cc',
               'base/platform/platform-posix.cc',
-              'base/qnx-math.h',
+              'base/qnx-math.h'
             ],
             'target_conditions': [
               ['_toolset=="host" and host_os=="linux"', {
@@ -1903,8 +1912,9 @@
                 '-L/usr/local/lib -lexecinfo',
             ]},
             'sources': [
+              'base/debug/stack_trace_posix.cc',
               'base/platform/platform-freebsd.cc',
-              'base/platform/platform-posix.cc'
+              'base/platform/platform-posix.cc',
             ],
           }
         ],
@@ -1925,8 +1935,9 @@
                 '-L/usr/pkg/lib -Wl,-R/usr/pkg/lib -lexecinfo',
             ]},
             'sources': [
+              'base/debug/stack_trace_posix.cc',
               'base/platform/platform-openbsd.cc',
-              'base/platform/platform-posix.cc'
+              'base/platform/platform-posix.cc',
             ],
           }
         ],
@@ -1942,15 +1953,17 @@
                 '-lnsl -lrt',
             ]},
             'sources': [
+              'base/debug/stack_trace_posix.cc',
               'base/platform/platform-solaris.cc',
-              'base/platform/platform-posix.cc'
+              'base/platform/platform-posix.cc',
             ],
           }
         ],
         ['OS=="mac"', {
           'sources': [
+            'base/debug/stack_trace_posix.cc',
             'base/platform/platform-macos.cc',
-            'base/platform/platform-posix.cc'
+            'base/platform/platform-posix.cc',
           ]},
         ],
         ['OS=="win"', {
@@ -1968,11 +1981,13 @@
               'conditions': [
                 ['build_env=="Cygwin"', {
                   'sources': [
+                    'base/debug/stack_trace_posix.cc',
                     'base/platform/platform-cygwin.cc',
-                    'base/platform/platform-posix.cc'
+                    'base/platform/platform-posix.cc',
                   ],
                 }, {
                   'sources': [
+                    'base/debug/stack_trace_win.cc',
                     'base/platform/platform-win32.cc',
                     'base/win32-headers.h',
                   ],
@@ -1983,12 +1998,18 @@
               },
             }, {
               'sources': [
+                'base/debug/stack_trace_win.cc',
                 'base/platform/platform-win32.cc',
                 'base/win32-headers.h',
               ],
               'msvs_disabled_warnings': [4351, 4355, 4800],
               'link_settings':  {
-                'libraries': [ '-lwinmm.lib', '-lws2_32.lib' ],
+                'libraries': [
+                  '-ldbghelp.lib',
+                  '-lshlwapi.lib',
+                  '-lwinmm.lib',
+                  '-lws2_32.lib'
+                ],
               },
             }],
           ],

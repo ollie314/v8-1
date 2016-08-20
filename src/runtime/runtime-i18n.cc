@@ -63,6 +63,7 @@ const UChar* GetUCharBufferFromFlat(const String::FlatContent& flat,
 
 }  // namespace
 
+// ECMA 402 6.2.3
 RUNTIME_FUNCTION(Runtime_CanonicalizeLanguageTag) {
   HandleScope scope(isolate);
   Factory* factory = isolate->factory();
@@ -73,6 +74,8 @@ RUNTIME_FUNCTION(Runtime_CanonicalizeLanguageTag) {
   v8::String::Utf8Value locale_id(v8::Utils::ToLocal(locale_id_str));
 
   // Return value which denotes invalid language tag.
+  // TODO(jshin): Can uloc_{for,to}TanguageTag fail even for structually valid
+  // language tags? If not, just add CHECK instead of returning 'invalid-tag'.
   const char* const kInvalidTag = "invalid-tag";
 
   UErrorCode error = U_ZERO_ERROR;
@@ -859,8 +862,10 @@ MUST_USE_RESULT Object* LocaleConvertCase(Handle<String> s, Isolate* isolate,
   // This is not a real loop. It'll be executed only once (no overflow) or
   // twice (overflow).
   for (int i = 0; i < 2; ++i) {
-    result =
-        isolate->factory()->NewRawTwoByteString(dest_length).ToHandleChecked();
+    // Case conversion can increase the string length (e.g. sharp-S => SS) so
+    // that we have to handle RangeError exceptions here.
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, result, isolate->factory()->NewRawTwoByteString(dest_length));
     DisallowHeapAllocation no_gc;
     String::FlatContent flat = s->GetFlatContent();
     const UChar* src = GetUCharBufferFromFlat(flat, &sap, src_length);

@@ -1074,7 +1074,7 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   __ CmpSmiLiteral(debug_info, DebugInfo::uninitialized(), r0);
   __ beq(&array_done);
   __ LoadP(kInterpreterBytecodeArrayRegister,
-           FieldMemOperand(debug_info, DebugInfo::kAbstractCodeIndex));
+           FieldMemOperand(debug_info, DebugInfo::kDebugBytecodeArrayIndex));
   __ bind(&array_done);
 
   // Check function data field is actually a BytecodeArray object.
@@ -1458,23 +1458,47 @@ void Builtins::Generate_InstantiateAsmJs(MacroAssembler* masm) {
   Label failed;
   {
     FrameScope scope(masm, StackFrame::INTERNAL);
+    // Preserve argument count for later compare.
+    __ Move(r5, r3);
     // Push a copy of the target function and the new target.
     // Push function as parameter to the runtime call.
     __ SmiTag(r3);
     __ Push(r3, r4, r6, r4);
 
     // Copy arguments from caller (stdlib, foreign, heap).
-    for (int i = 2; i >= 0; --i) {
-      __ LoadP(r4, MemOperand(fp, StandardFrameConstants::kCallerSPOffset +
-                                      i * kPointerSize));
-      __ push(r4);
+    Label args_done;
+    for (int j = 0; j < 4; ++j) {
+      Label over;
+      if (j < 3) {
+        __ cmpi(r5, Operand(j));
+        __ bne(&over);
+      }
+      for (int i = j - 1; i >= 0; --i) {
+        __ LoadP(r5, MemOperand(fp, StandardFrameConstants::kCallerSPOffset +
+                                        i * kPointerSize));
+        __ push(r5);
+      }
+      for (int i = 0; i < 3 - j; ++i) {
+        __ PushRoot(Heap::kUndefinedValueRootIndex);
+      }
+      if (j < 3) {
+        __ jmp(&args_done);
+        __ bind(&over);
+      }
     }
+    __ bind(&args_done);
+
     // Call runtime, on success unwind frame, and parent frame.
     __ CallRuntime(Runtime::kInstantiateAsmJs, 4);
     // A smi 0 is returned on failure, an object on success.
     __ JumpIfSmi(r3, &failed);
+
+    __ Drop(2);
+    __ pop(r5);
+    __ SmiUntag(r5);
     scope.GenerateLeaveFrame();
-    __ Drop(4);
+
+    __ Drop(r5);
     __ Ret();
 
     __ bind(&failed);
@@ -2457,8 +2481,10 @@ void Builtins::Generate_CallFunction(MacroAssembler* masm,
         __ SmiTag(r3);
         __ Push(r3, r4);
         __ mr(r3, r6);
+        __ Push(cp);
         ToObjectStub stub(masm->isolate());
         __ CallStub(&stub);
+        __ Pop(cp);
         __ mr(r6, r3);
         __ Pop(r3, r4);
         __ SmiUntag(r3);
@@ -2829,31 +2855,6 @@ void Builtins::Generate_Abort(MacroAssembler* masm) {
   __ push(r4);
   __ LoadSmiLiteral(cp, Smi::FromInt(0));
   __ TailCallRuntime(Runtime::kAbort);
-}
-
-// static
-void Builtins::Generate_StringToNumber(MacroAssembler* masm) {
-  // The StringToNumber stub takes one argument in r3.
-  __ AssertString(r3);
-
-  // Check if string has a cached array index.
-  Label runtime;
-  __ lwz(r5, FieldMemOperand(r3, String::kHashFieldOffset));
-  __ And(r0, r5, Operand(String::kContainsCachedArrayIndexMask), SetRC);
-  __ bne(&runtime, cr0);
-  __ IndexFromHash(r5, r3);
-  __ blr();
-
-  __ bind(&runtime);
-  {
-    FrameScope frame(masm, StackFrame::INTERNAL);
-    // Push argument.
-    __ push(r3);
-    // We cannot use a tail call here because this builtin can also be called
-    // from wasm.
-    __ CallRuntime(Runtime::kStringToNumber);
-  }
-  __ Ret();
 }
 
 // static

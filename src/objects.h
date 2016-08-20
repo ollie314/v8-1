@@ -18,6 +18,7 @@
 #include "src/field-index.h"
 #include "src/flags.h"
 #include "src/list.h"
+#include "src/messages.h"
 #include "src/property-details.h"
 #include "src/unicode-decoder.h"
 #include "src/unicode.h"
@@ -772,6 +773,7 @@ std::ostream& operator<<(std::ostream& os, InstanceType instance_type);
   V(BYTECODE_ARRAY_CONSTANT_POOL_SUB_TYPE)       \
   V(BYTECODE_ARRAY_HANDLER_TABLE_SUB_TYPE)       \
   V(CODE_STUBS_TABLE_SUB_TYPE)                   \
+  V(COMPILATION_CACHE_TABLE_SUB_TYPE)            \
   V(CONTEXT_SUB_TYPE)                            \
   V(COPY_ON_WRITE_SUB_TYPE)                      \
   V(DEOPTIMIZATION_DATA_SUB_TYPE)                \
@@ -795,6 +797,7 @@ std::ostream& operator<<(std::ostream& os, InstanceType instance_type);
   V(NOSCRIPT_SHARED_FUNCTION_INFOS_SUB_TYPE)     \
   V(NUMBER_STRING_CACHE_SUB_TYPE)                \
   V(OBJECT_TO_CODE_SUB_TYPE)                     \
+  V(OPTIMIZED_CODE_LITERALS_SUB_TYPE)            \
   V(OPTIMIZED_CODE_MAP_SUB_TYPE)                 \
   V(PROTOTYPE_USERS_SUB_TYPE)                    \
   V(REGEXP_MULTIPLE_CACHE_SUB_TYPE)              \
@@ -807,6 +810,7 @@ std::ostream& operator<<(std::ostream& os, InstanceType instance_type);
   V(SLOW_TEMPLATE_INSTANTIATIONS_CACHE_SUB_TYPE) \
   V(STRING_SPLIT_CACHE_SUB_TYPE)                 \
   V(STRING_TABLE_SUB_TYPE)                       \
+  V(TEMPLATE_INFO_SUB_TYPE)                      \
   V(TYPE_FEEDBACK_VECTOR_SUB_TYPE)               \
   V(TYPE_FEEDBACK_METADATA_SUB_TYPE)             \
   V(WEAK_NEW_SPACE_OBJECT_TO_CODE_SUB_TYPE)
@@ -1204,6 +1208,11 @@ class Object {
   // ES6 section 7.1.15 ToLength
   MUST_USE_RESULT static MaybeHandle<Object> ToLength(Isolate* isolate,
                                                       Handle<Object> input);
+
+  // ES6 section 7.1.17 ToIndex
+  MUST_USE_RESULT static MaybeHandle<Object> ToIndex(
+      Isolate* isolate, Handle<Object> input,
+      MessageTemplate::Template error_index);
 
   // ES6 section 7.3.9 GetMethod
   MUST_USE_RESULT static MaybeHandle<Object> GetMethod(
@@ -2662,6 +2671,8 @@ class FixedArrayBase: public HeapObject {
   inline void synchronized_set_length(int value);
 
   DECLARE_CAST(FixedArrayBase)
+
+  static int GetMaxLengthForNewSpaceAllocation(ElementsKind kind);
 
   // Layout description.
   // Length is smi tagged when it is stored.
@@ -4393,9 +4404,9 @@ class ScopeInfo : public FixedArray {
   // Properties of scopes.
   class ScopeTypeField : public BitField<ScopeType, 0, 4> {};
   class CallsEvalField : public BitField<bool, ScopeTypeField::kNext, 1> {};
-  STATIC_ASSERT(LANGUAGE_END == 3);
+  STATIC_ASSERT(LANGUAGE_END == 2);
   class LanguageModeField
-      : public BitField<LanguageMode, CallsEvalField::kNext, 2> {};
+      : public BitField<LanguageMode, CallsEvalField::kNext, 1> {};
   class DeclarationScopeField
       : public BitField<bool, LanguageModeField::kNext, 1> {};
   class ReceiverVariableField
@@ -5168,11 +5179,9 @@ class Code: public HeapObject {
   inline int profiler_ticks();
   inline void set_profiler_ticks(int ticks);
 
-  // [builtin_index]: For BUILTIN kind, tells which builtin index it has.
-  // For builtins, tells which builtin index it has.
-  // Note that builtins can have a code kind other than BUILTIN, which means
-  // that for arbitrary code objects, this index value may be random garbage.
-  // To verify in that case, compare the code object to the indexed builtin.
+  // [builtin_index]: For builtins, tells which builtin index the code object
+  // has. Note that builtins can have a code kind other than BUILTIN. The
+  // builtin index is a non-negative integer for builtins, and -1 otherwise.
   inline int builtin_index();
   inline void set_builtin_index(int id);
 
@@ -5461,9 +5470,10 @@ class Code: public HeapObject {
       : public BitField<CacheHolderFlag, HasUnwindingInfoField::kNext, 2> {};
   class KindField : public BitField<Kind, CacheHolderField::kNext, 5> {};
   STATIC_ASSERT(NUMBER_OF_KINDS <= KindField::kMax);
-  class ExtraICStateField : public BitField<ExtraICState, KindField::kNext,
-                                            PlatformSmiTagging::kSmiValueSize -
-                                                KindField::kNext + 1> {};
+  class ExtraICStateField
+      : public BitField<ExtraICState, KindField::kNext,
+                        PlatformSmiTagging::kSmiValueSize - KindField::kNext> {
+  };
 
   // KindSpecificFlags1 layout (STUB, BUILTIN and OPTIMIZED_FUNCTION)
   static const int kStackSlotsFirstBit = 0;
@@ -5565,6 +5575,9 @@ class AbstractCode : public HeapObject {
 
   // Return the source position table.
   inline ByteArray* source_position_table();
+
+  // Set the source position table.
+  inline void set_source_position_table(ByteArray* source_position_table);
 
   // Return the exception handler table.
   inline int LookupRangeInHandlerTable(
@@ -6796,6 +6809,7 @@ class Script: public Struct {
   V(String.prototype, charCodeAt, StringCharCodeAt)         \
   V(String.prototype, charAt, StringCharAt)                 \
   V(String.prototype, concat, StringConcat)                 \
+  V(String.prototype, substr, StringSubstr)                 \
   V(String.prototype, toLowerCase, StringToLowerCase)       \
   V(String.prototype, toUpperCase, StringToUpperCase)       \
   V(String, fromCharCode, StringFromCharCode)               \
@@ -6833,7 +6847,8 @@ class Script: public Struct {
   V(Math, clz32, MathClz32)                                 \
   V(Math, fround, MathFround)                               \
   V(Math, trunc, MathTrunc)                                 \
-  V(Number, parseInt, NumberParseInt)
+  V(Number, parseInt, NumberParseInt)                       \
+  V(Number.prototype, toString, NumberToString)
 
 #define ATOMIC_FUNCTIONS_WITH_ID_LIST(V) \
   V(Atomics, load, AtomicsLoad)          \
@@ -6854,6 +6869,12 @@ enum BuiltinFunctionId {
   kDataViewBuffer,
   kDataViewByteLength,
   kDataViewByteOffset,
+  kGlobalDecodeURI,
+  kGlobalDecodeURIComponent,
+  kGlobalEncodeURI,
+  kGlobalEncodeURIComponent,
+  kGlobalEscape,
+  kGlobalUnescape,
   kTypedArrayByteLength,
   kTypedArrayByteOffset,
   kTypedArrayLength,
@@ -6884,6 +6905,7 @@ class SharedFunctionInfo: public HeapObject {
   inline AbstractCode* abstract_code();
 
   inline void ReplaceCode(Code* code);
+  inline bool HasBaselineCode() const;
 
   // [optimized_code_map]: Map from native context to optimized code
   // and a shared literals array.
@@ -6970,7 +6992,7 @@ class SharedFunctionInfo: public HeapObject {
   void SetConstructStub(Code* code);
 
   // Returns if this function has been compiled to native code yet.
-  inline bool is_compiled();
+  inline bool is_compiled() const;
 
   // [length]: The function length - usually the number of declared parameters.
   // Use up to 2^30 parameters.
@@ -7205,6 +7227,9 @@ class SharedFunctionInfo: public HeapObject {
 
   // Whether this function was created from a FunctionDeclaration.
   DECL_BOOLEAN_ACCESSORS(is_declaration)
+
+  // Indicates that asm->wasm conversion failed and should not be re-attempted.
+  DECL_BOOLEAN_ACCESSORS(is_asm_wasm_broken)
 
   inline FunctionKind kind();
   inline void set_kind(FunctionKind kind);
@@ -7478,10 +7503,9 @@ class SharedFunctionInfo: public HeapObject {
     kIsAsyncFunction,
     kDeserialized,
     kIsDeclaration,
+    kIsAsmWasmBroken,
     kCompilerHintsCount,  // Pseudo entry
   };
-  // Add hints for other modes when they're added.
-  STATIC_ASSERT(LANGUAGE_END == 3);
   // kFunctionKind has to be byte-aligned
   STATIC_ASSERT((kFunctionKind % kBitsPerByte) == 0);
 // Make sure that FunctionKind and byte 2 are in sync:
@@ -8129,6 +8153,15 @@ class JSMessageObject: public JSObject {
   inline int end_position() const;
   inline void set_end_position(int value);
 
+  int GetLineNumber() const;
+
+  // Returns the offset of the given position within the containing line.
+  int GetColumnNumber() const;
+
+  // Returns the source code line containing the given source
+  // position, or the empty string if the position is invalid.
+  Handle<String> GetSourceLine() const;
+
   DECLARE_CAST(JSMessageObject)
 
   // Dispatched behavior.
@@ -8148,7 +8181,6 @@ class JSMessageObject: public JSObject {
                               kStackFramesOffset + kPointerSize,
                               kSize> BodyDescriptor;
 };
-
 
 // Regular expressions
 // The regular expression holds a single reference to a FixedArray in
@@ -10718,6 +10750,8 @@ class TemplateInfo: public Struct {
 
   DECLARE_VERIFIER(TemplateInfo)
 
+  DECLARE_CAST(TemplateInfo)
+
   static const int kTagOffset = HeapObject::kHeaderSize;
   static const int kSerialNumberOffset = kTagOffset + kPointerSize;
   static const int kNumberOfProperties = kSerialNumberOffset + kPointerSize;
@@ -10851,25 +10885,21 @@ class DebugInfo: public Struct {
  public:
   // The shared function info for the source being debugged.
   DECL_ACCESSORS(shared, SharedFunctionInfo)
-  // Code object for the patched code. This code object is the code object
-  // currently active for the function.
-  DECL_ACCESSORS(abstract_code, AbstractCode)
+
+  DECL_ACCESSORS(debug_bytecode_array, Object)
   // Fixed array holding status information for each active break point.
   DECL_ACCESSORS(break_points, FixedArray)
 
-  // Check if there is a break point at a code offset.
-  bool HasBreakPoint(int code_offset);
-  // Get the break point info object for a code offset.
-  Object* GetBreakPointInfo(int code_offset);
-  // Clear a break point.
-  static void ClearBreakPoint(Handle<DebugInfo> debug_info, int code_offset,
+  // Check if there is a break point at a source position.
+  bool HasBreakPoint(int source_position);
+  // Attempt to clear a break point. Return true if successful.
+  static bool ClearBreakPoint(Handle<DebugInfo> debug_info,
                               Handle<Object> break_point_object);
   // Set a break point.
-  static void SetBreakPoint(Handle<DebugInfo> debug_info, int code_offset,
-                            int source_position, int statement_position,
+  static void SetBreakPoint(Handle<DebugInfo> debug_info, int source_position,
                             Handle<Object> break_point_object);
-  // Get the break point objects for a code offset.
-  Handle<Object> GetBreakPointObjects(int code_offset);
+  // Get the break point objects for a source position.
+  Handle<Object> GetBreakPointObjects(int source_position);
   // Find the break point info holding this break point object.
   static Handle<Object> FindBreakPointInfo(Handle<DebugInfo> debug_info,
                                            Handle<Object> break_point_object);
@@ -10878,7 +10908,12 @@ class DebugInfo: public Struct {
 
   static Smi* uninitialized() { return Smi::FromInt(0); }
 
-  inline BytecodeArray* original_bytecode_array();
+  inline bool HasDebugBytecodeArray();
+  inline bool HasDebugCode();
+
+  inline BytecodeArray* OriginalBytecodeArray();
+  inline BytecodeArray* DebugBytecodeArray();
+  inline Code* DebugCode();
 
   DECLARE_CAST(DebugInfo)
 
@@ -10887,17 +10922,17 @@ class DebugInfo: public Struct {
   DECLARE_VERIFIER(DebugInfo)
 
   static const int kSharedFunctionInfoIndex = Struct::kHeaderSize;
-  static const int kAbstractCodeIndex = kSharedFunctionInfoIndex + kPointerSize;
-  static const int kBreakPointsStateIndex = kAbstractCodeIndex + kPointerSize;
+  static const int kDebugBytecodeArrayIndex =
+      kSharedFunctionInfoIndex + kPointerSize;
+  static const int kBreakPointsStateIndex =
+      kDebugBytecodeArrayIndex + kPointerSize;
   static const int kSize = kBreakPointsStateIndex + kPointerSize;
 
-  static const int kEstimatedNofBreakPointsInFunction = 16;
+  static const int kEstimatedNofBreakPointsInFunction = 4;
 
  private:
-  static const int kNoBreakPointInfo = -1;
-
-  // Lookup the index in the break_points array for a code offset.
-  int GetBreakPointInfoIndex(int code_offset);
+  // Get the break point info object for a source position.
+  Object* GetBreakPointInfo(int source_position);
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(DebugInfo);
 };
@@ -10908,13 +10943,8 @@ class DebugInfo: public Struct {
 // position with one or more break points.
 class BreakPointInfo: public Struct {
  public:
-  // The code offset for the break point.
-  DECL_INT_ACCESSORS(code_offset)
   // The position in the source for the break position.
   DECL_INT_ACCESSORS(source_position)
-  // The position in the source for the last statement before this break
-  // position.
-  DECL_INT_ACCESSORS(statement_position)
   // List of related JavaScript break points.
   DECL_ACCESSORS(break_point_objects, Object)
 
@@ -10930,18 +10960,17 @@ class BreakPointInfo: public Struct {
   // Get the number of break points for this code offset.
   int GetBreakPointCount();
 
+  int GetStatementPosition(Handle<DebugInfo> debug_info);
+
   DECLARE_CAST(BreakPointInfo)
 
   // Dispatched behavior.
   DECLARE_PRINTER(BreakPointInfo)
   DECLARE_VERIFIER(BreakPointInfo)
 
-  static const int kCodeOffsetIndex = Struct::kHeaderSize;
-  static const int kSourcePositionIndex = kCodeOffsetIndex + kPointerSize;
-  static const int kStatementPositionIndex =
-      kSourcePositionIndex + kPointerSize;
+  static const int kSourcePositionIndex = Struct::kHeaderSize;
   static const int kBreakPointObjectsIndex =
-      kStatementPositionIndex + kPointerSize;
+      kSourcePositionIndex + kPointerSize;
   static const int kSize = kBreakPointObjectsIndex + kPointerSize;
 
  private:

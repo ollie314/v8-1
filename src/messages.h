@@ -375,8 +375,9 @@ class CallSiteUtils : public AllStatic {
   T(InvalidCurrencyCode, "Invalid currency code: %")                           \
   T(InvalidDataViewAccessorOffset,                                             \
     "Offset is outside the bounds of the DataView")                            \
-  T(InvalidDataViewLength, "Invalid data view length")                         \
-  T(InvalidDataViewOffset, "Start offset is outside the bounds of the buffer") \
+  T(InvalidDataViewLength, "Invalid DataView length %")                        \
+  T(InvalidDataViewOffset,                                                     \
+    "Start offset % is outside the bounds of the buffer")                      \
   T(InvalidHint, "Invalid hint: %")                                            \
   T(InvalidLanguageTag, "Invalid language tag: %")                             \
   T(InvalidWeakMapKey, "Invalid value used as weak map key")                   \
@@ -538,7 +539,8 @@ class CallSiteUtils : public AllStatic {
   T(WasmTrapFloatUnrepresentable, "integer result unrepresentable")            \
   T(WasmTrapFuncInvalid, "invalid function")                                   \
   T(WasmTrapFuncSigMismatch, "function signature mismatch")                    \
-  T(WasmTrapInvalidIndex, "invalid index into function table")
+  T(WasmTrapInvalidIndex, "invalid index into function table")                 \
+  T(WasmTrapTypeError, "invalid type")
 
 class MessageTemplate {
  public:

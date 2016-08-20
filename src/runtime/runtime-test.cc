@@ -7,11 +7,15 @@
 #include <memory>
 
 #include "src/arguments.h"
+#include "src/compiler-dispatcher/optimizing-compile-dispatcher.h"
 #include "src/deoptimizer.h"
 #include "src/frames-inl.h"
 #include "src/full-codegen/full-codegen.h"
 #include "src/isolate-inl.h"
+#include "src/runtime-profiler.h"
+#include "src/snapshot/code-serializer.h"
 #include "src/snapshot/natives.h"
+#include "src/wasm/wasm-module.h"
 
 namespace v8 {
 namespace internal {
@@ -138,40 +142,70 @@ RUNTIME_FUNCTION(Runtime_OptimizeFunctionOnNextCall) {
   return isolate->heap()->undefined_value();
 }
 
+RUNTIME_FUNCTION(Runtime_InterpretFunctionOnNextCall) {
+  HandleScope scope(isolate);
+  DCHECK(args.length() == 1);
+  CONVERT_ARG_HANDLE_CHECKED(Object, function_object, 0);
+  if (!function_object->IsJSFunction()) {
+    return isolate->heap()->undefined_value();
+  }
+  Handle<JSFunction> function = Handle<JSFunction>::cast(function_object);
+
+  // Do not tier down if we are already on optimized code. Replacing optimized
+  // code without actual deoptimization can lead to funny bugs.
+  if (function->code()->kind() != Code::OPTIMIZED_FUNCTION &&
+      function->shared()->HasBytecodeArray()) {
+    function->ReplaceCode(*isolate->builtins()->InterpreterEntryTrampoline());
+  }
+  return isolate->heap()->undefined_value();
+}
+
+RUNTIME_FUNCTION(Runtime_BaselineFunctionOnNextCall) {
+  HandleScope scope(isolate);
+  DCHECK(args.length() == 1);
+  CONVERT_ARG_HANDLE_CHECKED(Object, function_object, 0);
+  if (!function_object->IsJSFunction()) {
+    return isolate->heap()->undefined_value();
+  }
+  Handle<JSFunction> function = Handle<JSFunction>::cast(function_object);
+
+  // Do not tier down if we are already on optimized code. Replacing optimized
+  // code without actual deoptimization can lead to funny bugs.
+  if (function->code()->kind() != Code::OPTIMIZED_FUNCTION &&
+      function->code()->kind() != Code::FUNCTION) {
+    if (function->shared()->HasBaselineCode()) {
+      function->ReplaceCode(function->shared()->code());
+    } else {
+      function->MarkForBaseline();
+    }
+  }
+
+  return isolate->heap()->undefined_value();
+}
 
 RUNTIME_FUNCTION(Runtime_OptimizeOsr) {
   HandleScope scope(isolate);
+  DCHECK(args.length() == 0 || args.length() == 1);
 
-  // This function is used by fuzzers, ignore calls with bogus arguments count.
-  if (args.length() != 0 && args.length() != 1) {
-    return isolate->heap()->undefined_value();
-  }
+  Handle<JSFunction> function;
 
-  Handle<JSFunction> function = Handle<JSFunction>::null();
-  if (args.length() == 0) {
-    // Find the JavaScript function on the top of the stack.
-    JavaScriptFrameIterator it(isolate);
-    if (!it.done()) function = Handle<JSFunction>(it.frame()->function());
-    if (function.is_null()) return isolate->heap()->undefined_value();
-  } else {
-    // Function was passed as an argument.
-    CONVERT_ARG_HANDLE_CHECKED(JSFunction, arg, 0);
-    function = arg;
-  }
+  // The optional parameter determines the frame being targeted.
+  int stack_depth = args.length() == 1 ? args.smi_at(0) : 0;
 
-  // If function is interpreted but OSR hasn't been enabled, just return.
-  if (function->shared()->HasBytecodeArray() && !FLAG_ignition_osr) {
-    return isolate->heap()->undefined_value();
-  }
+  // Find the JavaScript function on the top of the stack.
+  JavaScriptFrameIterator it(isolate);
+  while (!it.done() && stack_depth--) it.Advance();
+  if (!it.done()) function = Handle<JSFunction>(it.frame()->function());
+  if (function.is_null()) return isolate->heap()->undefined_value();
 
   // If the function is already optimized, just return.
   if (function->IsOptimized()) return isolate->heap()->undefined_value();
 
   // Make the profiler arm all back edges in unoptimized code.
-  if (function->shared()->HasBytecodeArray() ||
-      function->shared()->code()->kind() == Code::FUNCTION) {
+  if (it.frame()->type() == StackFrame::JAVA_SCRIPT ||
+      it.frame()->type() == StackFrame::INTERPRETED) {
     isolate->runtime_profiler()->AttemptOnStackReplacement(
-        *function, AbstractCode::kMaxLoopNestingMarker);
+        it.frame(), AbstractCode::kMaxLoopNestingMarker);
   }
 
   return isolate->heap()->undefined_value();
@@ -269,6 +303,34 @@ RUNTIME_FUNCTION(Runtime_GetUndetectable) {
   return *Utils::OpenHandle(*obj);
 }
 
+static void call_as_function(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  double v1 = args[0]
+                  ->NumberValue(v8::Isolate::GetCurrent()->GetCurrentContext())
+                  .ToChecked();
+  double v2 = args[1]
+                  ->NumberValue(v8::Isolate::GetCurrent()->GetCurrentContext())
+                  .ToChecked();
+  args.GetReturnValue().Set(
+      v8::Number::New(v8::Isolate::GetCurrent(), v1 - v2));
+}
+
+// Returns a callable object. The object returns the difference of its two
+// parameters when it is called.
+RUNTIME_FUNCTION(Runtime_GetCallable) {
+  HandleScope scope(isolate);
+  DCHECK(args.length() == 0);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+  Local<v8::FunctionTemplate> t = v8::FunctionTemplate::New(v8_isolate);
+  Local<ObjectTemplate> instance_template = t->InstanceTemplate();
+  instance_template->SetCallAsFunctionHandler(call_as_function);
+  v8_isolate->GetCurrentContext();
+  Local<v8::Object> instance =
+      t->GetFunction(v8_isolate->GetCurrentContext())
+          .ToLocalChecked()
+          ->NewInstance(v8_isolate->GetCurrentContext())
+          .ToLocalChecked();
+  return *Utils::OpenHandle(*instance);
+}
 
 RUNTIME_FUNCTION(Runtime_ClearFunctionTypeFeedback) {
   HandleScope scope(isolate);
@@ -602,6 +664,22 @@ RUNTIME_FUNCTION(Runtime_InNewSpace) {
   return isolate->heap()->ToBoolean(isolate->heap()->InNewSpace(obj));
 }
 
+RUNTIME_FUNCTION(Runtime_IsAsmWasmCode) {
+  SealHandleScope shs(isolate);
+  DCHECK(args.length() == 1);
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
+
+  if (!function->shared()->HasAsmWasmData()) {
+    // Doesn't have wasm data.
+    return isolate->heap()->ToBoolean(false);
+  }
+  if (function->shared()->code() !=
+      isolate->builtins()->builtin(Builtins::kInstantiateAsmJs)) {
+    // Hasn't been compiled yet.
+    return isolate->heap()->ToBoolean(false);
+  }
+  return isolate->heap()->ToBoolean(true);
+}
 
 #define ELEMENTS_KIND_CHECK_RUNTIME_FUNCTION(Name)       \
   RUNTIME_FUNCTION(Runtime_Has##Name) {                  \
@@ -640,6 +718,43 @@ RUNTIME_FUNCTION(Runtime_SpeciesProtector) {
   return isolate->heap()->ToBoolean(isolate->IsArraySpeciesLookupChainIntact());
 }
 
+// Take a compiled wasm module, serialize it and copy the buffer into an array
+// buffer, which is then returned.
+RUNTIME_FUNCTION(Runtime_SerializeWasmModule) {
+  HandleScope shs(isolate);
+  DCHECK(args.length() == 1);
+  CONVERT_ARG_HANDLE_CHECKED(JSObject, module_obj, 0);
+
+  Handle<FixedArray> orig =
+      handle(FixedArray::cast(module_obj->GetInternalField(0)));
+  std::unique_ptr<ScriptData> data =
+      WasmCompiledModuleSerializer::SerializeWasmModule(isolate, orig);
+  void* buff = isolate->array_buffer_allocator()->Allocate(data->length());
+  Handle<JSArrayBuffer> ret = isolate->factory()->NewJSArrayBuffer();
+  JSArrayBuffer::Setup(ret, isolate, false, buff, data->length());
+  memcpy(buff, data->data(), data->length());
+  return *ret;
+}
+
+// Take an array buffer and attempt to reconstruct a compiled wasm module.
+// Return undefined if unsuccessful.
+RUNTIME_FUNCTION(Runtime_DeserializeWasmModule) {
+  HandleScope shs(isolate);
+  DCHECK(args.length() == 1);
+  CONVERT_ARG_HANDLE_CHECKED(JSArrayBuffer, buffer, 0);
+
+  Address mem_start = static_cast<Address>(buffer->backing_store());
+  int mem_size = static_cast<int>(buffer->byte_length()->Number());
+
+  ScriptData sc(mem_start, mem_size);
+  MaybeHandle<FixedArray> maybe_compiled_module =
+      WasmCompiledModuleSerializer::DeserializeWasmModule(isolate, &sc);
+  Handle<FixedArray> compiled_module;
+  if (!maybe_compiled_module.ToHandle(&compiled_module)) {
+    return isolate->heap()->undefined_value();
+  }
+  return *wasm::CreateCompiledModuleObject(isolate, compiled_module);
+}
 
 }  // namespace internal
 }  // namespace v8

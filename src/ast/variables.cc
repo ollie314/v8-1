@@ -4,7 +4,6 @@
 
 #include "src/ast/variables.h"
 
-#include "src/ast/ast.h"
 #include "src/ast/scopes.h"
 #include "src/globals.h"
 
@@ -20,7 +19,6 @@ const char* Variable::Mode2String(VariableMode mode) {
     case CONST_LEGACY: return "CONST_LEGACY";
     case LET: return "LET";
     case CONST: return "CONST";
-    case IMPORT: return "IMPORT";
     case DYNAMIC: return "DYNAMIC";
     case DYNAMIC_GLOBAL: return "DYNAMIC_GLOBAL";
     case DYNAMIC_LOCAL: return "DYNAMIC_LOCAL";
@@ -55,7 +53,7 @@ bool Variable::IsGlobalObjectProperty() const {
   // activation frame.
   return (IsDynamicVariableMode(mode_) ||
           (IsDeclaredVariableMode(mode_) && !IsLexicalVariableMode(mode_))) &&
-         scope_ != NULL && scope_->is_script_scope() && !is_this();
+         scope_ != NULL && scope_->is_script_scope();
 }
 
 
@@ -63,7 +61,7 @@ bool Variable::IsStaticGlobalObjectProperty() const {
   // Temporaries are never global, they must always be allocated in the
   // activation frame.
   return (IsDeclaredVariableMode(mode_) && !IsLexicalVariableMode(mode_)) &&
-         scope_ != NULL && scope_->is_script_scope() && !is_this();
+         scope_ != NULL && scope_->is_script_scope();
 }
 
 

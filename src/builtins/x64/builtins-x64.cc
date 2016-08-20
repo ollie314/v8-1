@@ -28,6 +28,9 @@ void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address,
   // -----------------------------------
   __ AssertFunction(rdi);
 
+  // The logic contained here is mirrored for TurboFan inlining in
+  // JSTypedLowering::ReduceJSCall{Function,Construct}. Keep these in sync.
+
   // Make sure we operate in the context of the called function (for example
   // ConstructStubs implemented in C++ will be run in the context of the caller
   // instead of the callee, due to the way that [[Construct]] is defined for
@@ -663,11 +666,13 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
           FieldOperand(rax, SharedFunctionInfo::kFunctionDataOffset));
   __ bind(&bytecode_array_loaded);
 
+  // Check whether we should continue to use the interpreter.
+  Label switch_to_different_code_kind;
+  __ Move(rcx, masm->CodeObject());  // Self-reference to this code.
+  __ cmpp(rcx, FieldOperand(rax, SharedFunctionInfo::kCodeOffset));
+  __ j(not_equal, &switch_to_different_code_kind);
+
   // Check function data field is actually a BytecodeArray object.
-  Label bytecode_array_not_present;
-  __ CompareRoot(kInterpreterBytecodeArrayRegister,
-                 Heap::kUndefinedValueRootIndex);
-  __ j(equal, &bytecode_array_not_present);
   if (FLAG_debug_code) {
     __ AssertNotSmi(kInterpreterBytecodeArrayRegister);
     __ CmpObjectType(kInterpreterBytecodeArrayRegister, BYTECODE_ARRAY_TYPE,
@@ -736,13 +741,13 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   Register debug_info = kInterpreterBytecodeArrayRegister;
   __ movp(debug_info, FieldOperand(rax, SharedFunctionInfo::kDebugInfoOffset));
   __ movp(kInterpreterBytecodeArrayRegister,
-          FieldOperand(debug_info, DebugInfo::kAbstractCodeIndex));
+          FieldOperand(debug_info, DebugInfo::kDebugBytecodeArrayIndex));
   __ jmp(&bytecode_array_loaded);
 
-  // If the bytecode array is no longer present, then the underlying function
-  // has been switched to a different kind of code and we heal the closure by
-  // switching the code entry field over to the new code object as well.
-  __ bind(&bytecode_array_not_present);
+  // If the shared code is no longer this entry trampoline, then the underlying
+  // function has been switched to a different kind of code and we heal the
+  // closure by switching the code entry field over to the new code as well.
+  __ bind(&switch_to_different_code_kind);
   __ leave();  // Leave the frame so we can tail call.
   __ movp(rcx, FieldOperand(rdi, JSFunction::kSharedFunctionInfoOffset));
   __ movp(rcx, FieldOperand(rcx, SharedFunctionInfo::kCodeOffset));
@@ -1062,6 +1067,8 @@ void Builtins::Generate_InstantiateAsmJs(MacroAssembler* masm) {
   Label failed;
   {
     FrameScope scope(masm, StackFrame::INTERNAL);
+    // Preserve argument count for later compare.
+    __ movp(kScratchRegister, rax);
     // Push the number of arguments to the callee.
     __ Integer32ToSmi(rax, rax);
     __ Push(rax);
@@ -1072,16 +1079,42 @@ void Builtins::Generate_InstantiateAsmJs(MacroAssembler* masm) {
     // The function.
     __ Push(rdi);
     // Copy arguments from caller (stdlib, foreign, heap).
-    for (int i = 2; i >= 0; --i) {
-      __ Push(Operand(
-          rbp, StandardFrameConstants::kCallerSPOffset + i * kPointerSize));
+    Label args_done;
+    for (int j = 0; j < 4; ++j) {
+      Label over;
+      if (j < 3) {
+        __ cmpp(kScratchRegister, Immediate(j));
+        __ j(not_equal, &over, Label::kNear);
+      }
+      for (int i = j - 1; i >= 0; --i) {
+        __ Push(Operand(
+            rbp, StandardFrameConstants::kCallerSPOffset + i * kPointerSize));
+      }
+      for (int i = 0; i < 3 - j; ++i) {
+        __ PushRoot(Heap::kUndefinedValueRootIndex);
+      }
+      if (j < 3) {
+        __ jmp(&args_done, Label::kNear);
+        __ bind(&over);
+      }
     }
+    __ bind(&args_done);
+
     // Call runtime, on success unwind frame, and parent frame.
     __ CallRuntime(Runtime::kInstantiateAsmJs, 4);
     // A smi 0 is returned on failure, an object on success.
     __ JumpIfSmi(rax, &failed, Label::kNear);
+
+    __ Drop(2);
+    __ Pop(kScratchRegister);
+    __ SmiToInteger32(kScratchRegister, kScratchRegister);
     scope.GenerateLeaveFrame();
-    __ ret(4 * kPointerSize);
+
+    __ PopReturnAddressTo(rbx);
+    __ incp(kScratchRegister);
+    __ leap(rsp, Operand(rsp, kScratchRegister, times_pointer_size, 0));
+    __ PushReturnAddressFrom(rbx);
+    __ ret(0);
 
     __ bind(&failed);
     // Restore target function and new target.
@@ -2128,31 +2161,6 @@ void Builtins::Generate_Abort(MacroAssembler* masm) {
   __ TailCallRuntime(Runtime::kAbort);
 }
 
-void Builtins::Generate_StringToNumber(MacroAssembler* masm) {
-  // The StringToNumber stub takes one argument in rax.
-  __ AssertString(rax);
-
-  // Check if string has a cached array index.
-  Label runtime;
-  __ testl(FieldOperand(rax, String::kHashFieldOffset),
-           Immediate(String::kContainsCachedArrayIndexMask));
-  __ j(not_zero, &runtime, Label::kNear);
-  __ movl(rax, FieldOperand(rax, String::kHashFieldOffset));
-  __ IndexFromHash(rax, rax);
-  __ Ret();
-
-  __ bind(&runtime);
-  {
-    FrameScope frame(masm, StackFrame::INTERNAL);
-    // Push argument.
-    __ Push(rax);
-    // We cannot use a tail call here because this builtin can also be called
-    // from wasm.
-    __ CallRuntime(Runtime::kStringToNumber);
-  }
-  __ Ret();
-}
-
 // static
 void Builtins::Generate_ToNumber(MacroAssembler* masm) {
   // The ToNumber stub takes one argument in rax.
@@ -2563,8 +2571,10 @@ void Builtins::Generate_CallFunction(MacroAssembler* masm,
         __ Push(rax);
         __ Push(rdi);
         __ movp(rax, rcx);
+        __ Push(rsi);
         ToObjectStub stub(masm->isolate());
         __ CallStub(&stub);
+        __ Pop(rsi);
         __ movp(rcx, rax);
         __ Pop(rdi);
         __ Pop(rax);

@@ -149,6 +149,30 @@ void Verifier::Visitor::Check(Node* node) {
       CheckOutput(control, node, control->op()->ControlOutputCount(),
                   "control");
     }
+
+    // Verify that no-no-throw nodes only have IfSuccess/IfException control
+    // uses.
+    if (!node->op()->HasProperty(Operator::kNoThrow)) {
+      int count_success = 0, count_exception = 0;
+      for (Edge edge : node->use_edges()) {
+        if (!NodeProperties::IsControlEdge(edge)) {
+          continue;
+        }
+        Node* control_use = edge.from();
+        if (control_use->opcode() != IrOpcode::kIfSuccess &&
+            control_use->opcode() != IrOpcode::kIfException) {
+          V8_Fatal(__FILE__, __LINE__,
+                   "#%d:%s should be followed by IfSuccess/IfException, but is "
+                   "followed by #%d:%s",
+                   node->id(), node->op()->mnemonic(), control_use->id(),
+                   control_use->op()->mnemonic());
+        }
+        if (control_use->opcode() == IrOpcode::kIfSuccess) ++count_success;
+        if (control_use->opcode() == IrOpcode::kIfException) ++count_exception;
+        CHECK_LE(count_success, 1);
+        CHECK_LE(count_exception, 1);
+      }
+    }
   }
 
   switch (node->opcode()) {
@@ -856,6 +880,13 @@ void Verifier::Visitor::Check(Node* node) {
       CheckValueInputIs(node, 1, Type::Internal());
       CheckUpperIs(node, Type::Internal());
       break;
+    case IrOpcode::kMaybeGrowFastElements:
+      CheckValueInputIs(node, 0, Type::Any());
+      CheckValueInputIs(node, 1, Type::Internal());
+      CheckValueInputIs(node, 2, Type::Unsigned31());
+      CheckValueInputIs(node, 3, Type::Unsigned31());
+      CheckUpperIs(node, Type::Internal());
+      break;
     case IrOpcode::kTransitionElementsKind:
       CheckValueInputIs(node, 0, Type::Any());
       CheckValueInputIs(node, 1, Type::Internal());
@@ -1035,7 +1066,11 @@ void Verifier::Visitor::Check(Node* node) {
       break;
     case IrOpcode::kCheckTaggedHole:
       CheckValueInputIs(node, 0, Type::Any());
-      CheckUpperIs(node, Type::Any());
+      CheckUpperIs(node, Type::NonInternal());
+      break;
+    case IrOpcode::kConvertTaggedHoleToUndefined:
+      CheckValueInputIs(node, 0, Type::Any());
+      CheckUpperIs(node, Type::NonInternal());
       break;
 
     case IrOpcode::kLoadField:
@@ -1143,7 +1178,6 @@ void Verifier::Visitor::Check(Node* node) {
     case IrOpcode::kUint64LessThanOrEqual:
     case IrOpcode::kFloat32Add:
     case IrOpcode::kFloat32Sub:
-    case IrOpcode::kFloat32SubPreserveNan:
     case IrOpcode::kFloat32Neg:
     case IrOpcode::kFloat32Mul:
     case IrOpcode::kFloat32Div:
@@ -1154,7 +1188,6 @@ void Verifier::Visitor::Check(Node* node) {
     case IrOpcode::kFloat32LessThanOrEqual:
     case IrOpcode::kFloat64Add:
     case IrOpcode::kFloat64Sub:
-    case IrOpcode::kFloat64SubPreserveNan:
     case IrOpcode::kFloat64Neg:
     case IrOpcode::kFloat64Mul:
     case IrOpcode::kFloat64Div:
@@ -1261,10 +1294,10 @@ void Verifier::Run(Graph* graph, Typing typing, CheckInputs check_inputs) {
   Zone zone(graph->zone()->allocator());
   Visitor visitor(&zone, typing, check_inputs);
   AllNodes all(&zone, graph);
-  for (Node* node : all.live) visitor.Check(node);
+  for (Node* node : all.reachable) visitor.Check(node);
 
   // Check the uniqueness of projections.
-  for (Node* proj : all.live) {
+  for (Node* proj : all.reachable) {
     if (proj->opcode() != IrOpcode::kProjection) continue;
     Node* node = proj->InputAt(0);
     for (Node* other : node->uses()) {

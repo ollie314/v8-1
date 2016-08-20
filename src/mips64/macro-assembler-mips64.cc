@@ -1332,49 +1332,72 @@ void MacroAssembler::Dlsa(Register rd, Register rt, Register rs, uint8_t sa,
   }
 }
 
+void MacroAssembler::Bovc(Register rs, Register rt, Label* L) {
+  if (is_trampoline_emitted()) {
+    Label skip;
+    bnvc(rs, rt, &skip);
+    BranchLong(L, PROTECT);
+    bind(&skip);
+  } else {
+    bovc(rs, rt, L);
+  }
+}
+
+void MacroAssembler::Bnvc(Register rs, Register rt, Label* L) {
+  if (is_trampoline_emitted()) {
+    Label skip;
+    bovc(rs, rt, &skip);
+    BranchLong(L, PROTECT);
+    bind(&skip);
+  } else {
+    bnvc(rs, rt, L);
+  }
+}
 
 // ------------Pseudo-instructions-------------
 
 // Change endianness
-void MacroAssembler::ByteSwapSigned(Register reg, int operand_size) {
+void MacroAssembler::ByteSwapSigned(Register dest, Register src,
+                                    int operand_size) {
   DCHECK(operand_size == 1 || operand_size == 2 || operand_size == 4 ||
          operand_size == 8);
   DCHECK(kArchVariant == kMips64r6 || kArchVariant == kMips64r2);
   if (operand_size == 1) {
-    seb(reg, reg);
-    sll(reg, reg, 0);
-    dsbh(reg, reg);
-    dshd(reg, reg);
+    seb(src, src);
+    sll(src, src, 0);
+    dsbh(dest, src);
+    dshd(dest, dest);
   } else if (operand_size == 2) {
-    seh(reg, reg);
-    sll(reg, reg, 0);
-    dsbh(reg, reg);
-    dshd(reg, reg);
+    seh(src, src);
+    sll(src, src, 0);
+    dsbh(dest, src);
+    dshd(dest, dest);
   } else if (operand_size == 4) {
-    sll(reg, reg, 0);
-    dsbh(reg, reg);
-    dshd(reg, reg);
+    sll(src, src, 0);
+    dsbh(dest, src);
+    dshd(dest, dest);
   } else {
-    dsbh(reg, reg);
-    dshd(reg, reg);
+    dsbh(dest, src);
+    dshd(dest, dest);
   }
 }
 
-void MacroAssembler::ByteSwapUnsigned(Register reg, int operand_size) {
+void MacroAssembler::ByteSwapUnsigned(Register dest, Register src,
+                                      int operand_size) {
   DCHECK(operand_size == 1 || operand_size == 2 || operand_size == 4);
   if (operand_size == 1) {
-    andi(reg, reg, 0xFF);
-    dsbh(reg, reg);
-    dshd(reg, reg);
+    andi(src, src, 0xFF);
+    dsbh(dest, src);
+    dshd(dest, dest);
   } else if (operand_size == 2) {
-    andi(reg, reg, 0xFFFF);
-    dsbh(reg, reg);
-    dshd(reg, reg);
+    andi(src, src, 0xFFFF);
+    dsbh(dest, src);
+    dshd(dest, dest);
   } else {
-    dsll32(reg, reg, 0);
-    dsrl32(reg, reg, 0);
-    dsbh(reg, reg);
-    dshd(reg, reg);
+    dsll32(src, src, 0);
+    dsrl32(src, src, 0);
+    dsbh(dest, src);
+    dshd(dest, dest);
   }
 }
 
@@ -1936,6 +1959,61 @@ void MacroAssembler::Ins(Register rt,
   ins_(rt, rs, pos, size);
 }
 
+void MacroAssembler::Neg_s(FPURegister fd, FPURegister fs) {
+  Register scratch1 = t8;
+  Register scratch2 = t9;
+  if (kArchVariant == kMips64r2) {
+    Label is_nan, done;
+    BranchF32(nullptr, &is_nan, eq, fs, fs);
+    Branch(USE_DELAY_SLOT, &done);
+    // For NaN input, neg_s will return the same NaN value,
+    // while the sign has to be changed separately.
+    neg_s(fd, fs);  // In delay slot.
+    bind(&is_nan);
+    mfc1(scratch1, fs);
+    And(scratch2, scratch1, Operand(~kBinary32SignMask));
+    And(scratch1, scratch1, Operand(kBinary32SignMask));
+    Xor(scratch1, scratch1, Operand(kBinary32SignMask));
+    Or(scratch2, scratch2, scratch1);
+    mtc1(scratch2, fd);
+    bind(&done);
+  } else {
+    mfc1(scratch1, fs);
+    And(scratch2, scratch1, Operand(~kBinary32SignMask));
+    And(scratch1, scratch1, Operand(kBinary32SignMask));
+    Xor(scratch1, scratch1, Operand(kBinary32SignMask));
+    Or(scratch2, scratch2, scratch1);
+    mtc1(scratch2, fd);
+  }
+}
+
+void MacroAssembler::Neg_d(FPURegister fd, FPURegister fs) {
+  Register scratch1 = t8;
+  Register scratch2 = t9;
+  if (kArchVariant == kMips64r2) {
+    Label is_nan, done;
+    BranchF64(nullptr, &is_nan, eq, fs, fs);
+    Branch(USE_DELAY_SLOT, &done);
+    // For NaN input, neg_d will return the same NaN value,
+    // while the sign has to be changed separately.
+    neg_d(fd, fs);  // In delay slot.
+    bind(&is_nan);
+    dmfc1(scratch1, fs);
+    And(scratch2, scratch1, Operand(~Double::kSignMask));
+    And(scratch1, scratch1, Operand(Double::kSignMask));
+    Xor(scratch1, scratch1, Operand(Double::kSignMask));
+    Or(scratch2, scratch2, scratch1);
+    dmtc1(scratch2, fd);
+    bind(&done);
+  } else {
+    dmfc1(scratch1, fs);
+    And(scratch2, scratch1, Operand(~Double::kSignMask));
+    And(scratch1, scratch1, Operand(Double::kSignMask));
+    Xor(scratch1, scratch1, Operand(Double::kSignMask));
+    Or(scratch2, scratch2, scratch1);
+    dmtc1(scratch2, fd);
+  }
+}
 
 void MacroAssembler::Cvt_d_uw(FPURegister fd, FPURegister fs) {
   // Move the data from fs to t8.
@@ -2514,7 +2592,7 @@ void MacroAssembler::Move(FPURegister dst, double imm) {
   if (imm_bits == bit_cast<int64_t>(0.0) && has_double_zero_reg_set_) {
     mov_d(dst, kDoubleRegZero);
   } else if (imm_bits == bit_cast<int64_t>(-0.0) && has_double_zero_reg_set_) {
-    neg_d(dst, kDoubleRegZero);
+    Neg_d(dst, kDoubleRegZero);
   } else {
     uint32_t lo, hi;
     DoubleAsTwoUInt32(imm, &lo, &hi);
@@ -5606,9 +5684,9 @@ void MacroAssembler::AddBranchOvf(Register dst, Register left, Register right,
       Move(left_reg, left);
       Move(right_reg, right);
       addu(dst, left, right);
-      bnvc(left_reg, right_reg, no_overflow_label);
+      Bnvc(left_reg, right_reg, no_overflow_label);
     } else {
-      bovc(left, right, overflow_label);
+      Bovc(left, right, overflow_label);
       addu(dst, left, right);
       if (no_overflow_label) bc(no_overflow_label);
     }

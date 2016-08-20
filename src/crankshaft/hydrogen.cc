@@ -5765,6 +5765,9 @@ void HOptimizedGraphBuilder::VisitVariableProxy(VariableProxy* expr) {
 
     case VariableLocation::LOOKUP:
       return Bailout(kReferenceToAVariableWhichRequiresDynamicLookup);
+
+    case VariableLocation::MODULE:
+      UNREACHABLE();
   }
 }
 
@@ -5929,7 +5932,8 @@ void HOptimizedGraphBuilder::VisitObjectLiteral(ObjectLiteral* expr) {
       case ObjectLiteral::Property::COMPUTED:
         // It is safe to use [[Put]] here because the boilerplate already
         // contains computed properties with an uninitialized value.
-        if (key->value()->IsInternalizedString()) {
+        if (key->IsStringLiteral()) {
+          DCHECK(key->IsPropertyName());
           if (property->emit_store()) {
             CHECK_ALIVE(VisitForValue(value));
             HValue* value = Pop();
@@ -7007,6 +7011,9 @@ void HOptimizedGraphBuilder::HandleCompoundAssignment(Assignment* expr) {
 
       case VariableLocation::LOOKUP:
         return Bailout(kCompoundAssignmentToLookupSlot);
+
+      case VariableLocation::MODULE:
+        UNREACHABLE();
     }
     return ast_context()->ReturnValue(Pop());
 
@@ -7078,7 +7085,7 @@ void HOptimizedGraphBuilder::VisitAssignment(Assignment* expr) {
       }
     }
 
-    if (proxy->IsArguments()) return Bailout(kAssignmentToArguments);
+    if (var->is_arguments()) return Bailout(kAssignmentToArguments);
 
     // Handle the assignment.
     switch (var->location()) {
@@ -7155,6 +7162,9 @@ void HOptimizedGraphBuilder::VisitAssignment(Assignment* expr) {
 
       case VariableLocation::LOOKUP:
         return Bailout(kAssignmentToLOOKUPVariable);
+
+      case VariableLocation::MODULE:
+        UNREACHABLE();
     }
   } else {
     return Bailout(kInvalidLeftHandSideInAssignment);
@@ -9818,8 +9828,7 @@ void HOptimizedGraphBuilder::VisitCall(Call* expr) {
     PushArgumentsFromEnvironment(argument_count);
 
   } else {
-    VariableProxy* proxy = expr->expression()->AsVariableProxy();
-    if (proxy != NULL && proxy->var()->is_possibly_eval(isolate())) {
+    if (expr->is_possibly_eval()) {
       return Bailout(kPossibleDirectCallToEval);
     }
 
@@ -9864,8 +9873,7 @@ void HOptimizedGraphBuilder::VisitCall(Call* expr) {
                                      syntactic_tail_call_mode, tail_call_mode);
     } else {
       PushArgumentsFromEnvironment(argument_count);
-      if (expr->is_uninitialized() &&
-          expr->IsUsingCallFeedbackICSlot(isolate())) {
+      if (expr->is_uninitialized() && expr->IsUsingCallFeedbackICSlot()) {
         // We've never seen this call before, so let's have Crankshaft learn
         // through the type vector.
         call = NewCallFunctionViaIC(function, argument_count,
@@ -10591,8 +10599,8 @@ void HOptimizedGraphBuilder::VisitDelete(UnaryOperation* expr) {
       // Result of deleting non-global variables is false.  'this' is not really
       // a variable, though we implement it as one.  The subexpression does not
       // have side effects.
-      HValue* value = var->HasThisName(isolate()) ? graph()->GetConstantTrue()
-                                                  : graph()->GetConstantFalse();
+      HValue* value = var->is_this() ? graph()->GetConstantTrue()
+                                     : graph()->GetConstantFalse();
       return ast_context()->ReturnValue(value);
     } else {
       Bailout(kDeleteWithNonGlobalVariable);
@@ -10801,6 +10809,9 @@ void HOptimizedGraphBuilder::VisitCountOperation(CountOperation* expr) {
 
       case VariableLocation::LOOKUP:
         return Bailout(kLookupVariableInCountOperation);
+
+      case VariableLocation::MODULE:
+        UNREACHABLE();
     }
 
     Drop(returns_original_input ? 2 : 1);
@@ -12192,6 +12203,8 @@ void HOptimizedGraphBuilder::VisitVariableDeclaration(
       break;
     case VariableLocation::LOOKUP:
       return Bailout(kUnsupportedLookupSlotInDeclaration);
+    case VariableLocation::MODULE:
+      UNREACHABLE();
   }
 }
 
@@ -12233,6 +12246,8 @@ void HOptimizedGraphBuilder::VisitFunctionDeclaration(
     }
     case VariableLocation::LOOKUP:
       return Bailout(kUnsupportedLookupSlotInDeclaration);
+    case VariableLocation::MODULE:
+      UNREACHABLE();
   }
 }
 

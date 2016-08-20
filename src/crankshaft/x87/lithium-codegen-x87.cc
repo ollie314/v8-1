@@ -68,9 +68,6 @@ void LCodeGen::FinishCode(Handle<Code> code) {
   DCHECK(is_done());
   code->set_stack_slots(GetTotalFrameSlotCount());
   code->set_safepoint_table_offset(safepoints_.GetCodeOffset());
-  Handle<ByteArray> source_positions =
-      source_position_table_builder_.ToSourcePositionTable();
-  code->set_source_position_table(*source_positions);
   PopulateDeoptimizationData(code);
   if (info()->ShouldEnsureSpaceForLazyDeopt()) {
     Deoptimizer::EnsureRelocSpaceForLazyDeoptimization(code);
@@ -4307,8 +4304,7 @@ void LCodeGen::DoDeferredMaybeGrowElements(LMaybeGrowElements* instr) {
       __ SmiTag(ebx);
     }
 
-    GrowArrayElementsStub stub(isolate(), instr->hydrogen()->is_js_array(),
-                               instr->hydrogen()->kind());
+    GrowArrayElementsStub stub(isolate(), instr->hydrogen()->kind());
     __ CallStub(&stub);
     RecordSafepointWithLazyDeopt(
         instr, RECORD_SAFEPOINT_WITH_REGISTERS_AND_NO_ARGUMENTS);
@@ -4736,8 +4732,8 @@ void LCodeGen::EmitNumberUntagDNoSSE2(LNumberUntagD* instr, Register input_reg,
                    DeoptimizeReason::kNotAHeapNumberUndefined);
 
       __ bind(&convert);
-      __ push(Immediate(0xffffffff));
-      __ push(Immediate(0x7fffffff));
+      __ push(Immediate(0xfff80000));
+      __ push(Immediate(0x00000000));
       __ fld_d(MemOperand(esp, 0));
       __ lea(esp, Operand(esp, kDoubleSize));
       __ jmp(&done, Label::kNear);

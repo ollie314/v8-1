@@ -3280,6 +3280,7 @@ CAST_ACCESSOR(StringSet)
 CAST_ACCESSOR(StringTable)
 CAST_ACCESSOR(Struct)
 CAST_ACCESSOR(Symbol)
+CAST_ACCESSOR(TemplateInfo)
 CAST_ACCESSOR(Uint16x8)
 CAST_ACCESSOR(Uint32x4)
 CAST_ACCESSOR(Uint8x16)
@@ -5340,6 +5341,14 @@ ByteArray* AbstractCode::source_position_table() {
   }
 }
 
+void AbstractCode::set_source_position_table(ByteArray* source_position_table) {
+  if (IsCode()) {
+    GetCode()->set_source_position_table(source_position_table);
+  } else {
+    GetBytecodeArray()->set_source_position_table(source_position_table);
+  }
+}
+
 int AbstractCode::LookupRangeInHandlerTable(
     int code_offset, int* data, HandlerTable::CatchPrediction* prediction) {
   if (IsCode()) {
@@ -5811,16 +5820,36 @@ void Script::set_origin_options(ScriptOriginOptions origin_options) {
 
 
 ACCESSORS(DebugInfo, shared, SharedFunctionInfo, kSharedFunctionInfoIndex)
-ACCESSORS(DebugInfo, abstract_code, AbstractCode, kAbstractCodeIndex)
+ACCESSORS(DebugInfo, debug_bytecode_array, Object, kDebugBytecodeArrayIndex)
 ACCESSORS(DebugInfo, break_points, FixedArray, kBreakPointsStateIndex)
 
-BytecodeArray* DebugInfo::original_bytecode_array() {
+bool DebugInfo::HasDebugBytecodeArray() {
+  return debug_bytecode_array()->IsBytecodeArray();
+}
+
+bool DebugInfo::HasDebugCode() {
+  Code* code = shared()->code();
+  bool has = code->kind() == Code::FUNCTION;
+  DCHECK(!has || code->has_debug_break_slots());
+  return has;
+}
+
+BytecodeArray* DebugInfo::OriginalBytecodeArray() {
+  DCHECK(HasDebugBytecodeArray());
   return shared()->bytecode_array();
 }
 
-SMI_ACCESSORS(BreakPointInfo, code_offset, kCodeOffsetIndex)
+BytecodeArray* DebugInfo::DebugBytecodeArray() {
+  DCHECK(HasDebugBytecodeArray());
+  return BytecodeArray::cast(debug_bytecode_array());
+}
+
+Code* DebugInfo::DebugCode() {
+  DCHECK(HasDebugCode());
+  return shared()->code();
+}
+
 SMI_ACCESSORS(BreakPointInfo, source_position, kSourcePositionIndex)
-SMI_ACCESSORS(BreakPointInfo, statement_position, kStatementPositionIndex)
 ACCESSORS(BreakPointInfo, break_point_objects, Object, kBreakPointObjectsIndex)
 
 ACCESSORS(SharedFunctionInfo, name, Object, kNameOffset)
@@ -5986,14 +6015,14 @@ void SharedFunctionInfo::set_optimization_disabled(bool disable) {
 
 
 LanguageMode SharedFunctionInfo::language_mode() {
-  STATIC_ASSERT(LANGUAGE_END == 3);
+  STATIC_ASSERT(LANGUAGE_END == 2);
   return construct_language_mode(
       BooleanBit::get(compiler_hints(), kStrictModeFunction));
 }
 
 
 void SharedFunctionInfo::set_language_mode(LanguageMode language_mode) {
-  STATIC_ASSERT(LANGUAGE_END == 3);
+  STATIC_ASSERT(LANGUAGE_END == 2);
   // We only allow language mode transitions that set the same language mode
   // again or go up in the chain:
   DCHECK(is_sloppy(this->language_mode()) || is_strict(language_mode));
@@ -6039,6 +6068,8 @@ BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_setter_function,
                kIsSetterFunction)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_default_constructor,
                kIsDefaultConstructor)
+BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_asm_wasm_broken,
+               kIsAsmWasmBroken)
 
 inline bool SharedFunctionInfo::is_resumable() const {
   return is_generator() || is_async();
@@ -6105,6 +6136,9 @@ void SharedFunctionInfo::ReplaceCode(Code* value) {
   if (is_compiled()) set_never_compiled(false);
 }
 
+bool SharedFunctionInfo::HasBaselineCode() const {
+  return code()->kind() == Code::FUNCTION;
+}
 
 ScopeInfo* SharedFunctionInfo::scope_info() const {
   return reinterpret_cast<ScopeInfo*>(READ_FIELD(this, kScopeInfoOffset));
@@ -6121,8 +6155,7 @@ void SharedFunctionInfo::set_scope_info(ScopeInfo* value,
                             mode);
 }
 
-
-bool SharedFunctionInfo::is_compiled() {
+bool SharedFunctionInfo::is_compiled() const {
   Builtins* builtins = GetIsolate()->builtins();
   DCHECK(code() != builtins->builtin(Builtins::kCompileOptimizedConcurrent));
   DCHECK(code() != builtins->builtin(Builtins::kCompileOptimized));
@@ -6150,8 +6183,8 @@ DebugInfo* SharedFunctionInfo::GetDebugInfo() {
 
 
 bool SharedFunctionInfo::HasDebugCode() {
-  return HasBytecodeArray() ||
-         (code()->kind() == Code::FUNCTION && code()->has_debug_break_slots());
+  if (HasBaselineCode()) return code()->has_debug_break_slots();
+  return HasBytecodeArray();
 }
 
 

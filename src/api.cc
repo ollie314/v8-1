@@ -60,6 +60,7 @@
 #include "src/runtime-profiler.h"
 #include "src/runtime/runtime.h"
 #include "src/simulator.h"
+#include "src/snapshot/code-serializer.h"
 #include "src/snapshot/natives.h"
 #include "src/snapshot/snapshot.h"
 #include "src/startup-data-util.h"
@@ -69,6 +70,7 @@
 #include "src/v8threads.h"
 #include "src/version.h"
 #include "src/vm-state-inl.h"
+#include "src/wasm/wasm-module.h"
 
 namespace v8 {
 
@@ -89,7 +91,7 @@ namespace v8 {
     return bailout_value;                                            \
   }                                                                  \
   HandleScopeClass handle_scope(isolate);                            \
-  CallDepthScope call_depth_scope(isolate, context, do_callback);    \
+  CallDepthScope<do_callback> call_depth_scope(isolate, context);    \
   LOG_API(isolate, class_name, function_name);                       \
   ENTER_V8(isolate);                                                 \
   bool has_pending_exception = false
@@ -173,15 +175,11 @@ void CheckMicrotasksScopesConsistency(i::Isolate* isolate) {
 }
 #endif
 
-
+template <bool do_callback>
 class CallDepthScope {
  public:
-  explicit CallDepthScope(i::Isolate* isolate, Local<Context> context,
-                          bool do_callback)
-      : isolate_(isolate),
-        context_(context),
-        escaped_(false),
-        do_callback_(do_callback) {
+  explicit CallDepthScope(i::Isolate* isolate, Local<Context> context)
+      : isolate_(isolate), context_(context), escaped_(false) {
     // TODO(dcarney): remove this when blink stops crashing.
     DCHECK(!isolate_->external_caught_exception());
     isolate_->IncrementJsCallsFromApiCounter();
@@ -197,14 +195,14 @@ class CallDepthScope {
         context_->Enter();
       }
     }
-    if (do_callback_) isolate_->FireBeforeCallEnteredCallback();
+    if (do_callback) isolate_->FireBeforeCallEnteredCallback();
   }
   ~CallDepthScope() {
     if (!context_.IsEmpty()) context_->Exit();
     if (!escaped_) isolate_->handle_scope_implementer()->DecrementCallDepth();
-    if (do_callback_) isolate_->FireCallCompletedCallback();
+    if (do_callback) isolate_->FireCallCompletedCallback();
 #ifdef DEBUG
-    if (do_callback_) CheckMicrotasksScopesConsistency(isolate_);
+    if (do_callback) CheckMicrotasksScopesConsistency(isolate_);
 #endif
   }
 
@@ -254,9 +252,8 @@ void i::FatalProcessOutOfMemory(const char* location) {
   i::V8::FatalProcessOutOfMemory(location, false);
 }
 
-
-// When V8 cannot allocated memory FatalProcessOutOfMemory is called.
-// The default OOM error handler is called and execution is stopped.
+// When V8 cannot allocate memory FatalProcessOutOfMemory is called. The default
+// OOM error handler is called and execution is stopped.
 void i::V8::FatalProcessOutOfMemory(const char* location, bool is_heap_oom) {
   i::Isolate* isolate = i::Isolate::Current();
   char last_few_messages[Heap::kTraceRingBufferSize + 1];
@@ -265,49 +262,53 @@ void i::V8::FatalProcessOutOfMemory(const char* location, bool is_heap_oom) {
   memset(js_stacktrace, 0, Heap::kStacktraceBufferSize + 1);
 
   i::HeapStats heap_stats;
-  int start_marker;
+  intptr_t start_marker;
   heap_stats.start_marker = &start_marker;
-  int new_space_size;
+  size_t new_space_size;
   heap_stats.new_space_size = &new_space_size;
-  int new_space_capacity;
+  size_t new_space_capacity;
   heap_stats.new_space_capacity = &new_space_capacity;
-  intptr_t old_space_size;
+  size_t old_space_size;
   heap_stats.old_space_size = &old_space_size;
-  intptr_t old_space_capacity;
+  size_t old_space_capacity;
   heap_stats.old_space_capacity = &old_space_capacity;
-  intptr_t code_space_size;
+  size_t code_space_size;
   heap_stats.code_space_size = &code_space_size;
-  intptr_t code_space_capacity;
+  size_t code_space_capacity;
   heap_stats.code_space_capacity = &code_space_capacity;
-  intptr_t map_space_size;
+  size_t map_space_size;
   heap_stats.map_space_size = &map_space_size;
-  intptr_t map_space_capacity;
+  size_t map_space_capacity;
   heap_stats.map_space_capacity = &map_space_capacity;
-  intptr_t lo_space_size;
+  size_t lo_space_size;
   heap_stats.lo_space_size = &lo_space_size;
-  int global_handle_count;
+  size_t global_handle_count;
   heap_stats.global_handle_count = &global_handle_count;
-  int weak_global_handle_count;
+  size_t weak_global_handle_count;
   heap_stats.weak_global_handle_count = &weak_global_handle_count;
-  int pending_global_handle_count;
+  size_t pending_global_handle_count;
   heap_stats.pending_global_handle_count = &pending_global_handle_count;
-  int near_death_global_handle_count;
+  size_t near_death_global_handle_count;
   heap_stats.near_death_global_handle_count = &near_death_global_handle_count;
-  int free_global_handle_count;
+  size_t free_global_handle_count;
   heap_stats.free_global_handle_count = &free_global_handle_count;
-  intptr_t memory_allocator_size;
+  size_t memory_allocator_size;
   heap_stats.memory_allocator_size = &memory_allocator_size;
-  intptr_t memory_allocator_capacity;
+  size_t memory_allocator_capacity;
   heap_stats.memory_allocator_capacity = &memory_allocator_capacity;
-  int objects_per_type[LAST_TYPE + 1] = {0};
+  size_t malloced_memory;
+  heap_stats.malloced_memory = &malloced_memory;
+  size_t malloced_peak_memory;
+  heap_stats.malloced_peak_memory = &malloced_peak_memory;
+  size_t objects_per_type[LAST_TYPE + 1] = {0};
   heap_stats.objects_per_type = objects_per_type;
-  int size_per_type[LAST_TYPE + 1] = {0};
+  size_t size_per_type[LAST_TYPE + 1] = {0};
   heap_stats.size_per_type = size_per_type;
   int os_error;
   heap_stats.os_error = &os_error;
   heap_stats.last_few_messages = last_few_messages;
   heap_stats.js_stacktrace = js_stacktrace;
-  int end_marker;
+  intptr_t end_marker;
   heap_stats.end_marker = &end_marker;
   if (isolate->heap()->HasBeenSetUp()) {
     // BUG(1718): Don't use the take_snapshot since we don't support
@@ -912,12 +913,9 @@ i::Object** EscapableHandleScope::Escape(i::Object** escape_value) {
   return escape_slot_;
 }
 
-
-SealHandleScope::SealHandleScope(Isolate* isolate) {
-  i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate);
-
-  isolate_ = internal_isolate;
-  i::HandleScopeData* current = internal_isolate->handle_scope_data();
+SealHandleScope::SealHandleScope(Isolate* isolate)
+    : isolate_(reinterpret_cast<i::Isolate*>(isolate)) {
+  i::HandleScopeData* current = isolate_->handle_scope_data();
   prev_limit_ = current->limit;
   current->limit = current->next;
   prev_sealed_level_ = current->sealed_level;
@@ -2175,6 +2173,11 @@ MaybeLocal<Script> ScriptCompiler::Compile(Local<Context> context,
   source->info->set_script(script);
   source->info->set_context(isolate->native_context());
 
+  // Create a canonical handle scope before internalizing parsed values if
+  // compiling bytecode. This is required for off-thread bytecode generation.
+  std::unique_ptr<i::CanonicalHandleScope> canonical;
+  if (i::FLAG_ignition) canonical.reset(new i::CanonicalHandleScope(isolate));
+
   // Do the parsing tasks which need to be done on the main thread. This will
   // also handle parse errors.
   source->parser->Internalize(isolate, script,
@@ -2452,16 +2455,12 @@ v8::Local<v8::StackTrace> Message::GetStackTrace() const {
 
 
 Maybe<int> Message::GetLineNumber(Local<Context> context) const {
-  PREPARE_FOR_EXECUTION_PRIMITIVE(context, Message, GetLineNumber, int);
-  i::Handle<i::JSFunction> fun = isolate->message_get_line_number();
-  i::Handle<i::Object> undefined = isolate->factory()->undefined_value();
-  i::Handle<i::Object> args[] = {Utils::OpenHandle(this)};
-  i::Handle<i::Object> result;
-  has_pending_exception =
-      !i::Execution::Call(isolate, fun, undefined, arraysize(args), args)
-           .ToHandle(&result);
-  RETURN_ON_FAILED_EXECUTION_PRIMITIVE(int);
-  return Just(static_cast<int>(result->Number()));
+  auto self = Utils::OpenHandle(this);
+  i::Isolate* isolate = self->GetIsolate();
+  ENTER_V8(isolate);
+  EscapableHandleScope handle_scope(reinterpret_cast<Isolate*>(isolate));
+  auto msg = i::Handle<i::JSMessageObject>::cast(self);
+  return Just(msg->GetLineNumber());
 }
 
 
@@ -2484,16 +2483,12 @@ int Message::GetEndPosition() const {
 
 
 Maybe<int> Message::GetStartColumn(Local<Context> context) const {
-  PREPARE_FOR_EXECUTION_PRIMITIVE(context, Message, GetStartColumn, int);
-  i::Handle<i::JSFunction> fun = isolate->message_get_column_number();
-  i::Handle<i::Object> undefined = isolate->factory()->undefined_value();
-  i::Handle<i::Object> args[] = {Utils::OpenHandle(this)};
-  i::Handle<i::Object> result;
-  has_pending_exception =
-      !i::Execution::Call(isolate, fun, undefined, arraysize(args), args)
-           .ToHandle(&result);
-  RETURN_ON_FAILED_EXECUTION_PRIMITIVE(int);
-  return Just(static_cast<int>(result->Number()));
+  auto self = Utils::OpenHandle(this);
+  i::Isolate* isolate = self->GetIsolate();
+  ENTER_V8(isolate);
+  EscapableHandleScope handle_scope(reinterpret_cast<Isolate*>(isolate));
+  auto msg = i::Handle<i::JSMessageObject>::cast(self);
+  return Just(msg->GetColumnNumber());
 }
 
 
@@ -2506,18 +2501,15 @@ int Message::GetStartColumn() const {
 
 Maybe<int> Message::GetEndColumn(Local<Context> context) const {
   auto self = Utils::OpenHandle(this);
-  PREPARE_FOR_EXECUTION_PRIMITIVE(context, Message, GetEndColumn, int);
-  i::Handle<i::JSFunction> fun = isolate->message_get_column_number();
-  i::Handle<i::Object> undefined = isolate->factory()->undefined_value();
-  i::Handle<i::Object> args[] = {self};
-  i::Handle<i::Object> result;
-  has_pending_exception =
-      !i::Execution::Call(isolate, fun, undefined, arraysize(args), args)
-           .ToHandle(&result);
-  RETURN_ON_FAILED_EXECUTION_PRIMITIVE(int);
-  int start = self->start_position();
-  int end = self->end_position();
-  return Just(static_cast<int>(result->Number()) + (end - start));
+  i::Isolate* isolate = self->GetIsolate();
+  ENTER_V8(isolate);
+  EscapableHandleScope handle_scope(reinterpret_cast<Isolate*>(isolate));
+  auto msg = i::Handle<i::JSMessageObject>::cast(self);
+  const int column_number = msg->GetColumnNumber();
+  if (column_number == -1) return Just(-1);
+  const int start = self->start_position();
+  const int end = self->end_position();
+  return Just(column_number + (end - start));
 }
 
 
@@ -2550,20 +2542,12 @@ bool Message::IsOpaque() const {
 
 
 MaybeLocal<String> Message::GetSourceLine(Local<Context> context) const {
-  PREPARE_FOR_EXECUTION(context, Message, GetSourceLine, String);
-  i::Handle<i::JSFunction> fun = isolate->message_get_source_line();
-  i::Handle<i::Object> undefined = isolate->factory()->undefined_value();
-  i::Handle<i::Object> args[] = {Utils::OpenHandle(this)};
-  i::Handle<i::Object> result;
-  has_pending_exception =
-      !i::Execution::Call(isolate, fun, undefined, arraysize(args), args)
-           .ToHandle(&result);
-  RETURN_ON_FAILED_EXECUTION(String);
-  Local<String> str;
-  if (result->IsString()) {
-    str = Utils::ToLocal(i::Handle<i::String>::cast(result));
-  }
-  RETURN_ESCAPED(str);
+  auto self = Utils::OpenHandle(this);
+  i::Isolate* isolate = self->GetIsolate();
+  ENTER_V8(isolate);
+  EscapableHandleScope handle_scope(reinterpret_cast<Isolate*>(isolate));
+  auto msg = i::Handle<i::JSMessageObject>::cast(self);
+  RETURN_ESCAPED(Utils::ToLocal(msg->GetSourceLine()));
 }
 
 
@@ -2961,6 +2945,13 @@ bool Value::IsNumber() const {
 
 bool Value::IsProxy() const { return Utils::OpenHandle(this)->IsJSProxy(); }
 
+bool Value::IsWebAssemblyCompiledModule() const {
+  i::Handle<i::Object> obj = Utils::OpenHandle(this);
+  if (!obj->IsJSObject()) return false;
+  i::Handle<i::JSObject> js_obj = i::Handle<i::JSObject>::cast(obj);
+  return js_obj->GetIsolate()->native_context()->wasm_module_constructor() ==
+         js_obj->map()->GetConstructor();
+}
 
 #define VALUE_IS_SPECIFIC_TYPE(Type, Class)                            \
   bool Value::Is##Type() const {                                       \
@@ -3303,6 +3294,11 @@ void v8::Proxy::CheckCast(Value* that) {
                   "Could not convert to proxy");
 }
 
+void v8::WasmCompiledModule::CheckCast(Value* that) {
+  Utils::ApiCheck(that->IsWebAssemblyCompiledModule(),
+                  "v8::WasmCompiledModule::Cast",
+                  "Could not convert to wasm compiled module");
+}
 
 void v8::ArrayBuffer::CheckCast(Value* that) {
   i::Handle<i::Object> obj = Utils::OpenHandle(that);
@@ -6829,6 +6825,35 @@ MaybeLocal<Proxy> Proxy::New(Local<Context> context, Local<Object> local_target,
   RETURN_ESCAPED(result);
 }
 
+WasmCompiledModule::SerializedModule WasmCompiledModule::Serialize() {
+  i::Handle<i::JSObject> obj =
+      i::Handle<i::JSObject>::cast(Utils::OpenHandle(this));
+  i::Handle<i::FixedArray> compiled_part =
+      i::handle(i::FixedArray::cast(obj->GetInternalField(0)));
+  std::unique_ptr<i::ScriptData> script_data =
+      i::WasmCompiledModuleSerializer::SerializeWasmModule(obj->GetIsolate(),
+                                                           compiled_part);
+  script_data->ReleaseDataOwnership();
+  size_t size = static_cast<size_t>(script_data->length());
+  return {std::unique_ptr<const uint8_t[]>(script_data->data()), size};
+}
+
+MaybeLocal<WasmCompiledModule> WasmCompiledModule::Deserialize(
+    Isolate* isolate,
+    const WasmCompiledModule::SerializedModule& serialized_data) {
+  int size = static_cast<int>(serialized_data.second);
+  i::ScriptData sc(serialized_data.first.get(), size);
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  i::MaybeHandle<i::FixedArray> maybe_compiled_part =
+      i::WasmCompiledModuleSerializer::DeserializeWasmModule(i_isolate, &sc);
+  i::Handle<i::FixedArray> compiled_part;
+  if (!maybe_compiled_part.ToHandle(&compiled_part)) {
+    return MaybeLocal<WasmCompiledModule>();
+  }
+  return Local<WasmCompiledModule>::Cast(Utils::ToLocal(
+      i::wasm::CreateCompiledModuleObject(i_isolate, compiled_part)));
+}
+
 // static
 v8::ArrayBuffer::Allocator* v8::ArrayBuffer::Allocator::NewDefaultAllocator() {
   return new ArrayBufferAllocator();
@@ -6931,10 +6956,9 @@ Local<ArrayBuffer> v8::ArrayBufferView::Buffer() {
 
 size_t v8::ArrayBufferView::CopyContents(void* dest, size_t byte_length) {
   i::Handle<i::JSArrayBufferView> self = Utils::OpenHandle(this);
-  i::Isolate* isolate = self->GetIsolate();
-  size_t byte_offset = i::NumberToSize(isolate, self->byte_offset());
+  size_t byte_offset = i::NumberToSize(self->byte_offset());
   size_t bytes_to_copy =
-      i::Min(byte_length, i::NumberToSize(isolate, self->byte_length()));
+      i::Min(byte_length, i::NumberToSize(self->byte_length()));
   if (bytes_to_copy) {
     i::DisallowHeapAllocation no_gc;
     i::Handle<i::JSArrayBuffer> buffer(i::JSArrayBuffer::cast(self->buffer()));
@@ -7651,20 +7675,14 @@ bool Isolate::GetHeapCodeAndMetadataStatistics(
 
 void Isolate::GetStackSample(const RegisterState& state, void** frames,
                              size_t frames_limit, SampleInfo* sample_info) {
-#if defined(USE_SIMULATOR)
-  RegisterState regs;
-  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
-  if (!i::SimulatorHelper::FillRegisters(isolate, &regs)) {
-    sample_info->frames_count = 0;
-    sample_info->vm_state = OTHER;
-    sample_info->external_callback_entry = nullptr;
+  RegisterState regs = state;
+  if (TickSample::GetStackSample(this, &regs, TickSample::kSkipCEntryFrame,
+                                 frames, frames_limit, sample_info)) {
     return;
   }
-#else
-  const RegisterState& regs = state;
-#endif
-  TickSample::GetStackSample(this, regs, TickSample::kSkipCEntryFrame, frames,
-                             frames_limit, sample_info);
+  sample_info->frames_count = 0;
+  sample_info->vm_state = OTHER;
+  sample_info->external_callback_entry = nullptr;
 }
 
 size_t Isolate::NumberOfPhantomHandleResetsSinceLastCall() {
@@ -7858,13 +7876,13 @@ int Isolate::ContextDisposedNotification(bool dependant_context) {
 
 void Isolate::IsolateInForegroundNotification() {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
-  return isolate->heap()->SetOptimizeForLatency();
+  return isolate->IsolateInForegroundNotification();
 }
 
 
 void Isolate::IsolateInBackgroundNotification() {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
-  return isolate->heap()->SetOptimizeForMemoryUsage();
+  return isolate->IsolateInBackgroundNotification();
 }
 
 void Isolate::MemoryPressureNotification(MemoryPressureLevel level) {
@@ -7998,6 +8016,7 @@ class VisitorAdapter : public i::ObjectVisitor {
   void VisitPointers(i::Object** start, i::Object** end) override {
     UNREACHABLE();
   }
+  DISABLE_CFI_PERF
   void VisitEmbedderReference(i::Object** p, uint16_t class_id) override {
     Value* value = ToApi<Value>(i::Handle<i::Object>(p));
     visitor_->VisitPersistentHandle(

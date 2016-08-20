@@ -294,7 +294,6 @@ class Typer::Visitor : public Reducer {
 #undef DECLARE_METHOD
 
   static Type* JSTypeOfTyper(Type*, Typer*);
-  static Type* JSLoadPropertyTyper(Type*, Type*, Typer*);
   static Type* JSCallFunctionTyper(Type*, Typer*);
 
   static Type* ReferenceEqualTyper(Type*, Type*, Typer*);
@@ -304,7 +303,8 @@ class Typer::Visitor : public Reducer {
     if (NodeProperties::IsTyped(node)) {
       // Widen the type of a previously typed node.
       Type* previous = NodeProperties::GetType(node);
-      if (node->opcode() == IrOpcode::kPhi) {
+      if (node->opcode() == IrOpcode::kPhi ||
+          node->opcode() == IrOpcode::kInductionVariablePhi) {
         // Speed up termination in the presence of range types:
         current = Weaken(node, current, previous);
       }
@@ -544,8 +544,9 @@ Type* Typer::Visitor::ObjectIsUndetectable(Type* type, Typer* t) {
 
 Type* Typer::Visitor::TypeStart(Node* node) { return Type::Internal(); }
 
-Type* Typer::Visitor::TypeIfException(Node* node) { return Type::Any(); }
-
+Type* Typer::Visitor::TypeIfException(Node* node) {
+  return Type::NonInternal();
+}
 
 // Common operators.
 
@@ -723,6 +724,10 @@ Type* Typer::Visitor::TypeLoopExitEffect(Node* node) {
 }
 
 Type* Typer::Visitor::TypeEnsureWritableFastElements(Node* node) {
+  return Operand(node, 1);
+}
+
+Type* Typer::Visitor::TypeMaybeGrowFastElements(Node* node) {
   return Operand(node, 1);
 }
 
@@ -1075,28 +1080,18 @@ Type* Typer::Visitor::TypeJSCreateLiteralRegExp(Node* node) {
 }
 
 
-Type* Typer::Visitor::JSLoadPropertyTyper(Type* object, Type* name, Typer* t) {
-  // TODO(rossberg): Use range types and sized array types to filter undefined.
-  if (object->IsArray() && name->Is(Type::Integral32())) {
-    return Type::Union(
-        object->AsArray()->Element(), Type::Undefined(), t->zone());
-  }
-  return Type::Any();
-}
-
-
 Type* Typer::Visitor::TypeJSLoadProperty(Node* node) {
-  return TypeBinaryOp(node, JSLoadPropertyTyper);
+  return Type::NonInternal();
 }
 
 
 Type* Typer::Visitor::TypeJSLoadNamed(Node* node) {
-  return Type::Any();
+  return Type::NonInternal();
 }
 
-
-Type* Typer::Visitor::TypeJSLoadGlobal(Node* node) { return Type::Any(); }
-
+Type* Typer::Visitor::TypeJSLoadGlobal(Node* node) {
+  return Type::NonInternal();
+}
 
 // Returns a somewhat larger range if we previously assigned
 // a (smaller) range to this node. This is used  to speed up
@@ -1229,7 +1224,7 @@ Type* Typer::Visitor::WrapContextTypeForInput(Node* node) {
   if (outer->Is(Type::None())) {
     return Type::None();
   } else {
-    DCHECK(outer->Maybe(Type::Internal()));
+    DCHECK(outer->Maybe(Type::OtherInternal()));
     return Type::Context(outer, zone());
   }
 }
@@ -1287,21 +1282,27 @@ Type* Typer::Visitor::JSCallFunctionTyper(Type* fun, Typer* t) {
         // Unary math functions.
         case kMathAbs:
         case kMathExp:
+        case kMathExpm1:
           return Type::Union(Type::PlainNumber(), Type::NaN(), t->zone());
-        case kMathLog:
-        case kMathSqrt:
-        case kMathCos:
-        case kMathSin:
-        case kMathTan:
         case kMathAcos:
         case kMathAcosh:
         case kMathAsin:
         case kMathAsinh:
         case kMathAtan:
         case kMathAtanh:
+        case kMathCbrt:
+        case kMathCos:
         case kMathFround:
-        case kMathSign:
+        case kMathLog:
+        case kMathLog1p:
+        case kMathLog10:
+        case kMathLog2:
+        case kMathSin:
+        case kMathSqrt:
+        case kMathTan:
           return Type::Number();
+        case kMathSign:
+          return t->cache_.kMinusOneToOne;
         // Binary math functions.
         case kMathAtan2:
         case kMathPow:
@@ -1312,6 +1313,11 @@ Type* Typer::Visitor::JSCallFunctionTyper(Type* fun, Typer* t) {
           return Type::Signed32();
         case kMathClz32:
           return t->cache_.kZeroToThirtyTwo;
+        // Number functions.
+        case kNumberParseInt:
+          return t->cache_.kIntegerOrMinusZeroOrNaN;
+        case kNumberToString:
+          return Type::String();
         // String functions.
         case kStringCharCodeAt:
           return Type::Union(Type::Range(0, kMaxUInt16, t->zone()), Type::NaN(),
@@ -1319,19 +1325,31 @@ Type* Typer::Visitor::JSCallFunctionTyper(Type* fun, Typer* t) {
         case kStringCharAt:
         case kStringConcat:
         case kStringFromCharCode:
+        case kStringSubstr:
         case kStringToLowerCase:
         case kStringToUpperCase:
           return Type::String();
         // Array functions.
         case kArrayIndexOf:
         case kArrayLastIndexOf:
-          return Type::Number();
+          return Type::Range(-1, kMaxSafeInteger, t->zone());
+        // Object functions.
+        case kObjectHasOwnProperty:
+          return Type::Boolean();
+        // Global functions.
+        case kGlobalDecodeURI:
+        case kGlobalDecodeURIComponent:
+        case kGlobalEncodeURI:
+        case kGlobalEncodeURIComponent:
+        case kGlobalEscape:
+        case kGlobalUnescape:
+          return Type::String();
         default:
           break;
       }
     }
   }
-  return Type::Any();
+  return Type::NonInternal();
 }
 
 
@@ -1374,6 +1392,9 @@ Type* Typer::Visitor::TypeJSCallRuntime(Node* node) {
     default:
       break;
   }
+  // TODO(turbofan): This should be Type::NonInternal(), but unfortunately we
+  // have a few weird runtime calls that return the hole or even FixedArrays;
+  // change this once those weird runtime calls have been removed.
   return Type::Any();
 }
 
@@ -1509,8 +1530,14 @@ Type* Typer::Visitor::TypeStringFromCharCode(Node* node) {
 }
 
 Type* Typer::Visitor::TypeCheckBounds(Node* node) {
-  // TODO(bmeurer): We could do better here based on the limit.
-  return Type::Unsigned31();
+  Type* index = Operand(node, 0);
+  Type* length = Operand(node, 1);
+  index = Type::Intersect(index, Type::Integral32(), zone());
+  if (!index->IsInhabited() || !length->IsInhabited()) return Type::None();
+  double min = std::max(index->Min(), 0.0);
+  double max = std::min(index->Max(), length->Min() - 1);
+  if (max < min) return Type::None();
+  return Type::Range(min, max, zone());
 }
 
 Type* Typer::Visitor::TypeCheckMaps(Node* node) {
@@ -1549,19 +1576,17 @@ Type* Typer::Visitor::TypeCheckFloat64Hole(Node* node) {
 }
 
 Type* Typer::Visitor::TypeCheckTaggedHole(Node* node) {
-  CheckTaggedHoleMode mode = CheckTaggedHoleModeOf(node->op());
   Type* type = Operand(node, 0);
   type = Type::Intersect(type, Type::NonInternal(), zone());
-  switch (mode) {
-    case CheckTaggedHoleMode::kConvertHoleToUndefined: {
-      // The hole is turned into undefined.
-      type = Type::Union(type, Type::Undefined(), zone());
-      break;
-    }
-    case CheckTaggedHoleMode::kNeverReturnHole: {
-      // We deoptimize in case of the hole.
-      break;
-    }
+  return type;
+}
+
+Type* Typer::Visitor::TypeConvertTaggedHoleToUndefined(Node* node) {
+  Type* type = Operand(node, 0);
+  if (type->Maybe(Type::Hole())) {
+    // Turn "the hole" into undefined.
+    type = Type::Intersect(type, Type::NonInternal(), zone());
+    type = Type::Union(type, Type::Undefined(), zone());
   }
   return type;
 }
@@ -2030,10 +2055,6 @@ Type* Typer::Visitor::TypeFloat32Add(Node* node) { return Type::Number(); }
 
 Type* Typer::Visitor::TypeFloat32Sub(Node* node) { return Type::Number(); }
 
-Type* Typer::Visitor::TypeFloat32SubPreserveNan(Node* node) {
-  return Type::Number();
-}
-
 Type* Typer::Visitor::TypeFloat32Neg(Node* node) { return Type::Number(); }
 
 Type* Typer::Visitor::TypeFloat32Mul(Node* node) { return Type::Number(); }
@@ -2068,10 +2089,6 @@ Type* Typer::Visitor::TypeFloat64Add(Node* node) { return Type::Number(); }
 
 
 Type* Typer::Visitor::TypeFloat64Sub(Node* node) { return Type::Number(); }
-
-Type* Typer::Visitor::TypeFloat64SubPreserveNan(Node* node) {
-  return Type::Number();
-}
 
 Type* Typer::Visitor::TypeFloat64Neg(Node* node) { return Type::Number(); }
 

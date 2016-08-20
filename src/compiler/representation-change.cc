@@ -141,6 +141,8 @@ Node* RepresentationChanger::GetRepresentationFor(
   }
 
   switch (use_info.representation()) {
+    case MachineRepresentation::kTaggedSigned:
+    case MachineRepresentation::kTaggedPointer:
     case MachineRepresentation::kTagged:
       DCHECK(use_info.type_check() == TypeCheckKind::kNone);
       return GetTaggedRepresentationFor(node, output_rep, output_type);
@@ -227,8 +229,10 @@ Node* RepresentationChanger::GetTaggedRepresentationFor(
   } else if (output_rep ==
              MachineRepresentation::kFloat32) {  // float32 -> float64 -> tagged
     node = InsertChangeFloat32ToFloat64(node);
-    // TODO(bmeurer): Pass -0 hint to ChangeFloat64ToTagged.
-    op = simplified()->ChangeFloat64ToTagged();
+    op = simplified()->ChangeFloat64ToTagged(
+        output_type->Maybe(Type::MinusZero())
+            ? CheckForMinusZeroMode::kCheckForMinusZero
+            : CheckForMinusZeroMode::kDontCheckForMinusZero);
   } else if (output_rep == MachineRepresentation::kFloat64) {
     if (output_type->Is(Type::Signed31())) {  // float64 -> int32 -> tagged
       node = InsertChangeFloat64ToInt32(node);
@@ -242,8 +246,10 @@ Node* RepresentationChanger::GetTaggedRepresentationFor(
       node = InsertChangeFloat64ToUint32(node);
       op = simplified()->ChangeUint32ToTagged();
     } else {
-      // TODO(bmeurer): Pass -0 hint to ChangeFloat64ToTagged.
-      op = simplified()->ChangeFloat64ToTagged();
+      op = simplified()->ChangeFloat64ToTagged(
+          output_type->Maybe(Type::MinusZero())
+              ? CheckForMinusZeroMode::kCheckForMinusZero
+              : CheckForMinusZeroMode::kDontCheckForMinusZero);
     }
   } else {
     return TypeError(node, output_rep, output_type,
@@ -373,8 +379,13 @@ Node* RepresentationChanger::GetFloat64RepresentationFor(
     } else if (output_type->Is(Type::NumberOrOddball())) {
       // TODO(jarin) Here we should check that truncation is Number.
       op = simplified()->TruncateTaggedToFloat64();
+    } else if (use_info.type_check() == TypeCheckKind::kNumber ||
+               (use_info.type_check() == TypeCheckKind::kNumberOrOddball &&
+                !output_type->Maybe(Type::BooleanOrNullOrNumber()))) {
+      op = simplified()->CheckedTaggedToFloat64(CheckTaggedInputMode::kNumber);
     } else if (use_info.type_check() == TypeCheckKind::kNumberOrOddball) {
-      op = simplified()->CheckedTaggedToFloat64();
+      op = simplified()->CheckedTaggedToFloat64(
+          CheckTaggedInputMode::kNumberOrOddball);
     }
   } else if (output_rep == MachineRepresentation::kFloat32) {
     op = machine()->ChangeFloat32ToFloat64();

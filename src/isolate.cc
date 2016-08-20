@@ -9,16 +9,19 @@
 #include <fstream>  // NOLINT(readability/streams)
 #include <sstream>
 
-#include "src/ast/ast.h"
 #include "src/ast/context-slot-cache.h"
+#include "src/base/accounting-allocator.h"
+#include "src/base/hashmap.h"
 #include "src/base/platform/platform.h"
 #include "src/base/sys-info.h"
 #include "src/base/utils/random-number-generator.h"
 #include "src/basic-block-profiler.h"
 #include "src/bootstrapper.h"
+#include "src/cancelable-task.h"
 #include "src/codegen.h"
 #include "src/compilation-cache.h"
 #include "src/compilation-statistics.h"
+#include "src/compiler-dispatcher/optimizing-compile-dispatcher.h"
 #include "src/crankshaft/hydrogen.h"
 #include "src/debug/debug.h"
 #include "src/deoptimizer.h"
@@ -1998,6 +2001,7 @@ Isolate::Isolate(bool enable_serializer)
       has_fatal_error_(false),
       initialized_from_snapshot_(false),
       is_tail_call_elimination_enabled_(true),
+      is_isolate_in_background_(false),
       cpu_profiler_(NULL),
       heap_profiler_(NULL),
       code_event_dispatcher_(new CodeEventDispatcher()),
@@ -3020,7 +3024,6 @@ void Isolate::RunMicrotasksInternal() {
             &maybe_exception);
         handle_scope_implementer_->LeaveMicrotaskContext();
         // If execution is terminating, just bail out.
-        Handle<Object> exception;
         if (result.is_null() && maybe_exception.is_null()) {
           // Clear out any remaining callbacks in the queue.
           heap()->set_microtask_queue(heap()->empty_fixed_array());
@@ -3170,6 +3173,15 @@ void Isolate::SetRAILMode(RAILMode rail_mode) {
   if (FLAG_trace_rail) {
     PrintIsolate(this, "RAIL mode: %s\n", RAILModeName(rail_mode));
   }
+}
+
+void Isolate::IsolateInBackgroundNotification() {
+  is_isolate_in_background_ = true;
+  heap()->ActivateMemoryReducerIfNeeded();
+}
+
+void Isolate::IsolateInForegroundNotification() {
+  is_isolate_in_background_ = false;
 }
 
 bool StackLimitCheck::JsHasOverflowed(uintptr_t gap) const {

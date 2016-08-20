@@ -146,7 +146,7 @@ class IA32OperandGenerator final : public OperandGenerator {
   AddressingMode GetEffectiveAddressMemoryOperand(Node* node,
                                                   InstructionOperand inputs[],
                                                   size_t* input_count) {
-    BaseWithIndexAndDisplacement32Matcher m(node, true);
+    BaseWithIndexAndDisplacement32Matcher m(node, AddressOption::kAllowAll);
     DCHECK(m.matches());
     if ((m.displacement() == nullptr || CanBeImmediate(m.displacement()))) {
       return GenerateMemoryOperandInputs(
@@ -226,7 +226,9 @@ void InstructionSelector::VisitLoad(Node* node) {
     case MachineRepresentation::kWord16:
       opcode = load_rep.IsSigned() ? kIA32Movsxwl : kIA32Movzxwl;
       break;
-    case MachineRepresentation::kTagged:  // Fall through.
+    case MachineRepresentation::kTaggedSigned:   // Fall through.
+    case MachineRepresentation::kTaggedPointer:  // Fall through.
+    case MachineRepresentation::kTagged:         // Fall through.
     case MachineRepresentation::kWord32:
       opcode = kIA32Movl;
       break;
@@ -310,7 +312,9 @@ void InstructionSelector::VisitStore(Node* node) {
       case MachineRepresentation::kWord16:
         opcode = kIA32Movw;
         break;
-      case MachineRepresentation::kTagged:  // Fall through.
+      case MachineRepresentation::kTaggedSigned:   // Fall through.
+      case MachineRepresentation::kTaggedPointer:  // Fall through.
+      case MachineRepresentation::kTagged:         // Fall through.
       case MachineRepresentation::kWord32:
         opcode = kIA32Movl;
         break;
@@ -372,10 +376,12 @@ void InstructionSelector::VisitCheckedLoad(Node* node) {
     case MachineRepresentation::kFloat64:
       opcode = kCheckedLoadFloat64;
       break;
-    case MachineRepresentation::kBit:      // Fall through.
-    case MachineRepresentation::kTagged:   // Fall through.
-    case MachineRepresentation::kWord64:   // Fall through.
-    case MachineRepresentation::kSimd128:  // Fall through.
+    case MachineRepresentation::kBit:            // Fall through.
+    case MachineRepresentation::kTaggedSigned:   // Fall through.
+    case MachineRepresentation::kTaggedPointer:  // Fall through.
+    case MachineRepresentation::kTagged:         // Fall through.
+    case MachineRepresentation::kWord64:         // Fall through.
+    case MachineRepresentation::kSimd128:        // Fall through.
     case MachineRepresentation::kNone:
       UNREACHABLE();
       return;
@@ -419,10 +425,12 @@ void InstructionSelector::VisitCheckedStore(Node* node) {
     case MachineRepresentation::kFloat64:
       opcode = kCheckedStoreFloat64;
       break;
-    case MachineRepresentation::kBit:      // Fall through.
-    case MachineRepresentation::kTagged:   // Fall through.
-    case MachineRepresentation::kWord64:   // Fall through.
-    case MachineRepresentation::kSimd128:  // Fall through.
+    case MachineRepresentation::kBit:            // Fall through.
+    case MachineRepresentation::kTaggedSigned:   // Fall through.
+    case MachineRepresentation::kTaggedPointer:  // Fall through.
+    case MachineRepresentation::kTagged:         // Fall through.
+    case MachineRepresentation::kWord64:         // Fall through.
+    case MachineRepresentation::kSimd128:        // Fall through.
     case MachineRepresentation::kNone:
       UNREACHABLE();
       return;
@@ -929,44 +937,10 @@ void InstructionSelector::VisitFloat64Add(Node* node) {
 
 
 void InstructionSelector::VisitFloat32Sub(Node* node) {
-  IA32OperandGenerator g(this);
-  Float32BinopMatcher m(node);
-  if (m.left().IsMinusZero()) {
-    VisitFloatUnop(this, node, m.right().node(), kAVXFloat32Neg,
-                   kSSEFloat32Neg);
-    return;
-  }
-  VisitRROFloat(this, node, kAVXFloat32Sub, kSSEFloat32Sub);
-}
-
-void InstructionSelector::VisitFloat32SubPreserveNan(Node* node) {
   VisitRROFloat(this, node, kAVXFloat32Sub, kSSEFloat32Sub);
 }
 
 void InstructionSelector::VisitFloat64Sub(Node* node) {
-  IA32OperandGenerator g(this);
-  Float64BinopMatcher m(node);
-  if (m.left().IsMinusZero()) {
-    if (m.right().IsFloat64RoundDown() &&
-        CanCover(m.node(), m.right().node())) {
-      if (m.right().InputAt(0)->opcode() == IrOpcode::kFloat64Sub &&
-          CanCover(m.right().node(), m.right().InputAt(0))) {
-        Float64BinopMatcher mright0(m.right().InputAt(0));
-        if (mright0.left().IsMinusZero()) {
-          Emit(kSSEFloat64Round | MiscField::encode(kRoundUp),
-               g.DefineAsRegister(node), g.UseRegister(mright0.right().node()));
-          return;
-        }
-      }
-    }
-    VisitFloatUnop(this, node, m.right().node(), kAVXFloat64Neg,
-                   kSSEFloat64Neg);
-    return;
-  }
-  VisitRROFloat(this, node, kAVXFloat64Sub, kSSEFloat64Sub);
-}
-
-void InstructionSelector::VisitFloat64SubPreserveNan(Node* node) {
   VisitRROFloat(this, node, kAVXFloat64Sub, kSSEFloat64Sub);
 }
 

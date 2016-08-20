@@ -157,7 +157,7 @@ bool Interpreter::MakeBytecode(CompilationInfo* info) {
 #endif  // DEBUG
 
   BytecodeGenerator generator(info);
-  Handle<BytecodeArray> bytecodes = generator.MakeBytecode();
+  Handle<BytecodeArray> bytecodes = generator.MakeBytecode(info->isolate());
 
   if (generator.HasStackOverflow()) return false;
 
@@ -750,6 +750,7 @@ void Interpreter::DoPopContext(InterpreterAssembler* assembler) {
   __ Dispatch();
 }
 
+// TODO(mythria): Remove this function once all BinaryOps record type feedback.
 template <class Generator>
 void Interpreter::DoBinaryOp(InterpreterAssembler* assembler) {
   Node* reg_index = __ BytecodeOperandReg(0);
@@ -761,60 +762,146 @@ void Interpreter::DoBinaryOp(InterpreterAssembler* assembler) {
   __ Dispatch();
 }
 
+template <class Generator>
+void Interpreter::DoBinaryOpWithFeedback(InterpreterAssembler* assembler) {
+  Node* reg_index = __ BytecodeOperandReg(0);
+  Node* lhs = __ LoadRegister(reg_index);
+  Node* rhs = __ GetAccumulator();
+  Node* context = __ GetContext();
+  Node* slot_index = __ BytecodeOperandIdx(1);
+  Node* type_feedback_vector = __ LoadTypeFeedbackVector();
+  Node* result = Generator::Generate(assembler, lhs, rhs, context,
+                                     type_feedback_vector, slot_index);
+  __ SetAccumulator(result);
+  __ Dispatch();
+}
+
 // Add <src>
 //
 // Add register <src> to accumulator.
 void Interpreter::DoAdd(InterpreterAssembler* assembler) {
-  DoBinaryOp<AddStub>(assembler);
+  DoBinaryOpWithFeedback<AddWithFeedbackStub>(assembler);
 }
 
 // Sub <src>
 //
 // Subtract register <src> from accumulator.
 void Interpreter::DoSub(InterpreterAssembler* assembler) {
-  DoBinaryOp<SubtractStub>(assembler);
+  DoBinaryOpWithFeedback<SubtractWithFeedbackStub>(assembler);
 }
 
 // Mul <src>
 //
 // Multiply accumulator by register <src>.
 void Interpreter::DoMul(InterpreterAssembler* assembler) {
-  DoBinaryOp<MultiplyStub>(assembler);
+  DoBinaryOpWithFeedback<MultiplyWithFeedbackStub>(assembler);
 }
 
 // Div <src>
 //
 // Divide register <src> by accumulator.
 void Interpreter::DoDiv(InterpreterAssembler* assembler) {
-  DoBinaryOp<DivideStub>(assembler);
+  DoBinaryOpWithFeedback<DivideWithFeedbackStub>(assembler);
 }
 
 // Mod <src>
 //
 // Modulo register <src> by accumulator.
 void Interpreter::DoMod(InterpreterAssembler* assembler) {
-  DoBinaryOp<ModulusStub>(assembler);
+  DoBinaryOpWithFeedback<ModulusWithFeedbackStub>(assembler);
+}
+
+void Interpreter::DoBitwiseBinaryOp(Token::Value bitwise_op,
+                                    InterpreterAssembler* assembler) {
+  Node* reg_index = __ BytecodeOperandReg(0);
+  Node* lhs = __ LoadRegister(reg_index);
+  Node* rhs = __ GetAccumulator();
+  Node* context = __ GetContext();
+  Node* slot_index = __ BytecodeOperandIdx(1);
+  Node* type_feedback_vector = __ LoadTypeFeedbackVector();
+
+  Variable var_lhs_type_feedback(assembler, MachineRepresentation::kWord32),
+      var_rhs_type_feedback(assembler, MachineRepresentation::kWord32);
+  Node* lhs_value = __ TruncateTaggedToWord32WithFeedback(
+      context, lhs, &var_lhs_type_feedback);
+  Node* rhs_value = __ TruncateTaggedToWord32WithFeedback(
+      context, rhs, &var_rhs_type_feedback);
+  Node* result = nullptr;
+
+  switch (bitwise_op) {
+    case Token::BIT_OR: {
+      Node* value = __ Word32Or(lhs_value, rhs_value);
+      result = __ ChangeInt32ToTagged(value);
+    } break;
+    case Token::BIT_AND: {
+      Node* value = __ Word32And(lhs_value, rhs_value);
+      result = __ ChangeInt32ToTagged(value);
+    } break;
+    case Token::BIT_XOR: {
+      Node* value = __ Word32Xor(lhs_value, rhs_value);
+      result = __ ChangeInt32ToTagged(value);
+    } break;
+    case Token::SHL: {
+      Node* value = __ Word32Shl(
+          lhs_value, __ Word32And(rhs_value, __ Int32Constant(0x1f)));
+      result = __ ChangeInt32ToTagged(value);
+    } break;
+    case Token::SHR: {
+      Node* value = __ Word32Shr(
+          lhs_value, __ Word32And(rhs_value, __ Int32Constant(0x1f)));
+      result = __ ChangeUint32ToTagged(value);
+    } break;
+    case Token::SAR: {
+      Node* value = __ Word32Sar(
+          lhs_value, __ Word32And(rhs_value, __ Int32Constant(0x1f)));
+      result = __ ChangeInt32ToTagged(value);
+    } break;
+    default:
+      UNREACHABLE();
+  }
+
+  Node* result_type =
+      __ Select(__ WordIsSmi(result),
+                __ Int32Constant(BinaryOperationFeedback::kSignedSmall),
+                __ Int32Constant(BinaryOperationFeedback::kNumber));
+
+  if (FLAG_debug_code) {
+    Label ok(assembler);
+    __ GotoIf(__ WordIsSmi(result), &ok);
+    Node* result_map = __ LoadMap(result);
+    __ AbortIfWordNotEqual(result_map, __ HeapNumberMapConstant(),
+                           kExpectedHeapNumber);
+    __ Goto(&ok);
+    __ Bind(&ok);
+  }
+
+  Node* input_feedback =
+      __ Word32Or(var_lhs_type_feedback.value(), var_rhs_type_feedback.value());
+  __ UpdateFeedback(__ Word32Or(result_type, input_feedback),
+                    type_feedback_vector, slot_index);
+  __ SetAccumulator(result);
+  __ Dispatch();
 }
 
 // BitwiseOr <src>
 //
 // BitwiseOr register <src> to accumulator.
 void Interpreter::DoBitwiseOr(InterpreterAssembler* assembler) {
-  DoBinaryOp<BitwiseOrStub>(assembler);
+  DoBitwiseBinaryOp(Token::BIT_OR, assembler);
 }
 
 // BitwiseXor <src>
 //
 // BitwiseXor register <src> to accumulator.
 void Interpreter::DoBitwiseXor(InterpreterAssembler* assembler) {
-  DoBinaryOp<BitwiseXorStub>(assembler);
+  DoBitwiseBinaryOp(Token::BIT_XOR, assembler);
 }
 
 // BitwiseAnd <src>
 //
 // BitwiseAnd register <src> to accumulator.
 void Interpreter::DoBitwiseAnd(InterpreterAssembler* assembler) {
-  DoBinaryOp<BitwiseAndStub>(assembler);
+  DoBitwiseBinaryOp(Token::BIT_AND, assembler);
 }
 
 // ShiftLeft <src>
@@ -824,7 +911,7 @@ void Interpreter::DoBitwiseAnd(InterpreterAssembler* assembler) {
 // before the operation. 5 lsb bits from the accumulator are used as count
 // i.e. <src> << (accumulator & 0x1F).
 void Interpreter::DoShiftLeft(InterpreterAssembler* assembler) {
-  DoBinaryOp<ShiftLeftStub>(assembler);
+  DoBitwiseBinaryOp(Token::SHL, assembler);
 }
 
 // ShiftRight <src>
@@ -834,7 +921,7 @@ void Interpreter::DoShiftLeft(InterpreterAssembler* assembler) {
 // accumulator to uint32 before the operation. 5 lsb bits from the accumulator
 // are used as count i.e. <src> >> (accumulator & 0x1F).
 void Interpreter::DoShiftRight(InterpreterAssembler* assembler) {
-  DoBinaryOp<ShiftRightStub>(assembler);
+  DoBitwiseBinaryOp(Token::SAR, assembler);
 }
 
 // ShiftRightLogical <src>
@@ -844,7 +931,7 @@ void Interpreter::DoShiftRight(InterpreterAssembler* assembler) {
 // uint32 before the operation 5 lsb bits from the accumulator are used as
 // count i.e. <src> << (accumulator & 0x1F).
 void Interpreter::DoShiftRightLogical(InterpreterAssembler* assembler) {
-  DoBinaryOp<ShiftRightLogicalStub>(assembler);
+  DoBitwiseBinaryOp(Token::SHR, assembler);
 }
 
 // AddSmi <imm> <reg>
@@ -1032,6 +1119,18 @@ void Interpreter::DoUnaryOp(InterpreterAssembler* assembler) {
   __ Dispatch();
 }
 
+template <class Generator>
+void Interpreter::DoUnaryOpWithFeedback(InterpreterAssembler* assembler) {
+  Node* value = __ GetAccumulator();
+  Node* context = __ GetContext();
+  Node* slot_index = __ BytecodeOperandIdx(0);
+  Node* type_feedback_vector = __ LoadTypeFeedbackVector();
+  Node* result = Generator::Generate(assembler, value, context,
+                                     type_feedback_vector, slot_index);
+  __ SetAccumulator(result);
+  __ Dispatch();
+}
+
 // ToName
 //
 // Cast the object referenced by the accumulator to a name.
@@ -1063,14 +1162,14 @@ void Interpreter::DoToObject(InterpreterAssembler* assembler) {
 //
 // Increments value in the accumulator by one.
 void Interpreter::DoInc(InterpreterAssembler* assembler) {
-  DoUnaryOp<IncStub>(assembler);
+  DoUnaryOpWithFeedback<IncStub>(assembler);
 }
 
 // Dec
 //
 // Decrements value in the accumulator by one.
 void Interpreter::DoDec(InterpreterAssembler* assembler) {
-  DoUnaryOp<DecStub>(assembler);
+  DoUnaryOpWithFeedback<DecStub>(assembler);
 }
 
 // LogicalNot
@@ -1595,8 +1694,6 @@ void Interpreter::DoJumpIfNotHoleConstant(InterpreterAssembler* assembler) {
 // Creates a regular expression literal for literal index <literal_idx> with
 // <flags> and the pattern in <pattern_idx>.
 void Interpreter::DoCreateRegExpLiteral(InterpreterAssembler* assembler) {
-  Callable callable = CodeFactory::FastCloneRegExp(isolate_);
-  Node* target = __ HeapConstant(callable.code());
   Node* index = __ BytecodeOperandIdx(0);
   Node* pattern = __ LoadConstantPoolEntry(index);
   Node* literal_index_raw = __ BytecodeOperandIdx(1);
@@ -1605,8 +1702,8 @@ void Interpreter::DoCreateRegExpLiteral(InterpreterAssembler* assembler) {
   Node* flags = __ SmiTag(flags_raw);
   Node* closure = __ LoadRegister(Register::function_closure());
   Node* context = __ GetContext();
-  Node* result = __ CallStub(callable.descriptor(), target, context, closure,
-                             literal_index, pattern, flags);
+  Node* result = FastCloneRegExpStub::Generate(
+      assembler, closure, literal_index, pattern, flags, context);
   __ SetAccumulator(result);
   __ Dispatch();
 }
@@ -1654,7 +1751,7 @@ void Interpreter::DoCreateObjectLiteral(InterpreterAssembler* assembler) {
     Node* result = FastCloneShallowObjectStub::GenerateFastPath(
         assembler, &if_not_fast_clone, closure, literal_index,
         fast_clone_properties_count);
-    __ SetAccumulator(result);
+    __ StoreRegister(result, __ BytecodeOperandReg(3));
     __ Dispatch();
   }
 
@@ -1674,7 +1771,7 @@ void Interpreter::DoCreateObjectLiteral(InterpreterAssembler* assembler) {
     Node* result =
         __ CallRuntime(Runtime::kCreateObjectLiteral, context, closure,
                        literal_index, constant_elements, flags);
-    __ SetAccumulator(result);
+    __ StoreRegister(result, __ BytecodeOperandReg(3));
     // TODO(klaasb) build a single dispatch once the call is inlined
     __ Dispatch();
   }
@@ -1710,6 +1807,36 @@ void Interpreter::DoCreateClosure(InterpreterAssembler* assembler) {
   }
 }
 
+// CreateBlockContext <index>
+//
+// Creates a new block context with the scope info constant at |index| and the
+// closure in the accumulator.
+void Interpreter::DoCreateBlockContext(InterpreterAssembler* assembler) {
+  Node* index = __ BytecodeOperandIdx(0);
+  Node* scope_info = __ LoadConstantPoolEntry(index);
+  Node* closure = __ GetAccumulator();
+  Node* context = __ GetContext();
+  __ SetAccumulator(
+      __ CallRuntime(Runtime::kPushBlockContext, context, scope_info, closure));
+  __ Dispatch();
+}
+
+// CreateCatchContext <exception> <index>
+//
+// Creates a new context for a catch block with the |exception| in a register,
+// the variable name at |index| and the closure in the accumulator.
+void Interpreter::DoCreateCatchContext(InterpreterAssembler* assembler) {
+  Node* exception_reg = __ BytecodeOperandReg(0);
+  Node* exception = __ LoadRegister(exception_reg);
+  Node* index = __ BytecodeOperandIdx(1);
+  Node* name = __ LoadConstantPoolEntry(index);
+  Node* closure = __ GetAccumulator();
+  Node* context = __ GetContext();
+  __ SetAccumulator(__ CallRuntime(Runtime::kPushCatchContext, context, name,
+                                   exception, closure));
+  __ Dispatch();
+}
+
 // CreateFunctionContext <slots>
 //
 // Creates a new context with number of |slots| for the function closure.
@@ -1719,6 +1846,20 @@ void Interpreter::DoCreateFunctionContext(InterpreterAssembler* assembler) {
   Node* context = __ GetContext();
   __ SetAccumulator(
       FastNewFunctionContextStub::Generate(assembler, closure, slots, context));
+  __ Dispatch();
+}
+
+// CreateWithContext <register>
+//
+// Creates a new context for a with-statement with the object in |register| and
+// the closure in the accumulator.
+void Interpreter::DoCreateWithContext(InterpreterAssembler* assembler) {
+  Node* reg_index = __ BytecodeOperandReg(0);
+  Node* object = __ LoadRegister(reg_index);
+  Node* closure = __ GetAccumulator();
+  Node* context = __ GetContext();
+  __ SetAccumulator(
+      __ CallRuntime(Runtime::kPushWithContext, context, object, closure));
   __ Dispatch();
 }
 

@@ -699,13 +699,8 @@ void FullCodeGenerator::EmitDebugCheckDeclarationContext(Variable* variable) {
 
 void FullCodeGenerator::VisitVariableDeclaration(
     VariableDeclaration* declaration) {
-  // If it was not possible to allocate the variable at compile time, we
-  // need to "declare" it at runtime to make sure it actually exists in the
-  // local context.
   VariableProxy* proxy = declaration->proxy();
-  VariableMode mode = declaration->mode();
   Variable* variable = proxy->var();
-  bool hole_init = mode == LET || mode == CONST;
   switch (variable->location()) {
     case VariableLocation::GLOBAL:
     case VariableLocation::UNALLOCATED: {
@@ -718,7 +713,7 @@ void FullCodeGenerator::VisitVariableDeclaration(
     }
     case VariableLocation::PARAMETER:
     case VariableLocation::LOCAL:
-      if (hole_init) {
+      if (variable->binding_needs_init()) {
         Comment cmnt(masm_, "[ VariableDeclaration");
         __ LoadRoot(ip, Heap::kTheHoleValueRootIndex);
         __ StoreP(ip, StackOperand(variable));
@@ -726,7 +721,7 @@ void FullCodeGenerator::VisitVariableDeclaration(
       break;
 
     case VariableLocation::CONTEXT:
-      if (hole_init) {
+      if (variable->binding_needs_init()) {
         Comment cmnt(masm_, "[ VariableDeclaration");
         EmitDebugCheckDeclarationContext(variable);
         __ LoadRoot(ip, Heap::kTheHoleValueRootIndex);
@@ -738,14 +733,17 @@ void FullCodeGenerator::VisitVariableDeclaration(
 
     case VariableLocation::LOOKUP: {
       Comment cmnt(masm_, "[ VariableDeclaration");
-      DCHECK_EQ(VAR, mode);
-      DCHECK(!hole_init);
+      DCHECK_EQ(VAR, variable->mode());
+      DCHECK(!variable->binding_needs_init());
       __ mov(r4, Operand(variable->name()));
       __ Push(r4);
       __ CallRuntime(Runtime::kDeclareEvalVar);
       PrepareForBailoutForId(proxy->id(), BailoutState::NO_REGISTERS);
       break;
     }
+
+    case VariableLocation::MODULE:
+      UNREACHABLE();
   }
 }
 
@@ -799,6 +797,9 @@ void FullCodeGenerator::VisitFunctionDeclaration(
       PrepareForBailoutForId(proxy->id(), BailoutState::NO_REGISTERS);
       break;
     }
+
+    case VariableLocation::MODULE:
+      UNREACHABLE();
   }
 }
 
@@ -933,6 +934,7 @@ void FullCodeGenerator::VisitForInStatement(ForInStatement* stmt) {
   __ bind(&convert);
   ToObjectStub stub(isolate());
   __ CallStub(&stub);
+  RestoreContext();
   __ bind(&done_convert);
   PrepareForBailoutForId(stmt->ToObjectId(), BailoutState::TOS_REGISTER);
   __ push(r2);
@@ -1200,14 +1202,15 @@ void FullCodeGenerator::EmitDynamicLookupFastCase(VariableProxy* proxy,
   } else if (var->mode() == DYNAMIC_LOCAL) {
     Variable* local = var->local_if_not_shadowed();
     __ LoadP(r2, ContextSlotOperandCheckExtensions(local, slow));
-    if (local->mode() == LET || local->mode() == CONST) {
+    if (local->binding_needs_init()) {
       __ CompareRoot(r2, Heap::kTheHoleValueRootIndex);
       __ bne(done);
       __ mov(r2, Operand(var->name()));
       __ push(r2);
       __ CallRuntime(Runtime::kThrowReferenceError);
+    } else {
+      __ b(done);
     }
-    __ b(done);
   }
 }
 
@@ -1248,18 +1251,15 @@ void FullCodeGenerator::EmitVariableLoad(VariableProxy* proxy,
       Comment cmnt(masm_, var->IsContextSlot() ? "[ Context variable"
                                                : "[ Stack variable");
       if (NeedsHoleCheckForLoad(proxy)) {
+        // Throw a reference error when using an uninitialized let/const
+        // binding in harmony mode.
         Label done;
-        // Let and const need a read barrier.
         GetVar(r2, var);
         __ CompareRoot(r2, Heap::kTheHoleValueRootIndex);
         __ bne(&done);
-        if (var->mode() == LET || var->mode() == CONST) {
-          // Throw a reference error when using an uninitialized let/const
-          // binding in harmony mode.
-          __ mov(r2, Operand(var->name()));
-          __ push(r2);
-          __ CallRuntime(Runtime::kThrowReferenceError);
-        }
+        __ mov(r2, Operand(var->name()));
+        __ push(r2);
+        __ CallRuntime(Runtime::kThrowReferenceError);
         __ bind(&done);
         context()->Plug(r2);
         break;
@@ -1283,7 +1283,11 @@ void FullCodeGenerator::EmitVariableLoad(VariableProxy* proxy,
       __ CallRuntime(function_id);
       __ bind(&done);
       context()->Plug(r2);
+      break;
     }
+
+    case VariableLocation::MODULE:
+      UNREACHABLE();
   }
 }
 
@@ -1348,7 +1352,8 @@ void FullCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
       case ObjectLiteral::Property::COMPUTED:
         // It is safe to use [[Put]] here because the boilerplate already
         // contains computed properties with an uninitialized value.
-        if (key->value()->IsInternalizedString()) {
+        if (key->IsStringLiteral()) {
+          DCHECK(key->IsPropertyName());
           if (property->emit_store()) {
             VisitForAccumulatorValue(value);
             DCHECK(StoreDescriptor::ValueRegister().is(r2));
@@ -1898,14 +1903,14 @@ void FullCodeGenerator::EmitInlineSmiBinaryOp(BinaryOperation* expr,
       break;
     }
     case Token::ADD: {
-      __ AddAndCheckForOverflow(scratch1, left, right, scratch2, r0);
-      __ BranchOnOverflow(&stub_call);
+      __ AddP(scratch1, left, right);
+      __ b(overflow, &stub_call);
       __ LoadRR(right, scratch1);
       break;
     }
     case Token::SUB: {
-      __ SubAndCheckForOverflow(scratch1, left, right, scratch2, r0);
-      __ BranchOnOverflow(&stub_call);
+      __ SubP(scratch1, left, right);
+      __ b(overflow, &stub_call);
       __ LoadRR(right, scratch1);
       break;
     }
@@ -2130,37 +2135,27 @@ void FullCodeGenerator::EmitVariableAssignment(Variable* var, Token::Value op,
     EmitLoadStoreICSlot(slot);
     CallStoreIC();
 
-  } else if (var->mode() == LET && op != Token::INIT) {
+  } else if (IsLexicalVariableMode(var->mode()) && op != Token::INIT) {
     // Non-initializing assignment to let variable needs a write barrier.
     DCHECK(!var->IsLookupSlot());
     DCHECK(var->IsStackAllocated() || var->IsContextSlot());
-    Label assign;
     MemOperand location = VarOperand(var, r3);
-    __ LoadP(r5, location);
-    __ CompareRoot(r5, Heap::kTheHoleValueRootIndex);
-    __ bne(&assign);
-    __ mov(r5, Operand(var->name()));
-    __ push(r5);
-    __ CallRuntime(Runtime::kThrowReferenceError);
-    // Perform the assignment.
-    __ bind(&assign);
-    EmitStoreToStackLocalOrContextSlot(var, location);
-
-  } else if (var->mode() == CONST && op != Token::INIT) {
-    // Assignment to const variable needs a write barrier.
-    DCHECK(!var->IsLookupSlot());
-    DCHECK(var->IsStackAllocated() || var->IsContextSlot());
-    Label const_error;
-    MemOperand location = VarOperand(var, r3);
-    __ LoadP(r5, location);
-    __ CompareRoot(r5, Heap::kTheHoleValueRootIndex);
-    __ bne(&const_error, Label::kNear);
-    __ mov(r5, Operand(var->name()));
-    __ push(r5);
-    __ CallRuntime(Runtime::kThrowReferenceError);
-    __ bind(&const_error);
-    __ CallRuntime(Runtime::kThrowConstAssignError);
-
+    // Perform an initialization check for lexically declared variables.
+    if (var->binding_needs_init()) {
+      Label assign;
+      __ LoadP(r5, location);
+      __ CompareRoot(r5, Heap::kTheHoleValueRootIndex);
+      __ bne(&assign);
+      __ mov(r5, Operand(var->name()));
+      __ push(r5);
+      __ CallRuntime(Runtime::kThrowReferenceError);
+      __ bind(&assign);
+    }
+    if (var->mode() == CONST) {
+      __ CallRuntime(Runtime::kThrowConstAssignError);
+    } else {
+      EmitStoreToStackLocalOrContextSlot(var, location);
+    }
   } else if (var->is_this() && var->mode() == CONST && op == Token::INIT) {
     // Initializing assignment to const {this} needs a write barrier.
     DCHECK(var->IsStackAllocated() || var->IsContextSlot());
@@ -2989,7 +2984,7 @@ void FullCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
         Variable* var = proxy->var();
         // Delete of an unqualified identifier is disallowed in strict mode but
         // "delete this" is allowed.
-        bool is_this = var->HasThisName(isolate());
+        bool is_this = var->is_this();
         DCHECK(is_sloppy(language_mode()) || is_this);
         if (var->IsUnallocatedOrGlobalSlot()) {
           __ LoadGlobalObject(r4);
@@ -3194,10 +3189,10 @@ void FullCodeGenerator::VisitCountOperation(CountOperation* expr) {
     Register scratch1 = r3;
     Register scratch2 = r4;
     __ LoadSmiLiteral(scratch1, Smi::FromInt(count_value));
-    __ AddAndCheckForOverflow(r2, r2, scratch1, scratch2, r0);
-    __ BranchOnNoOverflow(&done);
+    __ AddP(scratch2, r2, scratch1);
+    __ LoadOnConditionP(nooverflow, r2, scratch2);
+    __ b(nooverflow, &done);
     // Call stub. Undo operation first.
-    __ SubP(r2, r2, scratch1);
     __ b(&stub_call);
     __ bind(&slow);
   }

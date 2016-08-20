@@ -9,6 +9,8 @@
 
 #include "src/api.h"
 #include "src/handles.h"
+#include "src/parsing/preparse-data.h"
+
 #include "src/wasm/wasm-opcodes.h"
 #include "src/wasm/wasm-result.h"
 
@@ -396,6 +398,9 @@ Handle<FixedArray> BuildFunctionTable(Isolate* isolate, uint32_t index,
 void PopulateFunctionTable(Handle<FixedArray> table, uint32_t table_size,
                            const std::vector<Handle<Code>>* code_table);
 
+Handle<JSObject> CreateCompiledModuleObject(Isolate* isolate,
+                                            Handle<FixedArray> compiled_module);
+
 namespace testing {
 
 // Decode, verify, and run the function labeled "main" in the
@@ -403,6 +408,9 @@ namespace testing {
 int32_t CompileAndRunWasmModule(Isolate* isolate, const byte* module_start,
                                 const byte* module_end, bool asm_js = false);
 
+int32_t CallFunction(Isolate* isolate, Handle<JSObject> instance,
+                     ErrorThrower* thrower, const char* name, int argc,
+                     Handle<Object> argv[]);
 }  // namespace testing
 }  // namespace wasm
 }  // namespace internal

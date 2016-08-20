@@ -150,7 +150,7 @@ class X87OperandGenerator final : public OperandGenerator {
   AddressingMode GetEffectiveAddressMemoryOperand(Node* node,
                                                   InstructionOperand inputs[],
                                                   size_t* input_count) {
-    BaseWithIndexAndDisplacement32Matcher m(node, true);
+    BaseWithIndexAndDisplacement32Matcher m(node, AddressOption::kAllowAll);
     DCHECK(m.matches());
     if ((m.displacement() == nullptr || CanBeImmediate(m.displacement()))) {
       return GenerateMemoryOperandInputs(
@@ -917,27 +917,12 @@ void InstructionSelector::VisitFloat32Sub(Node* node) {
   Emit(kX87Float32Sub, g.DefineAsFixed(node, stX_0), 0, nullptr);
 }
 
-void InstructionSelector::VisitFloat32SubPreserveNan(Node* node) {
-  X87OperandGenerator g(this);
-  Emit(kX87PushFloat32, g.NoOutput(), g.Use(node->InputAt(0)));
-  Emit(kX87PushFloat32, g.NoOutput(), g.Use(node->InputAt(1)));
-  Emit(kX87Float32Sub, g.DefineAsFixed(node, stX_0), 0, nullptr);
-}
-
 void InstructionSelector::VisitFloat64Sub(Node* node) {
   X87OperandGenerator g(this);
   Emit(kX87PushFloat64, g.NoOutput(), g.Use(node->InputAt(0)));
   Emit(kX87PushFloat64, g.NoOutput(), g.Use(node->InputAt(1)));
   Emit(kX87Float64Sub, g.DefineAsFixed(node, stX_0), 0, nullptr);
 }
-
-void InstructionSelector::VisitFloat64SubPreserveNan(Node* node) {
-  X87OperandGenerator g(this);
-  Emit(kX87PushFloat64, g.NoOutput(), g.Use(node->InputAt(0)));
-  Emit(kX87PushFloat64, g.NoOutput(), g.Use(node->InputAt(1)));
-  Emit(kX87Float64Sub, g.DefineAsFixed(node, stX_0), 0, nullptr);
-}
-
 
 void InstructionSelector::VisitFloat32Mul(Node* node) {
   X87OperandGenerator g(this);
@@ -1083,9 +1068,17 @@ void InstructionSelector::VisitFloat64RoundTiesEven(Node* node) {
        g.UseFixed(node, stX_0), g.Use(node->InputAt(0)));
 }
 
-void InstructionSelector::VisitFloat32Neg(Node* node) { UNREACHABLE(); }
+void InstructionSelector::VisitFloat32Neg(Node* node) {
+  X87OperandGenerator g(this);
+  Emit(kX87PushFloat32, g.NoOutput(), g.Use(node->InputAt(0)));
+  Emit(kX87Float32Neg, g.DefineAsFixed(node, stX_0), 0, nullptr);
+}
 
-void InstructionSelector::VisitFloat64Neg(Node* node) { UNREACHABLE(); }
+void InstructionSelector::VisitFloat64Neg(Node* node) {
+  X87OperandGenerator g(this);
+  Emit(kX87PushFloat64, g.NoOutput(), g.Use(node->InputAt(0)));
+  Emit(kX87Float64Neg, g.DefineAsFixed(node, stX_0), 0, nullptr);
+}
 
 void InstructionSelector::VisitFloat64Ieee754Binop(Node* node,
                                                    InstructionCode opcode) {

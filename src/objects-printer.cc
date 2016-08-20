@@ -1278,7 +1278,7 @@ void Script::ScriptPrint(std::ostream& os) {  // NOLINT
 void DebugInfo::DebugInfoPrint(std::ostream& os) {  // NOLINT
   HeapObject::PrintHeader(os, "DebugInfo");
   os << "\n - shared: " << Brief(shared());
-  os << "\n - code: " << Brief(abstract_code());
+  os << "\n - debug bytecode array: " << Brief(debug_bytecode_array());
   os << "\n - break_points: ";
   break_points()->Print(os);
 }
@@ -1286,9 +1286,7 @@ void DebugInfo::DebugInfoPrint(std::ostream& os) {  // NOLINT
 
 void BreakPointInfo::BreakPointInfoPrint(std::ostream& os) {  // NOLINT
   HeapObject::PrintHeader(os, "BreakPointInfo");
-  os << "\n - code_offset: " << code_offset();
   os << "\n - source_position: " << source_position();
-  os << "\n - statement_position: " << statement_position();
   os << "\n - break_point_objects: " << Brief(break_point_objects());
   os << "\n";
 }

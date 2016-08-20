@@ -62,6 +62,8 @@ class BytecodeGraphBuilder::Environment : public ZoneObject {
   void Merge(Environment* other);
   void PrepareForOsr();
 
+  void PrepareForLoopExit(Node* loop);
+
  private:
   explicit Environment(const Environment* copy);
   void PrepareForLoop();
@@ -397,6 +399,31 @@ bool BytecodeGraphBuilder::Environment::StateValuesRequireUpdate(
   return false;
 }
 
+void BytecodeGraphBuilder::Environment::PrepareForLoopExit(Node* loop) {
+  DCHECK_EQ(loop->opcode(), IrOpcode::kLoop);
+
+  Node* control = GetControlDependency();
+
+  // Create the loop exit node.
+  Node* loop_exit = graph()->NewNode(common()->LoopExit(), control, loop);
+  UpdateControlDependency(loop_exit);
+
+  // Rename the effect.
+  Node* effect_rename = graph()->NewNode(common()->LoopExitEffect(),
+                                         GetEffectDependency(), loop_exit);
+  UpdateEffectDependency(effect_rename);
+
+  // TODO(jarin) We should also rename context here. However, uncoditional
+  // renaming confuses global object and native context specialization.
+  // We should only rename if the context is assigned in the loop.
+
+  // Rename the environmnent values.
+  for (size_t i = 0; i < values_.size(); i++) {
+    Node* rename =
+        graph()->NewNode(common()->LoopExitValue(), values_[i], loop_exit);
+    values_[i] = rename;
+  }
+}
 
 void BytecodeGraphBuilder::Environment::UpdateStateValues(Node** state_values,
                                                           int offset,
@@ -562,8 +589,11 @@ bool BytecodeGraphBuilder::CreateGraph() {
 
 void BytecodeGraphBuilder::VisitBytecodes() {
   BytecodeBranchAnalysis analysis(bytecode_array(), local_zone());
+  BytecodeLoopAnalysis loop_analysis(bytecode_array(), &analysis, local_zone());
   analysis.Analyze();
+  loop_analysis.Analyze();
   set_branch_analysis(&analysis);
+  set_loop_analysis(&loop_analysis);
   interpreter::BytecodeArrayIterator iterator(bytecode_array());
   set_bytecode_iterator(&iterator);
   while (!iterator.done()) {
@@ -896,10 +926,40 @@ void BytecodeGraphBuilder::VisitCreateClosure() {
   environment()->BindAccumulator(closure);
 }
 
+void BytecodeGraphBuilder::VisitCreateBlockContext() {
+  Handle<ScopeInfo> scope_info = Handle<ScopeInfo>::cast(
+      bytecode_iterator().GetConstantForIndexOperand(0));
+
+  const Operator* op = javascript()->CreateBlockContext(scope_info);
+  Node* context = NewNode(op, environment()->LookupAccumulator());
+  environment()->BindAccumulator(context);
+}
+
 void BytecodeGraphBuilder::VisitCreateFunctionContext() {
   uint32_t slots = bytecode_iterator().GetIndexOperand(0);
   const Operator* op = javascript()->CreateFunctionContext(slots);
   Node* context = NewNode(op, GetFunctionClosure());
+  environment()->BindAccumulator(context);
+}
+
+void BytecodeGraphBuilder::VisitCreateCatchContext() {
+  interpreter::Register reg = bytecode_iterator().GetRegisterOperand(0);
+  Node* exception = environment()->LookupRegister(reg);
+  Handle<String> name =
+      Handle<String>::cast(bytecode_iterator().GetConstantForIndexOperand(1));
+  Node* closure = environment()->LookupAccumulator();
+
+  const Operator* op = javascript()->CreateCatchContext(name);
+  Node* context = NewNode(op, exception, closure);
+  environment()->BindAccumulator(context);
+}
+
+void BytecodeGraphBuilder::VisitCreateWithContext() {
+  Node* object =
+      environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(0));
+
+  const Operator* op = javascript()->CreateWithContext();
+  Node* context = NewNode(op, object, environment()->LookupAccumulator());
   environment()->BindAccumulator(context);
 }
 
@@ -950,6 +1010,7 @@ void BytecodeGraphBuilder::VisitCreateArrayLiteral() {
 }
 
 void BytecodeGraphBuilder::VisitCreateObjectLiteral() {
+  FrameStateBeforeAndAfter states(this);
   Handle<FixedArray> constant_properties = Handle<FixedArray>::cast(
       bytecode_iterator().GetConstantForIndexOperand(0));
   int literal_index = bytecode_iterator().GetIndexOperand(1);
@@ -958,9 +1019,12 @@ void BytecodeGraphBuilder::VisitCreateObjectLiteral() {
       interpreter::CreateObjectLiteralFlags::FlagsBits::decode(bytecode_flags);
   // TODO(mstarzinger): Thread through number of properties.
   int number_of_properties = constant_properties->length() / 2;
-  const Operator* op = javascript()->CreateLiteralObject(
-      constant_properties, literal_flags, literal_index, number_of_properties);
-  BuildCreateLiteral(op);
+  Node* literal = NewNode(
+      javascript()->CreateLiteralObject(constant_properties, literal_flags,
+                                        literal_index, number_of_properties),
+      GetFunctionClosure());
+  environment()->BindRegister(bytecode_iterator().GetRegisterOperand(3),
+                              literal, &states);
 }
 
 Node* BytecodeGraphBuilder::ProcessCallArguments(const Operator* call_op,
@@ -1113,6 +1177,7 @@ void BytecodeGraphBuilder::BuildThrow() {
 }
 
 void BytecodeGraphBuilder::VisitThrow() {
+  BuildLoopExitsForFunctionExit();
   BuildThrow();
   Node* call = environment()->LookupAccumulator();
   Node* control = NewNode(common()->Throw(), call);
@@ -1120,6 +1185,7 @@ void BytecodeGraphBuilder::VisitThrow() {
 }
 
 void BytecodeGraphBuilder::VisitReThrow() {
+  BuildLoopExitsForFunctionExit();
   Node* value = environment()->LookupAccumulator();
   Node* call = NewNode(javascript()->CallRuntime(Runtime::kReThrow), value);
   Node* control = NewNode(common()->Throw(), call);
@@ -1135,59 +1201,74 @@ void BytecodeGraphBuilder::BuildBinaryOp(const Operator* js_op) {
   environment()->BindAccumulator(node, &states);
 }
 
+// Helper function to create binary operation hint from the recorded type
+// feedback.
+BinaryOperationHint BytecodeGraphBuilder::GetBinaryOperationHint() {
+  FeedbackVectorSlot slot =
+      feedback_vector()->ToSlot(bytecode_iterator().GetIndexOperand(1));
+  DCHECK_EQ(FeedbackVectorSlotKind::GENERAL, feedback_vector()->GetKind(slot));
+  Object* feedback = feedback_vector()->Get(slot);
+  BinaryOperationHint hint = BinaryOperationHint::kAny;
+  if (feedback->IsSmi()) {
+    hint = BinaryOperationHintFromFeedback((Smi::cast(feedback))->value());
+  }
+  return hint;
+}
+
+BinaryOperationHint BytecodeGraphBuilder::GetBinaryOperationHintForIncDec() {
+  FeedbackVectorSlot slot =
+      feedback_vector()->ToSlot(bytecode_iterator().GetIndexOperand(0));
+  DCHECK_EQ(FeedbackVectorSlotKind::GENERAL, feedback_vector()->GetKind(slot));
+  Object* feedback = feedback_vector()->Get(slot);
+  BinaryOperationHint hint = BinaryOperationHint::kAny;
+  if (feedback->IsSmi()) {
+    hint = BinaryOperationHintFromFeedback((Smi::cast(feedback))->value());
+  }
+  return hint;
+}
+
 void BytecodeGraphBuilder::VisitAdd() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOp(javascript()->Add(hints));
+  BuildBinaryOp(javascript()->Add(GetBinaryOperationHint()));
 }
 
 void BytecodeGraphBuilder::VisitSub() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOp(javascript()->Subtract(hints));
+  BuildBinaryOp(javascript()->Subtract(GetBinaryOperationHint()));
 }
 
 void BytecodeGraphBuilder::VisitMul() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOp(javascript()->Multiply(hints));
+  BuildBinaryOp(javascript()->Multiply(GetBinaryOperationHint()));
 }
 
 void BytecodeGraphBuilder::VisitDiv() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOp(javascript()->Divide(hints));
+  BuildBinaryOp(javascript()->Divide(GetBinaryOperationHint()));
 }
 
 void BytecodeGraphBuilder::VisitMod() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOp(javascript()->Modulus(hints));
+  BuildBinaryOp(javascript()->Modulus(GetBinaryOperationHint()));
 }
 
 void BytecodeGraphBuilder::VisitBitwiseOr() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOp(javascript()->BitwiseOr(hints));
+  BuildBinaryOp(javascript()->BitwiseOr(GetBinaryOperationHint()));
 }
 
 void BytecodeGraphBuilder::VisitBitwiseXor() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOp(javascript()->BitwiseXor(hints));
+  BuildBinaryOp(javascript()->BitwiseXor(GetBinaryOperationHint()));
 }
 
 void BytecodeGraphBuilder::VisitBitwiseAnd() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOp(javascript()->BitwiseAnd(hints));
+  BuildBinaryOp(javascript()->BitwiseAnd(GetBinaryOperationHint()));
 }
 
 void BytecodeGraphBuilder::VisitShiftLeft() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOp(javascript()->ShiftLeft(hints));
+  BuildBinaryOp(javascript()->ShiftLeft(GetBinaryOperationHint()));
 }
 
 void BytecodeGraphBuilder::VisitShiftRight() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOp(javascript()->ShiftRight(hints));
+  BuildBinaryOp(javascript()->ShiftRight(GetBinaryOperationHint()));
 }
 
 void BytecodeGraphBuilder::VisitShiftRightLogical() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOp(javascript()->ShiftRightLogical(hints));
+  BuildBinaryOp(javascript()->ShiftRightLogical(GetBinaryOperationHint()));
 }
 
 void BytecodeGraphBuilder::BuildBinaryOpWithImmediate(const Operator* js_op) {
@@ -1200,48 +1281,50 @@ void BytecodeGraphBuilder::BuildBinaryOpWithImmediate(const Operator* js_op) {
 }
 
 void BytecodeGraphBuilder::VisitAddSmi() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOpWithImmediate(javascript()->Add(hints));
+  BinaryOperationHint hint = BinaryOperationHint::kAny;
+  BuildBinaryOpWithImmediate(javascript()->Add(hint));
 }
 
 void BytecodeGraphBuilder::VisitSubSmi() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOpWithImmediate(javascript()->Subtract(hints));
+  BinaryOperationHint hint = BinaryOperationHint::kAny;
+  BuildBinaryOpWithImmediate(javascript()->Subtract(hint));
 }
 
 void BytecodeGraphBuilder::VisitBitwiseOrSmi() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOpWithImmediate(javascript()->BitwiseOr(hints));
+  BinaryOperationHint hint = BinaryOperationHint::kAny;
+  BuildBinaryOpWithImmediate(javascript()->BitwiseOr(hint));
 }
 
 void BytecodeGraphBuilder::VisitBitwiseAndSmi() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOpWithImmediate(javascript()->BitwiseAnd(hints));
+  BinaryOperationHint hint = BinaryOperationHint::kAny;
+  BuildBinaryOpWithImmediate(javascript()->BitwiseAnd(hint));
 }
 
 void BytecodeGraphBuilder::VisitShiftLeftSmi() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOpWithImmediate(javascript()->ShiftLeft(hints));
+  BinaryOperationHint hint = BinaryOperationHint::kAny;
+  BuildBinaryOpWithImmediate(javascript()->ShiftLeft(hint));
 }
 
 void BytecodeGraphBuilder::VisitShiftRightSmi() {
-  BinaryOperationHints hints = BinaryOperationHints::Any();
-  BuildBinaryOpWithImmediate(javascript()->ShiftRight(hints));
+  BinaryOperationHint hint = BinaryOperationHint::kAny;
+  BuildBinaryOpWithImmediate(javascript()->ShiftRight(hint));
 }
 
 void BytecodeGraphBuilder::VisitInc() {
   FrameStateBeforeAndAfter states(this);
   // Note: Use subtract -1 here instead of add 1 to ensure we always convert to
   // a number, not a string.
-  const Operator* js_op = javascript()->Subtract(BinaryOperationHints::Any());
+  const Operator* js_op =
+      javascript()->Subtract(GetBinaryOperationHintForIncDec());
   Node* node = NewNode(js_op, environment()->LookupAccumulator(),
-                       jsgraph()->Constant(-1.0));
+                       jsgraph()->Constant(-1));
   environment()->BindAccumulator(node, &states);
 }
 
 void BytecodeGraphBuilder::VisitDec() {
   FrameStateBeforeAndAfter states(this);
-  const Operator* js_op = javascript()->Subtract(BinaryOperationHints::Any());
+  const Operator* js_op =
+      javascript()->Subtract(GetBinaryOperationHintForIncDec());
   Node* node = NewNode(js_op, environment()->LookupAccumulator(),
                        jsgraph()->OneConstant());
   environment()->BindAccumulator(node, &states);
@@ -1296,38 +1379,38 @@ void BytecodeGraphBuilder::BuildCompareOp(const Operator* js_op) {
 }
 
 void BytecodeGraphBuilder::VisitTestEqual() {
-  CompareOperationHints hints = CompareOperationHints::Any();
-  BuildCompareOp(javascript()->Equal(hints));
+  CompareOperationHint hint = CompareOperationHint::kAny;
+  BuildCompareOp(javascript()->Equal(hint));
 }
 
 void BytecodeGraphBuilder::VisitTestNotEqual() {
-  CompareOperationHints hints = CompareOperationHints::Any();
-  BuildCompareOp(javascript()->NotEqual(hints));
+  CompareOperationHint hint = CompareOperationHint::kAny;
+  BuildCompareOp(javascript()->NotEqual(hint));
 }
 
 void BytecodeGraphBuilder::VisitTestEqualStrict() {
-  CompareOperationHints hints = CompareOperationHints::Any();
-  BuildCompareOp(javascript()->StrictEqual(hints));
+  CompareOperationHint hint = CompareOperationHint::kAny;
+  BuildCompareOp(javascript()->StrictEqual(hint));
 }
 
 void BytecodeGraphBuilder::VisitTestLessThan() {
-  CompareOperationHints hints = CompareOperationHints::Any();
-  BuildCompareOp(javascript()->LessThan(hints));
+  CompareOperationHint hint = CompareOperationHint::kAny;
+  BuildCompareOp(javascript()->LessThan(hint));
 }
 
 void BytecodeGraphBuilder::VisitTestGreaterThan() {
-  CompareOperationHints hints = CompareOperationHints::Any();
-  BuildCompareOp(javascript()->GreaterThan(hints));
+  CompareOperationHint hint = CompareOperationHint::kAny;
+  BuildCompareOp(javascript()->GreaterThan(hint));
 }
 
 void BytecodeGraphBuilder::VisitTestLessThanOrEqual() {
-  CompareOperationHints hints = CompareOperationHints::Any();
-  BuildCompareOp(javascript()->LessThanOrEqual(hints));
+  CompareOperationHint hint = CompareOperationHint::kAny;
+  BuildCompareOp(javascript()->LessThanOrEqual(hint));
 }
 
 void BytecodeGraphBuilder::VisitTestGreaterThanOrEqual() {
-  CompareOperationHints hints = CompareOperationHints::Any();
-  BuildCompareOp(javascript()->GreaterThanOrEqual(hints));
+  CompareOperationHint hint = CompareOperationHint::kAny;
+  BuildCompareOp(javascript()->GreaterThanOrEqual(hint));
 }
 
 void BytecodeGraphBuilder::VisitTestIn() {
@@ -1432,6 +1515,7 @@ void BytecodeGraphBuilder::VisitOsrPoll() {
 }
 
 void BytecodeGraphBuilder::VisitReturn() {
+  BuildLoopExitsForFunctionExit();
   Node* control =
       NewNode(common()->Return(), environment()->LookupAccumulator());
   MergeControlToLeaveFunction(control);
@@ -1578,6 +1662,7 @@ void BytecodeGraphBuilder::BuildLoopHeaderEnvironment(int current_offset) {
 }
 
 void BytecodeGraphBuilder::MergeIntoSuccessorEnvironment(int target_offset) {
+  BuildLoopExitsForBranch(target_offset);
   if (merge_environments_[target_offset] == nullptr) {
     // Append merge nodes to the environment. We may merge here with another
     // environment. So add a place holder for merge nodes. We may add redundant
@@ -1594,6 +1679,28 @@ void BytecodeGraphBuilder::MergeIntoSuccessorEnvironment(int target_offset) {
 void BytecodeGraphBuilder::MergeControlToLeaveFunction(Node* exit) {
   exit_controls_.push_back(exit);
   set_environment(nullptr);
+}
+
+void BytecodeGraphBuilder::BuildLoopExitsForBranch(int target_offset) {
+  int origin_offset = bytecode_iterator().current_offset();
+  // Only build loop exits for forward edges.
+  if (target_offset > origin_offset) {
+    BuildLoopExitsUntilLoop(loop_analysis()->GetLoopOffsetFor(target_offset));
+  }
+}
+
+void BytecodeGraphBuilder::BuildLoopExitsUntilLoop(int loop_offset) {
+  int origin_offset = bytecode_iterator().current_offset();
+  int current_loop = loop_analysis()->GetLoopOffsetFor(origin_offset);
+  while (loop_offset < current_loop) {
+    Node* loop_node = merge_environments_[current_loop]->GetControlDependency();
+    environment()->PrepareForLoopExit(loop_node);
+    current_loop = loop_analysis()->GetParentLoopFor(current_loop);
+  }
+}
+
+void BytecodeGraphBuilder::BuildLoopExitsForFunctionExit() {
+  BuildLoopExitsUntilLoop(-1);
 }
 
 void BytecodeGraphBuilder::BuildJump() {
@@ -1614,7 +1721,7 @@ void BytecodeGraphBuilder::BuildConditionalJump(Node* condition) {
 void BytecodeGraphBuilder::BuildJumpIfEqual(Node* comperand) {
   Node* accumulator = environment()->LookupAccumulator();
   Node* condition =
-      NewNode(javascript()->StrictEqual(CompareOperationHints::Any()),
+      NewNode(javascript()->StrictEqual(CompareOperationHint::kAny),
               accumulator, comperand);
   BuildConditionalJump(condition);
 }
@@ -1625,15 +1732,15 @@ void BytecodeGraphBuilder::BuildJumpIfToBooleanEqual(Node* comperand) {
   Node* to_boolean =
       NewNode(javascript()->ToBoolean(ToBooleanHint::kAny), accumulator);
   Node* condition =
-      NewNode(javascript()->StrictEqual(CompareOperationHints::Any()),
-              to_boolean, comperand);
+      NewNode(javascript()->StrictEqual(CompareOperationHint::kAny), to_boolean,
+              comperand);
   BuildConditionalJump(condition);
 }
 
 void BytecodeGraphBuilder::BuildJumpIfNotHole() {
   Node* accumulator = environment()->LookupAccumulator();
   Node* condition =
-      NewNode(javascript()->StrictEqual(CompareOperationHints::Any()),
+      NewNode(javascript()->StrictEqual(CompareOperationHint::kAny),
               accumulator, jsgraph()->TheHoleConstant());
   Node* node =
       NewNode(common()->Select(MachineRepresentation::kTagged), condition,

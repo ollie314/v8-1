@@ -191,17 +191,35 @@ class OutOfLineLoadInteger final : public OutOfLineCode {
   Register const result_;
 };
 
-class OutOfLineLoadNaN final : public OutOfLineCode {
+class OutOfLineLoadFloat32NaN final : public OutOfLineCode {
  public:
-  OutOfLineLoadNaN(CodeGenerator* gen, X87Register result)
+  OutOfLineLoadFloat32NaN(CodeGenerator* gen, X87Register result)
       : OutOfLineCode(gen), result_(result) {}
 
   void Generate() final {
     DCHECK(result_.code() == 0);
     USE(result_);
     __ fstp(0);
-    __ push(Immediate(0xffffffff));
-    __ push(Immediate(0x7fffffff));
+    __ push(Immediate(0xffc00000));
+    __ fld_s(MemOperand(esp, 0));
+    __ lea(esp, Operand(esp, kFloatSize));
+  }
+
+ private:
+  X87Register const result_;
+};
+
+class OutOfLineLoadFloat64NaN final : public OutOfLineCode {
+ public:
+  OutOfLineLoadFloat64NaN(CodeGenerator* gen, X87Register result)
+      : OutOfLineCode(gen), result_(result) {}
+
+  void Generate() final {
+    DCHECK(result_.code() == 0);
+    USE(result_);
+    __ fstp(0);
+    __ push(Immediate(0xfff80000));
+    __ push(Immediate(0x00000000));
     __ fld_d(MemOperand(esp, 0));
     __ lea(esp, Operand(esp, kDoubleSize));
   }
@@ -209,7 +227,6 @@ class OutOfLineLoadNaN final : public OutOfLineCode {
  private:
   X87Register const result_;
 };
-
 
 class OutOfLineTruncateDoubleToI final : public OutOfLineCode {
  public:
@@ -271,7 +288,7 @@ class OutOfLineRecordWrite final : public OutOfLineCode {
 
 }  // namespace
 
-#define ASSEMBLE_CHECKED_LOAD_FLOAT(asm_instr)                        \
+#define ASSEMBLE_CHECKED_LOAD_FLOAT(asm_instr, OutOfLineLoadNaN)      \
   do {                                                                \
     auto result = i.OutputDoubleRegister();                           \
     auto offset = i.InputRegister(0);                                 \
@@ -1179,6 +1196,16 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ lea(esp, Operand(esp, kFloatSize));
       break;
     }
+    case kX87Float32Neg: {
+      if (FLAG_debug_code && FLAG_enable_slow_asserts) {
+        __ VerifyX87StackDepth(1);
+      }
+      __ fstp(0);
+      __ fld_s(MemOperand(esp, 0));
+      __ fchs();
+      __ lea(esp, Operand(esp, kFloatSize));
+      break;
+    }
     case kX87Float32Round: {
       RoundingMode mode =
           static_cast<RoundingMode>(MiscField::decode(instr->opcode()));
@@ -1285,7 +1312,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ fld(1);
       __ FCmp();
 
-      auto ool = new (zone()) OutOfLineLoadNaN(this, i.OutputDoubleRegister());
+      auto ool =
+          new (zone()) OutOfLineLoadFloat64NaN(this, i.OutputDoubleRegister());
       __ j(parity_even, ool->entry());
       __ j(below, &done_compare, Label::kNear);
       __ j(above, &compare_swap, Label::kNear);
@@ -1320,7 +1348,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ fld(1);
       __ FCmp();
 
-      auto ool = new (zone()) OutOfLineLoadNaN(this, i.OutputDoubleRegister());
+      auto ool =
+          new (zone()) OutOfLineLoadFloat64NaN(this, i.OutputDoubleRegister());
       __ j(parity_even, ool->entry());
       __ j(above, &done_compare, Label::kNear);
       __ j(below, &compare_swap, Label::kNear);
@@ -1350,6 +1379,16 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ fstp(0);
       __ fld_d(MemOperand(esp, 0));
       __ fabs();
+      __ lea(esp, Operand(esp, kDoubleSize));
+      break;
+    }
+    case kX87Float64Neg: {
+      if (FLAG_debug_code && FLAG_enable_slow_asserts) {
+        __ VerifyX87StackDepth(1);
+      }
+      __ fstp(0);
+      __ fld_d(MemOperand(esp, 0));
+      __ fchs();
       __ lea(esp, Operand(esp, kDoubleSize));
       break;
     }
@@ -1878,10 +1917,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       ASSEMBLE_CHECKED_LOAD_INTEGER(mov);
       break;
     case kCheckedLoadFloat32:
-      ASSEMBLE_CHECKED_LOAD_FLOAT(fld_s);
+      ASSEMBLE_CHECKED_LOAD_FLOAT(fld_s, OutOfLineLoadFloat32NaN);
       break;
     case kCheckedLoadFloat64:
-      ASSEMBLE_CHECKED_LOAD_FLOAT(fld_d);
+      ASSEMBLE_CHECKED_LOAD_FLOAT(fld_d, OutOfLineLoadFloat64NaN);
       break;
     case kCheckedStoreWord8:
       ASSEMBLE_CHECKED_STORE_INTEGER(mov_b);

@@ -55,8 +55,8 @@ Handle<ScopeInfo> ScopeInfo::Create(Isolate* isolate, Zone* zone,
   VariableAllocationInfo function_name_info;
   VariableMode function_variable_mode;
   if (scope->is_function_scope() &&
-      scope->AsDeclarationScope()->function() != nullptr) {
-    Variable* var = scope->AsDeclarationScope()->function()->proxy()->var();
+      scope->AsDeclarationScope()->function_var() != nullptr) {
+    Variable* var = scope->AsDeclarationScope()->function_var();
     if (!var->is_used()) {
       function_name_info = UNUSED;
     } else if (var->IsContextSlot()) {
@@ -83,13 +83,17 @@ Handle<ScopeInfo> ScopeInfo::Create(Isolate* isolate, Zone* zone,
   Factory* factory = isolate->factory();
   Handle<ScopeInfo> scope_info = factory->NewScopeInfo(length);
 
-  bool has_simple_parameters =
-      scope->is_function_scope() &&
-      scope->AsDeclarationScope()->has_simple_parameters();
-  FunctionKind function_kind =
-      scope->is_declaration_scope()
-          ? scope->AsDeclarationScope()->function_kind()
-          : kNormalFunction;
+  bool has_simple_parameters = false;
+  bool asm_module = false;
+  bool asm_function = false;
+  FunctionKind function_kind = kNormalFunction;
+  if (scope->is_function_scope()) {
+    DeclarationScope* function_scope = scope->AsDeclarationScope();
+    has_simple_parameters = function_scope->has_simple_parameters();
+    asm_module = function_scope->asm_module();
+    asm_function = function_scope->asm_function();
+    function_kind = function_scope->function_kind();
+  }
 
   // Encode the flags.
   int flags = ScopeTypeField::encode(scope->scope_type()) |
@@ -100,8 +104,8 @@ Handle<ScopeInfo> ScopeInfo::Create(Isolate* isolate, Zone* zone,
               HasNewTargetField::encode(has_new_target) |
               FunctionVariableField::encode(function_name_info) |
               FunctionVariableMode::encode(function_variable_mode) |
-              AsmModuleField::encode(scope->asm_module()) |
-              AsmFunctionField::encode(scope->asm_function()) |
+              AsmModuleField::encode(asm_module) |
+              AsmFunctionField::encode(asm_function) |
               HasSimpleParametersField::encode(has_simple_parameters) |
               FunctionKindField::encode(function_kind);
   scope_info->SetFlags(flags);
@@ -192,10 +196,9 @@ Handle<ScopeInfo> ScopeInfo::Create(Isolate* isolate, Zone* zone,
   // If present, add the function variable name and its index.
   DCHECK(index == scope_info->FunctionNameEntryIndex());
   if (has_function_name) {
-    int var_index =
-        scope->AsDeclarationScope()->function()->proxy()->var()->index();
+    int var_index = scope->AsDeclarationScope()->function_var()->index();
     scope_info->set(index++,
-                    *scope->AsDeclarationScope()->function()->proxy()->name());
+                    *scope->AsDeclarationScope()->function_var()->name());
     scope_info->set(index++, Smi::FromInt(var_index));
     DCHECK(function_name_info != CONTEXT ||
            var_index == scope_info->ContextLength() - 1);

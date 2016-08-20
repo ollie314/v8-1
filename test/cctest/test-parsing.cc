@@ -885,7 +885,7 @@ void TestScanRegExp(const char* re_source, const char* expected) {
 
   i::Token::Value start = scanner.peek();
   CHECK(start == i::Token::DIV || start == i::Token::ASSIGN_DIV);
-  CHECK(scanner.ScanRegExpPattern(start == i::Token::ASSIGN_DIV));
+  CHECK(scanner.ScanRegExpPattern());
   scanner.Next();  // Current token is now the regexp literal.
   i::Zone zone(CcTest::i_isolate()->allocator());
   i::AstValueFactory ast_value_factory(&zone,
@@ -1495,8 +1495,8 @@ TEST(DiscardFunctionBody) {
         AsCall()->expression()->AsFunctionLiteral();
     i::Scope* inner_scope = inner->scope();
     i::FunctionLiteral* fun = nullptr;
-    if (inner_scope->declarations()->length() > 1) {
-      fun = inner_scope->declarations()->at(1)->AsFunctionDeclaration()->fun();
+    if (inner_scope->declarations()->length() > 0) {
+      fun = inner_scope->declarations()->at(0)->AsFunctionDeclaration()->fun();
     } else {
       // TODO(conradw): This path won't be hit until the other test cases can be
       // uncommented.
@@ -5588,6 +5588,13 @@ TEST(BasicImportExportParsing) {
       "import { yield as y } from 'm.js';",
       "import { static as s } from 'm.js';",
       "import { let as l } from 'm.js';",
+
+      "import thing from 'a.js'; export {thing};",
+      "export {thing}; import thing from 'a.js';",
+      "import {thing} from 'a.js'; export {thing};",
+      "export {thing}; import {thing} from 'a.js';",
+      "import * as thing from 'a.js'; export {thing};",
+      "export {thing}; import * as thing from 'a.js';",
   };
   // clang-format on
 
@@ -5911,6 +5918,32 @@ TEST(EnumReserved) {
   RunModuleParserSyncTest(context_data, kErrorSources, kError);
 }
 
+static void CheckModuleEntry(const i::ModuleDescriptor::ModuleEntry* entry,
+    const char* export_name, const char* local_name, const char* import_name,
+    const char* module_request) {
+  CHECK_NOT_NULL(entry);
+  if (export_name == nullptr) {
+    CHECK_NULL(entry->export_name);
+  } else {
+    entry->export_name->IsOneByteEqualTo(export_name);
+  }
+  if (local_name == nullptr) {
+    CHECK_NULL(entry->local_name);
+  } else {
+    entry->local_name->IsOneByteEqualTo(local_name);
+  }
+  if (import_name == nullptr) {
+    CHECK_NULL(entry->import_name);
+  } else {
+    entry->import_name->IsOneByteEqualTo(import_name);
+  }
+  if (module_request == nullptr) {
+    CHECK_NULL(entry->module_request);
+  } else {
+    entry->module_request->IsOneByteEqualTo(module_request);
+  }
+}
+
 TEST(ModuleParsingInternals) {
   i::Isolate* isolate = CcTest::i_isolate();
   i::Factory* factory = isolate->factory();
@@ -5932,7 +5965,14 @@ TEST(ModuleParsingInternals) {
       "export let hoo;"
       "export const joo = 42;"
       "export default (function koo() {});"
-      "import 'q.js'";
+      "import 'q.js';"
+      "let nonexport = 42;"
+      "import {m as mm} from 'm.js';"
+      "import {aa} from 'm.js';"
+      "export {aa as bb, x};"
+      "import * as loo from 'bar.js';"
+      "import * as foob from 'bar.js';"
+      "export {foob};";
   i::Handle<i::String> source = factory->NewStringFromAsciiChecked(kSource);
   i::Handle<i::Script> script = factory->NewScript(source);
   i::Zone zone(CcTest::i_isolate()->allocator());
@@ -5942,25 +5982,142 @@ TEST(ModuleParsingInternals) {
   CHECK(parser.Parse(&info));
   CHECK(i::Compiler::Analyze(&info));
   i::FunctionLiteral* func = info.literal();
-  i::DeclarationScope* module_scope = func->scope();
+  i::ModuleScope* module_scope = func->scope()->AsModuleScope();
   i::Scope* outer_scope = module_scope->outer_scope();
   CHECK(outer_scope->is_script_scope());
   CHECK_NULL(outer_scope->outer_scope());
   CHECK(module_scope->is_module_scope());
-  i::ModuleDescriptor* descriptor = module_scope->module();
-  CHECK_NOT_NULL(descriptor);
   i::ZoneList<i::Declaration*>* declarations = module_scope->declarations();
-  CHECK_EQ(8, declarations->length());
+  CHECK_EQ(13, declarations->length());
+
   CHECK(declarations->at(0)->proxy()->raw_name()->IsOneByteEqualTo("x"));
+  CHECK(declarations->at(0)->proxy()->var()->mode() == i::LET);
+  CHECK(declarations->at(0)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(0)->proxy()->var()->location() ==
+        i::VariableLocation::MODULE);
+
   CHECK(declarations->at(1)->proxy()->raw_name()->IsOneByteEqualTo("z"));
+  CHECK(declarations->at(1)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->at(1)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(1)->proxy()->var()->location() ==
+        i::VariableLocation::MODULE);
+
   CHECK(declarations->at(2)->proxy()->raw_name()->IsOneByteEqualTo("n"));
+  CHECK(declarations->at(2)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->at(2)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(2)->proxy()->var()->location() ==
+        i::VariableLocation::MODULE);
+
   CHECK(declarations->at(3)->proxy()->raw_name()->IsOneByteEqualTo("foo"));
+  CHECK(declarations->at(3)->proxy()->var()->mode() == i::VAR);
+  CHECK(!declarations->at(3)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(3)->proxy()->var()->location() ==
+        i::VariableLocation::MODULE);
+
   CHECK(declarations->at(4)->proxy()->raw_name()->IsOneByteEqualTo("goo"));
+  CHECK(declarations->at(4)->proxy()->var()->mode() == i::LET);
+  CHECK(!declarations->at(4)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(4)->proxy()->var()->location() ==
+        i::VariableLocation::MODULE);
+
   CHECK(declarations->at(5)->proxy()->raw_name()->IsOneByteEqualTo("hoo"));
+  CHECK(declarations->at(5)->proxy()->var()->mode() == i::LET);
+  CHECK(declarations->at(5)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(5)->proxy()->var()->location() ==
+        i::VariableLocation::MODULE);
+
   CHECK(declarations->at(6)->proxy()->raw_name()->IsOneByteEqualTo("joo"));
+  CHECK(declarations->at(6)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->at(6)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(6)->proxy()->var()->location() ==
+        i::VariableLocation::MODULE);
+
   CHECK(
       declarations->at(7)->proxy()->raw_name()->IsOneByteEqualTo("*default*"));
-  // TODO(neis): Test more once we can inspect the imports/exports.
+  CHECK(declarations->at(7)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->at(7)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(7)->proxy()->var()->location() ==
+        i::VariableLocation::MODULE);
+
+  CHECK(
+      declarations->at(8)->proxy()->raw_name()->IsOneByteEqualTo("nonexport"));
+  CHECK(declarations->at(8)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(8)->proxy()->var()->location() !=
+        i::VariableLocation::MODULE);
+
+  CHECK(declarations->at(9)->proxy()->raw_name()->IsOneByteEqualTo("mm"));
+  CHECK(declarations->at(9)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->at(9)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(9)->proxy()->var()->location() ==
+        i::VariableLocation::MODULE);
+
+  CHECK(declarations->at(10)->proxy()->raw_name()->IsOneByteEqualTo("aa"));
+  CHECK(declarations->at(10)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->at(10)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(10)->proxy()->var()->location() ==
+        i::VariableLocation::MODULE);
+
+  CHECK(declarations->at(11)->proxy()->raw_name()->IsOneByteEqualTo("loo"));
+  CHECK(declarations->at(11)->proxy()->var()->mode() == i::CONST);
+  CHECK(!declarations->at(11)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(11)->proxy()->var()->location() !=
+        i::VariableLocation::MODULE);
+
+  CHECK(declarations->at(12)->proxy()->raw_name()->IsOneByteEqualTo("foob"));
+  CHECK(declarations->at(12)->proxy()->var()->mode() == i::CONST);
+  CHECK(!declarations->at(12)->proxy()->var()->binding_needs_init());
+  CHECK(declarations->at(12)->proxy()->var()->location() ==
+        i::VariableLocation::MODULE);
+
+  i::ModuleDescriptor* descriptor = module_scope->module();
+  CHECK_NOT_NULL(descriptor);
+
+  CHECK_EQ(11, descriptor->exports().length());
+  CheckModuleEntry(
+      descriptor->exports().at(0), "y", "x", nullptr, nullptr);
+  CheckModuleEntry(
+      descriptor->exports().at(1), "b", nullptr, "a", "m.js");
+  CheckModuleEntry(
+      descriptor->exports().at(2), nullptr, nullptr, nullptr, "p.js");
+  CheckModuleEntry(
+      descriptor->exports().at(3), "foo", "foo", nullptr, nullptr);
+  CheckModuleEntry(
+      descriptor->exports().at(4), "goo", "goo", nullptr, nullptr);
+  CheckModuleEntry(
+      descriptor->exports().at(5), "hoo", "hoo", nullptr, nullptr);
+  CheckModuleEntry(
+      descriptor->exports().at(6), "joo", "joo", nullptr, nullptr);
+  CheckModuleEntry(
+      descriptor->exports().at(7), "default", "*default*", nullptr, nullptr);
+  CheckModuleEntry(
+      descriptor->exports().at(8), "bb", nullptr, "aa", "m.js");  // !!!
+  CheckModuleEntry(
+      descriptor->exports().at(9), "x", "x", nullptr, nullptr);
+  CheckModuleEntry(
+      descriptor->exports().at(10), "foob", "foob", nullptr, nullptr);
+
+  CHECK_EQ(3, descriptor->special_imports().length());
+  CheckModuleEntry(
+      descriptor->special_imports().at(0), nullptr, nullptr, nullptr, "q.js");
+  CheckModuleEntry(
+      descriptor->special_imports().at(1), nullptr, "loo", nullptr, "bar.js");
+  CheckModuleEntry(
+      descriptor->special_imports().at(2), nullptr, "foob", nullptr, "bar.js");
+
+  CHECK_EQ(4, descriptor->regular_imports().size());
+  const i::ModuleDescriptor::ModuleEntry* entry;
+  entry = descriptor->regular_imports().find(
+      declarations->at(1)->proxy()->raw_name())->second;
+  CheckModuleEntry(entry, nullptr, "z", "q", "m.js");
+  entry = descriptor->regular_imports().find(
+      declarations->at(2)->proxy()->raw_name())->second;
+  CheckModuleEntry(entry, nullptr, "n", "default", "n.js");
+  entry = descriptor->regular_imports().find(
+      declarations->at(9)->proxy()->raw_name())->second;
+  CheckModuleEntry(entry, nullptr, "mm", "m", "m.js");
+  entry = descriptor->regular_imports().find(
+      declarations->at(10)->proxy()->raw_name())->second;
+  CheckModuleEntry(entry, nullptr, "aa", "aa", "m.js");
 }
 
 
@@ -6185,9 +6342,47 @@ TEST(DestructuringPositiveTests) {
     "[...rest]",
     "[a,b,...rest]",
     "[a,,...rest]",
+    "{ __proto__: x, __proto__: y}",
+    "{arguments: x}",
+    "{eval: x}",
     NULL};
   // clang-format on
   RunParserSyncTest(context_data, data, kSuccess);
+
+  // v8:5201
+  // TODO(lpy): The two test sets below should be merged once
+  // we fix https://bugs.chromium.org/p/v8/issues/detail?id=4577
+  {
+    const char* sloppy_context_data1[][2] = {
+      {"var ", " = {};"},
+      {"function f(", ") {}"},
+      {"function f(argument1, ", ") {}"},
+      {"var f = (", ") => {};"},
+      {"var f = (argument1,", ") => {};"},
+      {"try {} catch(", ") {}"},
+      {NULL, NULL}
+    };
+    const char* data1[] = {
+      "{eval}",
+      "{x: eval}",
+      "{eval = false}",
+      NULL
+    };
+    RunParserSyncTest(sloppy_context_data1, data1, kSuccess);
+
+    const char* sloppy_context_data2[][2] = {
+      {"var ", " = {};"},
+      {"try {} catch(", ") {}"},
+      {NULL, NULL}
+    };
+    const char* data2[] = {
+      "{arguments}",
+      "{x: arguments}",
+      "{arguments = false}",
+      NULL,
+    };
+    RunParserSyncTest(sloppy_context_data2, data2, kSuccess);
+  }
 }
 
 
@@ -6300,6 +6495,7 @@ TEST(DestructuringNegativeTests) {
 
   {  // Strict mode.
     const char* context_data[][2] = {
+        {"'use strict'; var ", " = {};"},
         {"'use strict'; let ", " = {};"},
         {"'use strict'; const ", " = {};"},
         {"'use strict'; function f(", ") {}"},
@@ -6308,10 +6504,18 @@ TEST(DestructuringNegativeTests) {
 
     // clang-format off
     const char* data[] = {
+      "[arguments]",
       "[eval]",
       "{ a : arguments }",
+      "{ a : eval }",
       "[public]",
       "{ x : private }",
+      "{ x : arguments }",
+      "{ x : eval }",
+      "{ arguments }",
+      "{ eval }",
+      "{ arguments = false }"
+      "{ eval = false }",
       NULL};
     // clang-format on
     RunParserSyncTest(context_data, data, kError);
@@ -6426,6 +6630,7 @@ TEST(DestructuringAssignmentPositiveTests) {
     "{ x : [ foo()[y] = 10 ] = {} }",
     "{ x : [ y.z = 10 ] = {} }",
     "{ x : [ y[z] = 10 ] = {} }",
+    "{ z : { __proto__: x, __proto__: y } = z }"
 
     "[ x ]",
     "[ foo().x ]",
@@ -6545,6 +6750,8 @@ TEST(DestructuringAssignmentPositiveTests) {
       "var x; (true ? { x = true } = {} : { x = false } = {})",
       "var q, x; (q, { x = 10 } = {});",
       "var { x = 10 } = { x = 20 } = {};",
+      "var { __proto__: x, __proto__: y } = {}",
+      "({ __proto__: x, __proto__: y } = {})",
       "var { x = 10 } = (o = { x = 20 } = {});",
       "var x; (({ x = 10 } = { x = 20 } = {}) => x)({})",
       NULL,
@@ -7683,34 +7890,34 @@ TEST(AsyncAwaitErrors) {
     "async function foo() { function await() {} }",
 
     // Henrique Ferreiro's bug (tm)
-    "(async function foo() { } foo => 1)",
-    "(async function foo() { } () => 1)",
-    "(async function foo() { } => 1)",
-    "(async function() { } foo => 1)",
+    "(async function foo1() { } foo2 => 1)",
+    "(async function foo3() { } () => 1)",
+    "(async function foo4() { } => 1)",
+    "(async function() { } foo5 => 1)",
     "(async function() { } () => 1)",
     "(async function() { } => 1)",
-    "(async.foo => 1)",
-    "(async.foo foo => 1)",
-    "(async.foo () => 1)",
-    "(async().foo => 1)",
-    "(async().foo foo => 1)",
-    "(async().foo () => 1)",
-    "(async['foo'] => 1)",
-    "(async['foo'] foo => 1)",
-    "(async['foo'] () => 1)",
-    "(async()['foo'] => 1)",
-    "(async()['foo'] foo => 1)",
-    "(async()['foo'] () => 1)",
-    "(async`foo` => 1)",
-    "(async`foo` foo => 1)",
-    "(async`foo` () => 1)",
-    "(async`foo`.bar => 1)",
-    "(async`foo`.bar foo => 1)",
-    "(async`foo`.bar () => 1)",
+    "(async.foo6 => 1)",
+    "(async.foo7 foo8 => 1)",
+    "(async.foo9 () => 1)",
+    "(async().foo10 => 1)",
+    "(async().foo11 foo12 => 1)",
+    "(async().foo13 () => 1)",
+    "(async['foo14'] => 1)",
+    "(async['foo15'] foo16 => 1)",
+    "(async['foo17'] () => 1)",
+    "(async()['foo18'] => 1)",
+    "(async()['foo19'] foo20 => 1)",
+    "(async()['foo21'] () => 1)",
+    "(async`foo22` => 1)",
+    "(async`foo23` foo24 => 1)",
+    "(async`foo25` () => 1)",
+    "(async`foo26`.bar27 => 1)",
+    "(async`foo28`.bar29 foo30 => 1)",
+    "(async`foo31`.bar32 () => 1)",
 
     // v8:5148 assert that errors are still thrown for calls that may have been
     // async functions
-    "async({ foo = 1 })",
+    "async({ foo33 = 1 })",
     NULL
   };
 

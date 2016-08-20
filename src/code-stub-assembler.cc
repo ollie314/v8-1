@@ -278,6 +278,10 @@ Node* CodeStubAssembler::Float64Trunc(Node* x) {
   return var_x.value();
 }
 
+Node* CodeStubAssembler::SmiShiftBitsConstant() {
+  return IntPtrConstant(kSmiShiftSize + kSmiTagSize);
+}
+
 Node* CodeStubAssembler::SmiFromWord32(Node* value) {
   value = ChangeInt32ToIntPtr(value);
   return WordShl(value, SmiShiftBitsConstant());
@@ -1392,17 +1396,21 @@ Node* CodeStubAssembler::AllocateJSArray(ElementsKind kind, Node* array_map,
 
 Node* CodeStubAssembler::AllocateFixedArray(ElementsKind kind,
                                             Node* capacity_node,
-                                            ParameterMode mode) {
-  Node* total_size = ElementOffsetFromIndex(capacity_node, kind, mode,
-                                            FixedArray::kHeaderSize);
+                                            ParameterMode mode,
+                                            AllocationFlags flags) {
+  Node* total_size = GetFixedAarrayAllocationSize(capacity_node, kind, mode);
 
   // Allocate both array and elements object, and initialize the JSArray.
-  Node* array = Allocate(total_size);
+  Node* array = Allocate(total_size, flags);
   Heap* heap = isolate()->heap();
   Handle<Map> map(IsFastDoubleElementsKind(kind)
                       ? heap->fixed_double_array_map()
                       : heap->fixed_array_map());
-  StoreMapNoWriteBarrier(array, HeapConstant(map));
+  if (flags & kPretenured) {
+    StoreObjectField(array, JSObject::kMapOffset, HeapConstant(map));
+  } else {
+    StoreMapNoWriteBarrier(array, HeapConstant(map));
+  }
   StoreObjectFieldNoWriteBarrier(
       array, FixedArray::kLengthOffset,
       mode == INTEGER_PARAMETERS ? SmiTag(capacity_node) : capacity_node);
@@ -1593,8 +1601,7 @@ Node* CodeStubAssembler::CheckAndGrowElementsCapacity(Node* context,
 
   // If size of the allocation for the new capacity doesn't fit in a page
   // that we can bump-pointer allocate from, fall back to the runtime,
-  int max_size = ((Page::kMaxRegularHeapObjectSize - FixedArray::kHeaderSize) >>
-                  ElementsKindToShiftSize(kind));
+  int max_size = FixedArrayBase::GetMaxLengthForNewSpaceAllocation(kind);
   GotoIf(UintPtrGreaterThanOrEqual(new_capacity,
                                    IntPtrOrSmiConstant(max_size, mode)),
          fail);
@@ -1820,8 +1827,9 @@ Node* CodeStubAssembler::ChangeUint32ToTagged(Node* value) {
       if_join(this);
   Variable var_result(this, MachineRepresentation::kTagged);
   // If {value} > 2^31 - 1, we need to store it in a HeapNumber.
-  Branch(Int32LessThan(value, Int32Constant(0)), &if_overflow,
+  Branch(Uint32LessThan(Int32Constant(Smi::kMaxValue), value), &if_overflow,
          &if_not_overflow);
+
   Bind(&if_not_overflow);
   {
     if (Is64()) {
@@ -3214,6 +3222,37 @@ compiler::Node* CodeStubAssembler::LoadTypeFeedbackVectorForStub() {
   return LoadObjectField(literals, LiteralsArray::kFeedbackVectorOffset);
 }
 
+void CodeStubAssembler::UpdateFeedback(compiler::Node* feedback,
+                                       compiler::Node* type_feedback_vector,
+                                       compiler::Node* slot_id) {
+  Label combine_feedback(this), record_feedback(this), end(this);
+
+  Node* previous_feedback =
+      LoadFixedArrayElement(type_feedback_vector, slot_id);
+  Node* is_uninitialized = WordEqual(
+      previous_feedback,
+      HeapConstant(TypeFeedbackVector::UninitializedSentinel(isolate())));
+  BranchIf(is_uninitialized, &record_feedback, &combine_feedback);
+
+  Bind(&record_feedback);
+  {
+    StoreFixedArrayElement(type_feedback_vector, slot_id, SmiTag(feedback),
+                           SKIP_WRITE_BARRIER);
+    Goto(&end);
+  }
+
+  Bind(&combine_feedback);
+  {
+    Node* untagged_previous_feedback = SmiUntag(previous_feedback);
+    Node* combined_feedback = Word32Or(untagged_previous_feedback, feedback);
+    StoreFixedArrayElement(type_feedback_vector, slot_id,
+                           SmiTag(combined_feedback), SKIP_WRITE_BARRIER);
+    Goto(&end);
+  }
+
+  Bind(&end);
+}
+
 compiler::Node* CodeStubAssembler::LoadReceiverMap(compiler::Node* receiver) {
   Variable var_receiver_map(this, MachineRepresentation::kTagged);
   // TODO(ishell): defer blocks when it works.
@@ -3426,6 +3465,30 @@ void CodeStubAssembler::TryProbeStubCache(
   }
 }
 
+Node* CodeStubAssembler::TryToIntptr(Node* key, Label* miss) {
+  Variable var_intptr_key(this, MachineType::PointerRepresentation());
+  Label done(this, &var_intptr_key), key_is_smi(this);
+  GotoIf(WordIsSmi(key), &key_is_smi);
+  // Try to convert a heap number to a Smi.
+  GotoUnless(WordEqual(LoadMap(key), HeapNumberMapConstant()), miss);
+  {
+    Node* value = LoadHeapNumberValue(key);
+    Node* int_value = RoundFloat64ToInt32(value);
+    GotoUnless(Float64Equal(value, ChangeInt32ToFloat64(int_value)), miss);
+    var_intptr_key.Bind(ChangeInt32ToIntPtr(int_value));
+    Goto(&done);
+  }
+
+  Bind(&key_is_smi);
+  {
+    var_intptr_key.Bind(SmiUntag(key));
+    Goto(&done);
+  }
+
+  Bind(&done);
+  return var_intptr_key.value();
+}
+
 // |is_jsarray| should be non-zero for JSArrays.
 void CodeStubAssembler::EmitBoundsCheck(Node* object, Node* elements,
                                         Node* intptr_key, Node* is_jsarray,
@@ -3548,71 +3611,75 @@ void CodeStubAssembler::EmitElementLoad(Node* object, Node* elements,
         LoadObjectField(elements, FixedTypedArrayBase::kBasePointerOffset);
     Node* backing_store = IntPtrAdd(external_pointer, base_pointer);
 
+    Label uint8_elements(this), int8_elements(this), uint16_elements(this),
+        int16_elements(this), uint32_elements(this), int32_elements(this),
+        float32_elements(this), float64_elements(this);
+    Label* elements_kind_labels[] = {
+        &uint8_elements,  &uint8_elements,   &int8_elements,
+        &uint16_elements, &int16_elements,   &uint32_elements,
+        &int32_elements,  &float32_elements, &float64_elements};
+    int32_t elements_kinds[] = {
+        UINT8_ELEMENTS,  UINT8_CLAMPED_ELEMENTS, INT8_ELEMENTS,
+        UINT16_ELEMENTS, INT16_ELEMENTS,         UINT32_ELEMENTS,
+        INT32_ELEMENTS,  FLOAT32_ELEMENTS,       FLOAT64_ELEMENTS};
     const int kTypedElementsKindCount = LAST_FIXED_TYPED_ARRAY_ELEMENTS_KIND -
                                         FIRST_FIXED_TYPED_ARRAY_ELEMENTS_KIND +
                                         1;
-    Label* elements_kind_labels[kTypedElementsKindCount];
-    int32_t elements_kinds[kTypedElementsKindCount];
-    for (int i = 0; i < kTypedElementsKindCount; i++) {
-      elements_kinds[i] = i + FIRST_FIXED_TYPED_ARRAY_ELEMENTS_KIND;
-      elements_kind_labels[i] = new Label(this);
-    }
+    DCHECK_EQ(kTypedElementsKindCount, arraysize(elements_kinds));
+    DCHECK_EQ(kTypedElementsKindCount, arraysize(elements_kind_labels));
     Switch(elements_kind, miss, elements_kinds, elements_kind_labels,
            static_cast<size_t>(kTypedElementsKindCount));
-
-    for (int i = 0; i < kTypedElementsKindCount; i++) {
-      ElementsKind kind = static_cast<ElementsKind>(elements_kinds[i]);
-      Bind(elements_kind_labels[i]);
-      Comment(ElementsKindToString(kind));
-      switch (kind) {
-        case UINT8_ELEMENTS:
-        case UINT8_CLAMPED_ELEMENTS:
-          Return(SmiTag(Load(MachineType::Uint8(), backing_store, key)));
-          break;
-        case INT8_ELEMENTS:
-          Return(SmiTag(Load(MachineType::Int8(), backing_store, key)));
-          break;
-        case UINT16_ELEMENTS: {
-          Node* index = WordShl(key, IntPtrConstant(1));
-          Return(SmiTag(Load(MachineType::Uint16(), backing_store, index)));
-          break;
-        }
-        case INT16_ELEMENTS: {
-          Node* index = WordShl(key, IntPtrConstant(1));
-          Return(SmiTag(Load(MachineType::Int16(), backing_store, index)));
-          break;
-        }
-        case UINT32_ELEMENTS: {
-          Node* index = WordShl(key, IntPtrConstant(2));
-          Node* element = Load(MachineType::Uint32(), backing_store, index);
-          Return(ChangeUint32ToTagged(element));
-          break;
-        }
-        case INT32_ELEMENTS: {
-          Node* index = WordShl(key, IntPtrConstant(2));
-          Node* element = Load(MachineType::Int32(), backing_store, index);
-          Return(ChangeInt32ToTagged(element));
-          break;
-        }
-        case FLOAT32_ELEMENTS: {
-          Node* index = WordShl(key, IntPtrConstant(2));
-          Node* element = Load(MachineType::Float32(), backing_store, index);
-          var_double_value->Bind(ChangeFloat32ToFloat64(element));
-          Goto(rebox_double);
-          break;
-        }
-        case FLOAT64_ELEMENTS: {
-          Node* index = WordShl(key, IntPtrConstant(3));
-          Node* element = Load(MachineType::Float64(), backing_store, index);
-          var_double_value->Bind(element);
-          Goto(rebox_double);
-          break;
-        }
-        default:
-          UNREACHABLE();
-      }
-      // Don't forget to clean up.
-      delete elements_kind_labels[i];
+    Bind(&uint8_elements);
+    {
+      Comment("UINT8_ELEMENTS");  // Handles UINT8_CLAMPED_ELEMENTS too.
+      Return(SmiTag(Load(MachineType::Uint8(), backing_store, key)));
+    }
+    Bind(&int8_elements);
+    {
+      Comment("INT8_ELEMENTS");
+      Return(SmiTag(Load(MachineType::Int8(), backing_store, key)));
+    }
+    Bind(&uint16_elements);
+    {
+      Comment("UINT16_ELEMENTS");
+      Node* index = WordShl(key, IntPtrConstant(1));
+      Return(SmiTag(Load(MachineType::Uint16(), backing_store, index)));
+    }
+    Bind(&int16_elements);
+    {
+      Comment("INT16_ELEMENTS");
+      Node* index = WordShl(key, IntPtrConstant(1));
+      Return(SmiTag(Load(MachineType::Int16(), backing_store, index)));
+    }
+    Bind(&uint32_elements);
+    {
+      Comment("UINT32_ELEMENTS");
+      Node* index = WordShl(key, IntPtrConstant(2));
+      Node* element = Load(MachineType::Uint32(), backing_store, index);
+      Return(ChangeUint32ToTagged(element));
+    }
+    Bind(&int32_elements);
+    {
+      Comment("INT32_ELEMENTS");
+      Node* index = WordShl(key, IntPtrConstant(2));
+      Node* element = Load(MachineType::Int32(), backing_store, index);
+      Return(ChangeInt32ToTagged(element));
+    }
+    Bind(&float32_elements);
+    {
+      Comment("FLOAT32_ELEMENTS");
+      Node* index = WordShl(key, IntPtrConstant(2));
+      Node* element = Load(MachineType::Float32(), backing_store, index);
+      var_double_value->Bind(ChangeFloat32ToFloat64(element));
+      Goto(rebox_double);
+    }
+    Bind(&float64_elements);
+    {
+      Comment("FLOAT64_ELEMENTS");
+      Node* index = WordShl(key, IntPtrConstant(3));
+      Node* element = Load(MachineType::Float64(), backing_store, index);
+      var_double_value->Bind(element);
+      Goto(rebox_double);
     }
   }
 }
@@ -3640,8 +3707,7 @@ void CodeStubAssembler::HandleLoadICHandlerCase(
           &property);
 
       Comment("element_load");
-      GotoUnless(WordIsSmi(p->name), miss);
-      Node* key = SmiUntag(p->name);
+      Node* key = TryToIntptr(p->name, miss);
       Node* elements = LoadElements(p->receiver);
       Node* is_jsarray =
           WordAnd(handler_word, IntPtrConstant(KeyedLoadIsJsArray::kMask));
@@ -3660,9 +3726,11 @@ void CodeStubAssembler::HandleLoadICHandlerCase(
             WordAnd(handler_word, IntPtrConstant(KeyedLoadConvertHole::kMask));
         GotoIf(WordEqual(convert_hole, IntPtrConstant(0)), miss);
         Node* protector_cell = LoadRoot(Heap::kArrayProtectorRootIndex);
+        DCHECK(isolate()->heap()->array_protector()->IsPropertyCell());
         GotoUnless(
-            WordEqual(LoadObjectField(protector_cell, Cell::kValueOffset),
-                      SmiConstant(Smi::FromInt(Isolate::kArrayProtectorValid))),
+            WordEqual(
+                LoadObjectField(protector_cell, PropertyCell::kValueOffset),
+                SmiConstant(Smi::FromInt(Isolate::kArrayProtectorValid))),
             miss);
         Return(UndefinedConstant());
       }
@@ -3937,7 +4005,7 @@ Node* CodeStubAssembler::CreateWeakCellInFeedbackVector(Node* feedback_vector,
                                                         Node* slot,
                                                         Node* value) {
   Node* size = IntPtrConstant(WeakCell::kSize);
-  Node* cell = Allocate(size, compiler::CodeAssembler::kPretenured);
+  Node* cell = Allocate(size, CodeStubAssembler::kPretenured);
 
   // Initialize the WeakCell.
   StoreObjectFieldRoot(cell, WeakCell::kMapOffset, Heap::kWeakCellMapRootIndex);

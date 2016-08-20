@@ -727,11 +727,14 @@ class TraceEventStatsTable {
     Reset();
     in_use_ = false;
   }
+
   TraceEventCallStatsTimer* current_timer() { return current_timer_; }
   bool InUse() { return in_use_; }
 
  private:
   std::stringstream buffer_;
+  std::unique_ptr<char[]> buffer_c_str_;
+  size_t len_ = 0;
   // Counter to track recursive time events.
   TraceEventCallStatsTimer* current_timer_ = nullptr;
   bool in_use_;

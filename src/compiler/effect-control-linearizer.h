@@ -130,6 +130,8 @@ class EffectControlLinearizer {
                                            Node* effect, Node* control);
   ValueEffectControl LowerCheckTaggedHole(Node* node, Node* frame_state,
                                           Node* effect, Node* control);
+  ValueEffectControl LowerConvertTaggedHoleToUndefined(Node* node, Node* effect,
+                                                       Node* control);
   ValueEffectControl LowerPlainPrimitiveToNumber(Node* node, Node* effect,
                                                  Node* control);
   ValueEffectControl LowerPlainPrimitiveToWord32(Node* node, Node* effect,
@@ -138,6 +140,8 @@ class EffectControlLinearizer {
                                                   Node* control);
   ValueEffectControl LowerEnsureWritableFastElements(Node* node, Node* effect,
                                                      Node* control);
+  ValueEffectControl LowerMaybeGrowFastElements(Node* node, Node* frame_state,
+                                                Node* effect, Node* control);
   ValueEffectControl LowerTransitionElementsKind(Node* node, Node* effect,
                                                  Node* control);
   ValueEffectControl LowerLoadTypedElement(Node* node, Node* effect,
@@ -158,10 +162,9 @@ class EffectControlLinearizer {
   ValueEffectControl BuildCheckedFloat64ToInt32(CheckForMinusZeroMode mode,
                                                 Node* value, Node* frame_state,
                                                 Node* effect, Node* control);
-  ValueEffectControl BuildCheckedHeapNumberOrOddballToFloat64(Node* value,
-                                                              Node* frame_state,
-                                                              Node* effect,
-                                                              Node* control);
+  ValueEffectControl BuildCheckedHeapNumberOrOddballToFloat64(
+      CheckTaggedInputMode mode, Node* value, Node* frame_state, Node* effect,
+      Node* control);
 
   Node* ChangeInt32ToSmi(Node* value);
   Node* ChangeUint32ToSmi(Node* value);

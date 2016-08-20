@@ -7,7 +7,9 @@
 
 #include "src/compiler.h"
 #include "src/compiler/bytecode-branch-analysis.h"
+#include "src/compiler/bytecode-loop-analysis.h"
 #include "src/compiler/js-graph.h"
+#include "src/compiler/type-hint-analyzer.h"
 #include "src/interpreter/bytecode-array-iterator.h"
 #include "src/interpreter/bytecode-flags.h"
 #include "src/interpreter/bytecodes.h"
@@ -133,6 +135,14 @@ class BytecodeGraphBuilder {
   void BuildForInNext();
   void BuildInvokeIntrinsic();
 
+  // Helper function to create binary operation hint from the recorded
+  // type feedback.
+  BinaryOperationHint GetBinaryOperationHint();
+
+  // Helper function to create an binary operation hint from the recorded
+  // type feedback in Inc/Dec handlers.
+  BinaryOperationHint GetBinaryOperationHintForIncDec();
+
   // Control flow plumbing.
   void BuildJump();
   void BuildConditionalJump(Node* condition);
@@ -147,6 +157,12 @@ class BytecodeGraphBuilder {
 
   // Simulates control flow that exits the function body.
   void MergeControlToLeaveFunction(Node* exit);
+
+  // Builds loop exit nodes for every exited loop between the current bytecode
+  // offset and {target_offset}.
+  void BuildLoopExitsForBranch(int target_offset);
+  void BuildLoopExitsForFunctionExit();
+  void BuildLoopExitsUntilLoop(int loop_offset);
 
   // Simulates entry and exit of exception handlers.
   void EnterAndExitExceptionHandlers(int current_offset);
@@ -203,6 +219,12 @@ class BytecodeGraphBuilder {
     branch_analysis_ = branch_analysis;
   }
 
+  const BytecodeLoopAnalysis* loop_analysis() const { return loop_analysis_; }
+
+  void set_loop_analysis(const BytecodeLoopAnalysis* loop_analysis) {
+    loop_analysis_ = loop_analysis;
+  }
+
 #define DECLARE_VISIT_BYTECODE(name, ...) void Visit##name();
   BYTECODE_LIST(DECLARE_VISIT_BYTECODE)
 #undef DECLARE_VISIT_BYTECODE
@@ -215,6 +237,7 @@ class BytecodeGraphBuilder {
   const FrameStateFunctionInfo* frame_state_function_info_;
   const interpreter::BytecodeArrayIterator* bytecode_iterator_;
   const BytecodeBranchAnalysis* branch_analysis_;
+  const BytecodeLoopAnalysis* loop_analysis_;
   Environment* environment_;
   BailoutId osr_ast_id_;
 

@@ -38,6 +38,14 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   CodeStubAssembler(Isolate* isolate, Zone* zone, int parameter_count,
                     Code::Flags flags, const char* name);
 
+  enum AllocationFlag : uint8_t {
+    kNone = 0,
+    kDoubleAlignment = 1,
+    kPretenured = 1 << 1
+  };
+
+  typedef base::Flags<AllocationFlag> AllocationFlags;
+
   enum ParameterMode { INTEGER_PARAMETERS, SMI_PARAMETERS };
 
   compiler::Node* BooleanMapConstant();
@@ -287,7 +295,8 @@ class CodeStubAssembler : public compiler::CodeAssembler {
 
   compiler::Node* AllocateFixedArray(ElementsKind kind,
                                      compiler::Node* capacity,
-                                     ParameterMode mode = INTEGER_PARAMETERS);
+                                     ParameterMode mode = INTEGER_PARAMETERS,
+                                     AllocationFlags flags = kNone);
 
   void FillFixedArrayWithHole(ElementsKind kind, compiler::Node* array,
                               compiler::Node* from_index,
@@ -496,6 +505,11 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   // Load type feedback vector from the stub caller's frame.
   compiler::Node* LoadTypeFeedbackVectorForStub();
 
+  // Update the type feedback vector.
+  void UpdateFeedback(compiler::Node* feedback,
+                      compiler::Node* type_feedback_vector,
+                      compiler::Node* slot_id);
+
   compiler::Node* LoadReceiverMap(compiler::Node* receiver);
 
   // Checks monomorphic case. Returns {feedback} entry of the vector.
@@ -548,12 +562,20 @@ class CodeStubAssembler : public compiler::CodeAssembler {
       compiler::Node* feedback_vector, compiler::Node* slot,
       compiler::Node* value);
 
+  compiler::Node* GetFixedAarrayAllocationSize(compiler::Node* element_count,
+                                               ElementsKind kind,
+                                               ParameterMode mode) {
+    return ElementOffsetFromIndex(element_count, kind, mode,
+                                  FixedArray::kHeaderSize);
+  }
+
  private:
   enum ElementSupport { kOnlyProperties, kSupportElements };
 
   void HandleLoadICHandlerCase(
       const LoadICParameters* p, compiler::Node* handler, Label* miss,
       ElementSupport support_elements = kOnlyProperties);
+  compiler::Node* TryToIntptr(compiler::Node* key, Label* miss);
   void EmitBoundsCheck(compiler::Node* object, compiler::Node* elements,
                        compiler::Node* intptr_key, compiler::Node* is_jsarray,
                        Label* miss);
@@ -575,8 +597,12 @@ class CodeStubAssembler : public compiler::CodeAssembler {
                                        compiler::Node* top_adddress,
                                        compiler::Node* limit_address);
 
+  compiler::Node* SmiShiftBitsConstant();
+
   static const int kElementLoopUnrollThreshold = 8;
 };
+
+DEFINE_OPERATORS_FOR_FLAGS(CodeStubAssembler::AllocationFlags);
 
 }  // namespace internal
 }  // namespace v8

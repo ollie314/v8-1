@@ -760,6 +760,7 @@ Handle<Context> Factory::NewNativeContext() {
 
 Handle<Context> Factory::NewScriptContext(Handle<JSFunction> function,
                                           Handle<ScopeInfo> scope_info) {
+  DCHECK_EQ(scope_info->scope_type(), SCRIPT_SCOPE);
   Handle<FixedArray> array =
       NewFixedArray(scope_info->ContextLength(), TENURED);
   array->set_map_no_write_barrier(*script_context_map());
@@ -784,6 +785,7 @@ Handle<ScriptContextTable> Factory::NewScriptContextTable() {
 
 
 Handle<Context> Factory::NewModuleContext(Handle<ScopeInfo> scope_info) {
+  DCHECK_EQ(scope_info->scope_type(), MODULE_SCOPE);
   Handle<FixedArray> array =
       NewFixedArray(scope_info->ContextLength(), TENURED);
   array->set_map_no_write_barrier(*module_context_map());
@@ -796,6 +798,7 @@ Handle<Context> Factory::NewModuleContext(Handle<ScopeInfo> scope_info) {
 
 Handle<Context> Factory::NewFunctionContext(int length,
                                             Handle<JSFunction> function) {
+  DCHECK(function->shared()->scope_info()->scope_type() == FUNCTION_SCOPE);
   DCHECK(length >= Context::MIN_CONTEXT_SLOTS);
   Handle<FixedArray> array = NewFixedArray(length);
   array->set_map_no_write_barrier(*function_context_map());
@@ -858,6 +861,7 @@ Handle<Context> Factory::NewWithContext(Handle<JSFunction> function,
 Handle<Context> Factory::NewBlockContext(Handle<JSFunction> function,
                                          Handle<Context> previous,
                                          Handle<ScopeInfo> scope_info) {
+  DCHECK_EQ(scope_info->scope_type(), BLOCK_SCOPE);
   Handle<FixedArray> array = NewFixedArray(scope_info->ContextLength());
   array->set_map_no_write_barrier(*block_context_map());
   Handle<Context> context = Handle<Context>::cast(array);
@@ -1443,6 +1447,7 @@ Handle<Code> Factory::NewCode(const CodeDesc& desc,
   code->set_source_position_table(*empty_byte_array(), SKIP_WRITE_BARRIER);
   code->set_prologue_offset(prologue_offset);
   code->set_constant_pool_offset(desc.instr_size - desc.constant_pool_size);
+  code->set_builtin_index(-1);
 
   if (code->kind() == Code::OPTIMIZED_FUNCTION) {
     code->set_marked_for_deoptimization(false);
@@ -2222,26 +2227,21 @@ Handle<DebugInfo> Factory::NewDebugInfo(Handle<SharedFunctionInfo> shared) {
   Handle<FixedArray> break_points(
       NewFixedArray(DebugInfo::kEstimatedNofBreakPointsInFunction));
 
+  // Make a copy of the bytecode array if available.
+  Handle<Object> maybe_debug_bytecode_array = undefined_value();
+  if (shared->HasBytecodeArray()) {
+    Handle<BytecodeArray> original(shared->bytecode_array());
+    maybe_debug_bytecode_array = CopyBytecodeArray(original);
+  }
+
   // Create and set up the debug info object. Debug info contains function, a
   // copy of the original code, the executing code and initial fixed array for
   // active break points.
   Handle<DebugInfo> debug_info =
       Handle<DebugInfo>::cast(NewStruct(DEBUG_INFO_TYPE));
   debug_info->set_shared(*shared);
-  if (shared->HasBytecodeArray()) {
-    // We need to create a copy, but delay since this may cause heap
-    // verification.
-    debug_info->set_abstract_code(AbstractCode::cast(shared->bytecode_array()));
-  } else {
-    debug_info->set_abstract_code(AbstractCode::cast(shared->code()));
-  }
+  debug_info->set_debug_bytecode_array(*maybe_debug_bytecode_array);
   debug_info->set_break_points(*break_points);
-  if (shared->HasBytecodeArray()) {
-    // Create a copy for debugging.
-    Handle<BytecodeArray> original(shared->bytecode_array());
-    Handle<BytecodeArray> copy = CopyBytecodeArray(original);
-    debug_info->set_abstract_code(AbstractCode::cast(*copy));
-  }
 
   // Link debug info to function.
   shared->set_debug_info(*debug_info);

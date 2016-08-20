@@ -22,21 +22,18 @@ v8::Platform* TraceEventHelper::GetCurrentPlatform() {
 }
 
 void CallStatsScopedTracer::AddEndTraceEvent() {
-  if (!has_parent_scope_) {
+  if (!has_parent_scope_ && p_data_->isolate) {
     v8::internal::tracing::AddTraceEvent(
         TRACE_EVENT_PHASE_END, p_data_->category_group_enabled, p_data_->name,
         v8::internal::tracing::kGlobalScope, v8::internal::tracing::kNoId,
-        TRACE_EVENT_FLAG_NONE, v8::internal::tracing::kNoId,
+        v8::internal::tracing::kNoId, TRACE_EVENT_FLAG_COPY,
         "runtime-call-stat",
-        p_data_->isolate
-            ? TRACE_STR_COPY(
-                  p_data_->isolate->trace_event_stats_table()->Dump())
-            : "");
+        TRACE_STR_COPY(p_data_->isolate->trace_event_stats_table()->Dump()));
   } else {
     v8::internal::tracing::AddTraceEvent(
         TRACE_EVENT_PHASE_END, p_data_->category_group_enabled, p_data_->name,
         v8::internal::tracing::kGlobalScope, v8::internal::tracing::kNoId,
-        TRACE_EVENT_FLAG_NONE, v8::internal::tracing::kNoId);
+        v8::internal::tracing::kNoId, TRACE_EVENT_FLAG_NONE);
   }
 }
 
@@ -76,6 +73,7 @@ void TraceEventStatsTable::Leave(Isolate* isolate,
 void TraceEventStatsTable::Reset() {
   in_use_ = true;
   current_timer_ = nullptr;
+
 #define RESET_COUNTER(name) this->name.Reset();
   FOR_EACH_MANUAL_COUNTER(RESET_COUNTER)
 #undef RESET_COUNTER
@@ -98,7 +96,7 @@ void TraceEventStatsTable::Reset() {
 }
 
 const char* TraceEventStatsTable::Dump() {
-  buffer_.str("");
+  buffer_.str(std::string());
   buffer_.clear();
   buffer_ << "{";
 #define DUMP_COUNTER(name) \
@@ -126,12 +124,15 @@ const char* TraceEventStatsTable::Dump() {
   FOR_EACH_HANDLER_COUNTER(DUMP_COUNTER)
 #undef DUMP_COUNTER
   buffer_ << "\"END\":[]}";
-  std::string buffer_str = buffer_.str();
+  const std::string& buffer_str = buffer_.str();
   size_t length = buffer_str.size();
-  char* buffer_c_str = new char[length + 1];
-  memcpy(buffer_c_str, buffer_str.c_str(), length + 1);
+  if (length > len_) {
+    buffer_c_str_.reset(new char[length + 1]);
+    len_ = length;
+  }
+  strncpy(buffer_c_str_.get(), buffer_str.c_str(), length + 1);
   in_use_ = false;
-  return buffer_c_str;
+  return buffer_c_str_.get();
 }
 
 }  // namespace tracing

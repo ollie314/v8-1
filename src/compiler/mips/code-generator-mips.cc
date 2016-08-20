@@ -1055,11 +1055,6 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ sub_s(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
                i.InputDoubleRegister(1));
       break;
-    case kMipsSubPreserveNanS:
-      __ SubNanPreservePayloadAndSign_s(i.OutputDoubleRegister(),
-                                        i.InputDoubleRegister(0),
-                                        i.InputDoubleRegister(1));
-      break;
     case kMipsMulS:
       // TODO(plind): add special case: right op is -1.0, see arm port.
       __ mul_s(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
@@ -1126,11 +1121,6 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ sub_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
                i.InputDoubleRegister(1));
       break;
-    case kMipsSubPreserveNanD:
-      __ SubNanPreservePayloadAndSign_d(i.OutputDoubleRegister(),
-                                        i.InputDoubleRegister(0),
-                                        i.InputDoubleRegister(1));
-      break;
     case kMipsMulD:
       // TODO(plind): add special case: right op is -1.0, see arm port.
       __ mul_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
@@ -1157,10 +1147,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ abs_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0));
       break;
     case kMipsNegS:
-      __ neg_s(i.OutputSingleRegister(), i.InputSingleRegister(0));
+      __ Neg_s(i.OutputSingleRegister(), i.InputSingleRegister(0));
       break;
     case kMipsNegD:
-      __ neg_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0));
+      __ Neg_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0));
       break;
     case kMipsSqrtD: {
       __ sqrt_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0));
@@ -1445,6 +1435,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       } else {
         __ sw(i.InputRegister(0), MemOperand(sp, i.InputInt32(1)));
       }
+      break;
+    }
+    case kMipsByteSwap32: {
+      __ ByteSwapSigned(i.OutputRegister(0), i.InputRegister(0), 4);
       break;
     }
     case kCheckedLoadInt8:

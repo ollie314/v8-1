@@ -7,17 +7,11 @@
 
 #include <memory>
 #include <queue>
-#include <set>
 
 #include "include/v8-debug.h"
 #include "src/allocation.h"
-#include "src/assert-scope.h"
-#include "src/base/accounting-allocator.h"
 #include "src/base/atomicops.h"
-#include "src/base/hashmap.h"
 #include "src/builtins/builtins.h"
-#include "src/cancelable-task.h"
-#include "src/compiler-dispatcher/optimizing-compile-dispatcher.h"
 #include "src/contexts.h"
 #include "src/date.h"
 #include "src/execution.h"
@@ -28,7 +22,6 @@
 #include "src/heap/heap.h"
 #include "src/messages.h"
 #include "src/regexp/regexp-stack.h"
-#include "src/runtime-profiler.h"
 #include "src/runtime/runtime.h"
 #include "src/tracing/trace-event.h"
 #include "src/zone.h"
@@ -36,6 +29,7 @@
 namespace v8 {
 
 namespace base {
+class AccountingAllocator;
 class RandomNumberGenerator;
 }
 
@@ -43,6 +37,7 @@ namespace internal {
 
 class BasicBlockProfiler;
 class Bootstrapper;
+class CancelableTaskManager;
 class CallInterfaceDescriptorData;
 class CodeAgingHelper;
 class CodeEventDispatcher;
@@ -70,7 +65,9 @@ class InlineRuntimeFunctionsTable;
 class InnerPointerToCodeCache;
 class Logger;
 class MaterializedObjectStore;
+class OptimizingCompileDispatcher;
 class RegExpStack;
+class RuntimeProfiler;
 class SaveContext;
 class StatsTable;
 class StringTracker;
@@ -1162,6 +1159,12 @@ class Isolate {
 
   void SetRAILMode(RAILMode rail_mode);
 
+  void IsolateInForegroundNotification();
+
+  void IsolateInBackgroundNotification();
+
+  bool IsIsolateInBackground() { return is_isolate_in_background_; }
+
  protected:
   explicit Isolate(bool enable_serializer);
   bool IsArrayOrObjectPrototype(Object* object);
@@ -1353,6 +1356,10 @@ class Isolate {
   // True if ES2015 tail call elimination feature is enabled.
   bool is_tail_call_elimination_enabled_;
 
+  // True if the isolate is in background. This flag is used
+  // to prioritize between memory usage and latency.
+  bool is_isolate_in_background_;
+
   // Time stamp at initialization.
   double time_millis_at_init_;
 
@@ -1492,9 +1499,9 @@ class SaveContext BASE_EMBEDDED {
   Isolate* isolate() { return isolate_; }
 
  private:
-  Isolate* isolate_;
+  Isolate* const isolate_;
   Handle<Context> context_;
-  SaveContext* prev_;
+  SaveContext* const prev_;
   Address c_entry_fp_;
 };
 

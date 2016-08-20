@@ -31,6 +31,12 @@ namespace wasm {
 #define TRACE(...)
 #endif
 
+#define CHECK_PROTOTYPE_OPCODE(flag)                   \
+  if (!FLAG_##flag) {                                  \
+    error("Invalid opcode (enable with --" #flag ")"); \
+    break;                                             \
+  }
+
 // An SsaEnv environment carries the current local variable renaming
 // as well as the current effect and control dependency in the TF graph.
 // It maintains a control state that tracks whether the environment
@@ -65,15 +71,52 @@ struct Value {
 // An entry on the control stack (i.e. if, block, loop).
 struct Control {
   const byte* pc;
-  int stack_depth;    // stack height at the beginning of the construct.
-  SsaEnv* end_env;    // end environment for the construct.
-  SsaEnv* false_env;  // false environment (only for if).
-  TFNode* node;       // result node for the construct.
-  LocalType type;     // result type for the construct.
-  bool is_loop;       // true if this is the inner label of a loop.
+  int stack_depth;         // stack height at the beginning of the construct.
+  SsaEnv* end_env;         // end environment for the construct.
+  SsaEnv* false_env;       // false environment (only for if).
+  SsaEnv* catch_env;       // catch environment (only for try with catch).
+  SsaEnv* finish_try_env;  // the environment where a try with finally lives.
+  TFNode* node;            // result node for the construct.
+  LocalType type;          // result type for the construct.
+  bool is_loop;            // true if this is the inner label of a loop.
 
-  bool is_if() { return *pc == kExprIf; }
-  bool is_block() { return *pc == kExprBlock; }
+  bool is_if() const { return *pc == kExprIf; }
+
+  bool is_try() const {
+    return *pc == kExprTryCatch || *pc == kExprTryCatchFinally ||
+           *pc == kExprTryFinally;
+  }
+
+  bool has_catch() const {
+    return *pc == kExprTryCatch || *pc == kExprTryCatchFinally;
+  }
+
+  bool has_finally() const {
+    return *pc == kExprTryCatchFinally || *pc == kExprTryFinally;
+  }
+
+  // Named constructors.
+  static Control Block(const byte* pc, int stack_depth, SsaEnv* end_env) {
+    return {pc,      stack_depth, end_env, nullptr, nullptr,
+            nullptr, nullptr,     kAstEnd, false};
+  }
+
+  static Control If(const byte* pc, int stack_depth, SsaEnv* end_env,
+                    SsaEnv* false_env) {
+    return {pc,      stack_depth, end_env,  false_env, nullptr,
+            nullptr, nullptr,     kAstStmt, false};
+  }
+
+  static Control Loop(const byte* pc, int stack_depth, SsaEnv* end_env) {
+    return {pc,      stack_depth, end_env, nullptr, nullptr,
+            nullptr, nullptr,     kAstEnd, true};
+  }
+
+  static Control Try(const byte* pc, int stack_depth, SsaEnv* end_env,
+                     SsaEnv* catch_env, SsaEnv* finish_try_env) {
+    return {pc,      stack_depth, end_env, nullptr, catch_env, finish_try_env,
+            nullptr, kAstEnd,     false};
+  }
 };
 
 // Macros that build nodes only if there is a graph and the current SSA
@@ -192,23 +235,6 @@ class WasmDecoder : public Decoder {
     return false;
   }
 
-  inline bool Complete(const byte* pc, JITSingleFunctionOperand& operand) {
-    ModuleEnv* m = module_;
-    if (m && m->module && operand.sig_index < m->module->signatures.size()) {
-      operand.sig = m->module->signatures[operand.sig_index];
-      return true;
-    }
-    return false;
-  }
-
-  inline bool Validate(const byte* pc, JITSingleFunctionOperand& operand) {
-    if (Complete(pc, operand)) {
-      return true;
-    }
-    error(pc, pc + 1, "invalid signature index");
-    return false;
-  }
-
   inline bool Validate(const byte* pc, BreakDepthOperand& operand,
                        ZoneVector<Control>& control) {
     if (operand.arity > 1) {
@@ -261,12 +287,18 @@ class WasmDecoder : public Decoder {
       case kExprUnreachable:
       case kExprEnd:
       case kExprBlock:
+      case kExprThrow:
+      case kExprTryCatch:
+      case kExprTryCatchFinally:
+      case kExprTryFinally:
+      case kExprFinally:
       case kExprLoop:
         return 0;
 
       case kExprSetGlobal:
       case kExprSetLocal:
       case kExprElse:
+      case kExprCatch:
         return 1;
 
       case kExprBr: {
@@ -303,8 +335,6 @@ class WasmDecoder : public Decoder {
         ReturnArityOperand operand(this, pc);
         return operand.arity;
       }
-      case kExprJITSingleFunction:
-        return 3;
 
 #define DECLARE_OPCODE_CASE(name, opcode, sig) \
   case kExpr##name:                            \
@@ -358,12 +388,9 @@ class WasmDecoder : public Decoder {
         return 1 + operand.length;
       }
 
-      case kExprJITSingleFunction: {
-        JITSingleFunctionOperand operand(this, pc);
-        return 1 + operand.length;
-      }
       case kExprSetLocal:
-      case kExprGetLocal: {
+      case kExprGetLocal:
+      case kExprCatch: {
         LocalIndexOperand operand(this, pc);
         return 1 + operand.length;
       }
@@ -532,6 +559,9 @@ class WasmFullDecoder : public WasmDecoder {
     ssa_env->control = start;
     ssa_env->effect = start;
     SetEnv("initial", ssa_env);
+    if (builder_) {
+      builder_->StackCheck(position());
+    }
   }
 
   TFNode* DefaultValue(LocalType type) {
@@ -649,16 +679,134 @@ class WasmFullDecoder : public WasmDecoder {
             SetEnv("block:start", Steal(break_env));
             break;
           }
+          case kExprThrow: {
+            CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
+            Pop(0, kAstI32);
+
+            // TODO(jpp): start exception propagation.
+            break;
+          }
+          case kExprTryCatch: {
+            CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
+            SsaEnv* outer_env = ssa_env_;
+            SsaEnv* try_env = Steal(outer_env);
+            SsaEnv* catch_env = Split(try_env);
+            PushTry(outer_env, catch_env, nullptr);
+            SetEnv("try_catch:start", try_env);
+            break;
+          }
+          case kExprTryCatchFinally: {
+            CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
+            SsaEnv* outer_env = ssa_env_;
+            SsaEnv* try_env = Steal(outer_env);
+            SsaEnv* catch_env = Split(try_env);
+            SsaEnv* finally_env = Split(try_env);
+            PushTry(finally_env, catch_env, outer_env);
+            SetEnv("try_catch_finally:start", try_env);
+            break;
+          }
+          case kExprTryFinally: {
+            CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
+            SsaEnv* outer_env = ssa_env_;
+            SsaEnv* try_env = Steal(outer_env);
+            SsaEnv* finally_env = Split(outer_env);
+            PushTry(finally_env, nullptr, outer_env);
+            SetEnv("try_finally:start", try_env);
+            break;
+          }
+          case kExprCatch: {
+            CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
+            LocalIndexOperand operand(this, pc_);
+            len = 1 + operand.length;
+
+            if (control_.empty()) {
+              error(pc_, "catch does not match a any try");
+              break;
+            }
+
+            Control* c = &control_.back();
+            if (!c->has_catch()) {
+              error(pc_, "catch does not match a try with catch");
+              break;
+            }
+
+            if (c->catch_env == nullptr) {
+              error(pc_, "catch already present for try with catch");
+              break;
+            }
+
+            Goto(ssa_env_, c->end_env);
+
+            SsaEnv* catch_env = c->catch_env;
+            c->catch_env = nullptr;
+            SetEnv("catch:begin", catch_env);
+
+            if (Validate(pc_, operand)) {
+              // TODO(jpp): figure out how thrown value is propagated. It is
+              // unlikely to be a value on the stack.
+              if (ssa_env_->locals) {
+                ssa_env_->locals[operand.index] = nullptr;
+              }
+            }
+
+            PopUpTo(c->stack_depth);
+
+            break;
+          }
+          case kExprFinally: {
+            CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
+            if (control_.empty()) {
+              error(pc_, "finally does not match a any try");
+              break;
+            }
+
+            Control* c = &control_.back();
+            if (c->has_catch() && c->catch_env != nullptr) {
+              error(pc_, "missing catch for try with catch and finally");
+              break;
+            }
+
+            if (!c->has_finally()) {
+              error(pc_, "finally does not match a try with finally");
+              break;
+            }
+
+            if (c->finish_try_env == nullptr) {
+              error(pc_, "finally already present for try with finally");
+              break;
+            }
+
+            // ssa_env_ is either the env for either the try or the catch, but
+            // it does not matter: either way we need to direct the control flow
+            // to the end_env, which is the env for the finally.
+            // c->finish_try_env is the the environment enclosing the try block.
+            Goto(ssa_env_, c->end_env);
+
+            PopUpTo(c->stack_depth);
+
+            // The current environment becomes end_env, and finish_try_env
+            // becomes the new end_env. This ensures that any control flow
+            // leaving a try block up to now will do so by branching to the
+            // finally block. Setting the end_env to be finish_try_env ensures
+            // that kExprEnd below can handle the try block as it would any
+            // other block construct.
+            SsaEnv* finally_env = c->end_env;
+            c->end_env = c->finish_try_env;
+            SetEnv("finally:begin", finally_env);
+            c->finish_try_env = nullptr;
+
+            break;
+          }
           case kExprLoop: {
             // The break environment is the outer environment.
             SsaEnv* break_env = ssa_env_;
             PushBlock(break_env);
-            SsaEnv* cont_env = Steal(break_env);
+            SsaEnv* finish_try_env = Steal(break_env);
             // The continue environment is the inner environment.
-            PrepareForLoop(pc_, cont_env);
-            SetEnv("loop:start", Split(cont_env));
+            PrepareForLoop(pc_, finish_try_env);
+            SetEnv("loop:start", Split(finish_try_env));
             ssa_env_->SetNotMerged();
-            PushLoop(cont_env);
+            PushLoop(finish_try_env);
             break;
           }
           case kExprIf: {
@@ -704,14 +852,13 @@ class WasmFullDecoder : public WasmDecoder {
             }
             const char* name = "block:end";
             Control* c = &control_.back();
+            Value val = PopUpTo(c->stack_depth);
             if (c->is_loop) {
               // Loops always push control in pairs.
               control_.pop_back();
               c = &control_.back();
               name = "loop:end";
-            }
-            Value val = PopUpTo(c->stack_depth);
-            if (c->is_if()) {
+            } else if (c->is_if()) {
               if (c->false_env != nullptr) {
                 // End the true branch of a one-armed if.
                 Goto(c->false_env, c->end_env);
@@ -721,7 +868,24 @@ class WasmFullDecoder : public WasmDecoder {
                 // End the false branch of a two-armed if.
                 name = "if_else:merge";
               }
+            } else if (c->is_try()) {
+              name = "try:end";
+
+              // try blocks do not yield a value.
+              val = {val.pc, nullptr, kAstStmt};
+
+              // validate that catch/finally were seen.
+              if (c->catch_env != nullptr) {
+                error(pc_, "missing catch in try with catch");
+                break;
+              }
+
+              if (c->finish_try_env != nullptr) {
+                error(pc_, "missing finally in try with finally");
+                break;
+              }
             }
+
             if (ssa_env_->go()) {
               MergeInto(c->end_env, &c->node, &c->type, val);
             }
@@ -1019,28 +1183,12 @@ class WasmFullDecoder : public WasmDecoder {
             break;
           }
           case kSimdPrefix: {
-            if (FLAG_wasm_simd_prototype) {
-              len++;
-              byte simd_index = *(pc_ + 1);
-              opcode = static_cast<WasmOpcode>(opcode << 8 | simd_index);
-              DecodeSimdOpcode(opcode);
-              break;
-            }
-          }
-          case kExprJITSingleFunction: {
-            if (FLAG_wasm_jit_prototype) {
-              JITSingleFunctionOperand operand(this, pc_);
-              if (Validate(pc_, operand)) {
-                Value index = Pop(2, kAstI32);
-                Value length = Pop(1, kAstI32);
-                Value base = Pop(0, kAstI32);
-                TFNode* call =
-                    BUILD(JITSingleFunction, base.node, length.node, index.node,
-                          operand.sig_index, operand.sig, position());
-                Push(kAstI32, call);
-                break;
-              }
-            }
+            CHECK_PROTOTYPE_OPCODE(wasm_simd_prototype);
+            len++;
+            byte simd_index = *(pc_ + 1);
+            opcode = static_cast<WasmOpcode>(opcode << 8 | simd_index);
+            DecodeSimdOpcode(opcode);
+            break;
           }
           default:
             error("Invalid opcode");
@@ -1111,21 +1259,24 @@ class WasmFullDecoder : public WasmDecoder {
   }
 
   void PushBlock(SsaEnv* end_env) {
-    int stack_depth = static_cast<int>(stack_.size());
-    control_.push_back(
-        {pc_, stack_depth, end_env, nullptr, nullptr, kAstEnd, false});
+    const int stack_depth = static_cast<int>(stack_.size());
+    control_.emplace_back(Control::Block(pc_, stack_depth, end_env));
   }
 
   void PushLoop(SsaEnv* end_env) {
-    int stack_depth = static_cast<int>(stack_.size());
-    control_.push_back(
-        {pc_, stack_depth, end_env, nullptr, nullptr, kAstEnd, true});
+    const int stack_depth = static_cast<int>(stack_.size());
+    control_.emplace_back(Control::Loop(pc_, stack_depth, end_env));
   }
 
   void PushIf(SsaEnv* end_env, SsaEnv* false_env) {
-    int stack_depth = static_cast<int>(stack_.size());
-    control_.push_back(
-        {pc_, stack_depth, end_env, false_env, nullptr, kAstStmt, false});
+    const int stack_depth = static_cast<int>(stack_.size());
+    control_.emplace_back(Control::If(pc_, stack_depth, end_env, false_env));
+  }
+
+  void PushTry(SsaEnv* end_env, SsaEnv* catch_env, SsaEnv* finish_try_env) {
+    const int stack_depth = static_cast<int>(stack_.size());
+    control_.emplace_back(
+        Control::Try(pc_, stack_depth, end_env, catch_env, finish_try_env));
   }
 
   int DecodeLoadMem(LocalType type, MachineType mem_type) {
@@ -1479,6 +1630,9 @@ class WasmFullDecoder : public WasmDecoder {
         case kExprLoop:
         case kExprIf:
         case kExprBlock:
+        case kExprTryCatch:
+        case kExprTryCatchFinally:
+        case kExprTryFinally:
           depth++;
           DCHECK_EQ(1, OpcodeLength(pc));
           break;
@@ -1627,6 +1781,9 @@ bool PrintAst(base::AccountingAllocator* allocator, const FunctionBody& body,
       case kExprElse:
       case kExprLoop:
       case kExprBlock:
+      case kExprTryCatch:
+      case kExprTryCatchFinally:
+      case kExprTryFinally:
         os << "   // @" << i.pc_offset();
         control_depth++;
         break;
@@ -1674,13 +1831,6 @@ bool PrintAst(base::AccountingAllocator* allocator, const FunctionBody& body,
           os << "   // function #" << operand.index << ": " << *operand.sig;
         } else {
           os << " // arity=" << operand.arity << " function #" << operand.index;
-        }
-        break;
-      }
-      case kExprJITSingleFunction: {
-        JITSingleFunctionOperand operand(&i, i.pc());
-        if (decoder.Complete(i.pc(), operand)) {
-          os << "   // sig #" << operand.sig_index << ": " << *operand.sig;
         }
         break;
       }

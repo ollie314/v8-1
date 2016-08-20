@@ -66,9 +66,9 @@ bool FullCodeGenerator::MakeCode(CompilationInfo* info) {
   code->set_profiler_ticks(0);
   code->set_back_edge_table_offset(table_offset);
   Handle<ByteArray> source_positions =
-      cgen.source_position_table_builder_.ToSourcePositionTable();
+      cgen.source_position_table_builder_.ToSourcePositionTable(
+          isolate, Handle<AbstractCode>::cast(code));
   code->set_source_position_table(*source_positions);
-  cgen.source_position_table_builder_.EndJitLogging(AbstractCode::cast(*code));
   CodeGenerator::PrintCode(code, info);
   info->SetCode(code);
 
@@ -1070,6 +1070,7 @@ void FullCodeGenerator::VisitWithStatement(WithStatement* stmt) {
   Callable callable = CodeFactory::ToObject(isolate());
   __ Move(callable.descriptor().GetRegisterParameter(0), result_register());
   __ Call(callable.code(), RelocInfo::CODE_TARGET);
+  RestoreContext();
   PrepareForBailoutForId(stmt->ToObjectId(), BailoutState::TOS_REGISTER);
   PushOperand(result_register());
   PushFunctionArgumentForContextAllocation();
@@ -1563,7 +1564,7 @@ void FullCodeGenerator::VisitCall(Call* expr) {
                           ? "[ TailCall"
                           : "[ Call");
   Expression* callee = expr->expression();
-  Call::CallType call_type = expr->GetCallType(isolate());
+  Call::CallType call_type = expr->GetCallType();
 
   switch (call_type) {
     case Call::POSSIBLY_EVAL_CALL:

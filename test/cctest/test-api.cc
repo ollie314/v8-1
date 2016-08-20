@@ -23959,6 +23959,24 @@ TEST(StreamingScriptConstantArray) {
   RunStreamingTest(chunks);
 }
 
+TEST(StreamingScriptEvalShadowing) {
+  // When run with Ignition, tests that the streaming parser canonicalizes
+  // handles so the Variable::is_possibly_eval() is correct.
+  const char* chunk1 =
+      "(function() {\n"
+      "  var y = 2;\n"
+      "  return (function() {\n"
+      "    eval('var y = 13;');\n"
+      "    function g() {\n"
+      "      return y\n"
+      "    }\n"
+      "    return g();\n"
+      "  })()\n"
+      "})()\n";
+  const char* chunks[] = {chunk1, NULL};
+  RunStreamingTest(chunks);
+}
+
 TEST(StreamingBiggerScript) {
   const char* chunk1 =
       "function foo() {\n"
@@ -25348,6 +25366,7 @@ class MemoryPressureThread : public v8::base::Thread {
 };
 
 TEST(MemoryPressure) {
+  if (v8::internal::FLAG_optimize_for_size) return;
   v8::Isolate* isolate = CcTest::isolate();
   WeakCallCounter counter(1234);
 

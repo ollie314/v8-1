@@ -53,11 +53,13 @@
 #include "src/prototype.h"
 #include "src/regexp/jsregexp.h"
 #include "src/safepoint-table.h"
+#include "src/snapshot/code-serializer.h"
 #include "src/source-position-table.h"
 #include "src/string-builder.h"
 #include "src/string-search.h"
 #include "src/string-stream.h"
 #include "src/utils.h"
+#include "src/wasm/wasm-module.h"
 #include "src/zone.h"
 
 #ifdef ENABLE_DISASSEMBLER
@@ -381,6 +383,18 @@ MaybeHandle<Object> Object::ToLength(Isolate* isolate, Handle<Object> input) {
   return isolate->factory()->NewNumber(len);
 }
 
+// static
+MaybeHandle<Object> Object::ToIndex(Isolate* isolate, Handle<Object> input,
+                                    MessageTemplate::Template error_index) {
+  if (input->IsUndefined(isolate)) return isolate->factory()->NewNumber(0.0);
+  ASSIGN_RETURN_ON_EXCEPTION(isolate, input, ToNumber(input), Object);
+  double len = DoubleToInteger(input->Number()) + 0.0;
+  auto js_len = isolate->factory()->NewNumber(len);
+  if (len < 0.0 || len > kMaxSafeInteger) {
+    THROW_NEW_ERROR(isolate, NewRangeError(error_index, js_len), Object);
+  }
+  return js_len;
+}
 
 bool Object::BooleanValue() {
   if (IsSmi()) return Smi::cast(this)->value() != 0;
@@ -1344,8 +1358,8 @@ MaybeHandle<Object> Object::GetPropertyWithAccessor(LookupIterator* it) {
   Handle<Object> getter(AccessorPair::cast(*structure)->getter(), isolate);
   if (getter->IsFunctionTemplateInfo()) {
     return Builtins::InvokeApiFunction(
-        isolate, Handle<FunctionTemplateInfo>::cast(getter), receiver, 0,
-        nullptr);
+        isolate, false, Handle<FunctionTemplateInfo>::cast(getter), receiver, 0,
+        nullptr, isolate->factory()->undefined_value());
   } else if (getter->IsCallable()) {
     // TODO(rossberg): nicer would be to cast to some JSCallable here...
     return Object::GetPropertyWithDefinedGetter(
@@ -1427,8 +1441,9 @@ Maybe<bool> Object::SetPropertyWithAccessor(LookupIterator* it,
     Handle<Object> argv[] = {value};
     RETURN_ON_EXCEPTION_VALUE(
         isolate, Builtins::InvokeApiFunction(
-                     isolate, Handle<FunctionTemplateInfo>::cast(setter),
-                     receiver, arraysize(argv), argv),
+                     isolate, false, Handle<FunctionTemplateInfo>::cast(setter),
+                     receiver, arraysize(argv), argv,
+                     isolate->factory()->undefined_value()),
         Nothing<bool>());
     return Just(true);
   } else if (setter->IsCallable()) {
@@ -2152,6 +2167,7 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
   Heap* heap = GetHeap();
   bool is_one_byte = this->IsOneByteRepresentation();
   bool is_internalized = this->IsInternalizedString();
+  bool has_pointers = this->IsConsString() || this->IsSlicedString();
 
   // Morph the string to an external string by replacing the map and
   // reinitializing the fields.  This won't work if the space the existing
@@ -2180,6 +2196,9 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
   int new_size = this->SizeFromMap(new_map);
   heap->CreateFillerObjectAt(this->address() + new_size, size - new_size,
                              ClearRecordedSlots::kNo);
+  if (has_pointers) {
+    heap->ClearRecordedSlotRange(this->address(), this->address() + new_size);
+  }
 
   // We are storing the new map using release store after creating a filler for
   // the left-over space to avoid races with the sweeper thread.
@@ -2220,6 +2239,7 @@ bool String::MakeExternal(v8::String::ExternalOneByteStringResource* resource) {
   if (size < ExternalString::kShortSize) return false;
   Heap* heap = GetHeap();
   bool is_internalized = this->IsInternalizedString();
+  bool has_pointers = this->IsConsString() || this->IsSlicedString();
 
   // Morph the string to an external string by replacing the map and
   // reinitializing the fields.  This won't work if the space the existing
@@ -2242,6 +2262,9 @@ bool String::MakeExternal(v8::String::ExternalOneByteStringResource* resource) {
   int new_size = this->SizeFromMap(new_map);
   heap->CreateFillerObjectAt(this->address() + new_size, size - new_size,
                              ClearRecordedSlots::kNo);
+  if (has_pointers) {
+    heap->ClearRecordedSlotRange(this->address(), this->address() + new_size);
+  }
 
   // We are storing the new map using release store after creating a filler for
   // the left-over space to avoid races with the sweeper thread.
@@ -9140,22 +9163,15 @@ Handle<Map> Map::AsLanguageMode(Handle<Map> initial_map,
   // using |strict_function_transition_symbol| as a key.
   if (language_mode == SLOPPY) return initial_map;
   Isolate* isolate = initial_map->GetIsolate();
-  Factory* factory = isolate->factory();
-  Handle<Symbol> transition_symbol;
 
   int map_index = Context::FunctionMapIndex(language_mode, kind);
   Handle<Map> function_map(
       Map::cast(isolate->native_context()->get(map_index)));
 
-  STATIC_ASSERT(LANGUAGE_END == 3);
-  switch (language_mode) {
-    case STRICT:
-      transition_symbol = factory->strict_function_transition_symbol();
-      break;
-    default:
-      UNREACHABLE();
-      break;
-  }
+  STATIC_ASSERT(LANGUAGE_END == 2);
+  DCHECK_EQ(STRICT, language_mode);
+  Handle<Symbol> transition_symbol =
+      isolate->factory()->strict_function_transition_symbol();
   Map* maybe_transition =
       TransitionArray::SearchSpecial(*initial_map, *transition_symbol);
   if (maybe_transition != NULL) {
@@ -15705,6 +15721,10 @@ Maybe<bool> JSObject::HasRealNamedCallbackProperty(Handle<JSObject> object,
                                : Nothing<bool>();
 }
 
+int FixedArrayBase::GetMaxLengthForNewSpaceAllocation(ElementsKind kind) {
+  return ((Page::kMaxRegularHeapObjectSize - FixedArrayBase::kHeaderSize) >>
+          ElementsKindToShiftSize(kind));
+}
 
 void FixedArray::SwapPairs(FixedArray* numbers, int i, int j) {
   Object* temp = get(i);
@@ -15993,7 +16013,7 @@ class StringSharedKey : public HashTableKey {
       // collection.
       Script* script(Script::cast(shared->script()));
       hash ^= String::cast(script->source())->Hash();
-      STATIC_ASSERT(LANGUAGE_END == 3);
+      STATIC_ASSERT(LANGUAGE_END == 2);
       if (is_strict(language_mode)) hash ^= 0x8000;
       hash += scope_position;
     }
@@ -18455,10 +18475,10 @@ bool JSWeakCollection::Delete(Handle<JSWeakCollection> weak_collection,
   return was_present;
 }
 
-// Check if there is a break point at this code offset.
-bool DebugInfo::HasBreakPoint(int code_offset) {
+// Check if there is a break point at this source position.
+bool DebugInfo::HasBreakPoint(int source_position) {
   // Get the break point info object for this code offset.
-  Object* break_point_info = GetBreakPointInfo(code_offset);
+  Object* break_point_info = GetBreakPointInfo(source_position);
 
   // If there is no break point info object or no break points in the break
   // point info object there is no break point at this code offset.
@@ -18466,34 +18486,46 @@ bool DebugInfo::HasBreakPoint(int code_offset) {
   return BreakPointInfo::cast(break_point_info)->GetBreakPointCount() > 0;
 }
 
-// Get the break point info object for this code offset.
-Object* DebugInfo::GetBreakPointInfo(int code_offset) {
-  // Find the index of the break point info object for this code offset.
-  int index = GetBreakPointInfoIndex(code_offset);
-
-  // Return the break point info object if any.
-  if (index == kNoBreakPointInfo) return GetHeap()->undefined_value();
-  return BreakPointInfo::cast(break_points()->get(index));
+// Get the break point info object for this source position.
+Object* DebugInfo::GetBreakPointInfo(int source_position) {
+  Isolate* isolate = GetIsolate();
+  if (!break_points()->IsUndefined(isolate)) {
+    for (int i = 0; i < break_points()->length(); i++) {
+      if (!break_points()->get(i)->IsUndefined(isolate)) {
+        BreakPointInfo* break_point_info =
+            BreakPointInfo::cast(break_points()->get(i));
+        if (break_point_info->source_position() == source_position) {
+          return break_point_info;
+        }
+      }
+    }
+  }
+  return isolate->heap()->undefined_value();
 }
 
-// Clear a break point at the specified code offset.
-void DebugInfo::ClearBreakPoint(Handle<DebugInfo> debug_info, int code_offset,
+bool DebugInfo::ClearBreakPoint(Handle<DebugInfo> debug_info,
                                 Handle<Object> break_point_object) {
   Isolate* isolate = debug_info->GetIsolate();
-  Handle<Object> break_point_info(debug_info->GetBreakPointInfo(code_offset),
-                                  isolate);
-  if (break_point_info->IsUndefined(isolate)) return;
-  BreakPointInfo::ClearBreakPoint(
-      Handle<BreakPointInfo>::cast(break_point_info),
-      break_point_object);
+  if (debug_info->break_points()->IsUndefined(isolate)) return false;
+
+  for (int i = 0; i < debug_info->break_points()->length(); i++) {
+    if (debug_info->break_points()->get(i)->IsUndefined(isolate)) continue;
+    Handle<BreakPointInfo> break_point_info = Handle<BreakPointInfo>(
+        BreakPointInfo::cast(debug_info->break_points()->get(i)), isolate);
+    if (BreakPointInfo::HasBreakPointObject(break_point_info,
+                                            break_point_object)) {
+      BreakPointInfo::ClearBreakPoint(break_point_info, break_point_object);
+      return true;
+    }
+  }
+  return false;
 }
 
-void DebugInfo::SetBreakPoint(Handle<DebugInfo> debug_info, int code_offset,
-                              int source_position, int statement_position,
+void DebugInfo::SetBreakPoint(Handle<DebugInfo> debug_info, int source_position,
                               Handle<Object> break_point_object) {
   Isolate* isolate = debug_info->GetIsolate();
-  Handle<Object> break_point_info(debug_info->GetBreakPointInfo(code_offset),
-                                  isolate);
+  Handle<Object> break_point_info(
+      debug_info->GetBreakPointInfo(source_position), isolate);
   if (!break_point_info->IsUndefined(isolate)) {
     BreakPointInfo::SetBreakPoint(
         Handle<BreakPointInfo>::cast(break_point_info),
@@ -18503,6 +18535,7 @@ void DebugInfo::SetBreakPoint(Handle<DebugInfo> debug_info, int code_offset,
 
   // Adding a new break point for a code offset which did not have any
   // break points before. Try to find a free slot.
+  static const int kNoBreakPointInfo = -1;
   int index = kNoBreakPointInfo;
   for (int i = 0; i < debug_info->break_points()->length(); i++) {
     if (debug_info->break_points()->get(i)->IsUndefined(isolate)) {
@@ -18530,18 +18563,16 @@ void DebugInfo::SetBreakPoint(Handle<DebugInfo> debug_info, int code_offset,
   // Allocate new BreakPointInfo object and set the break point.
   Handle<BreakPointInfo> new_break_point_info = Handle<BreakPointInfo>::cast(
       isolate->factory()->NewStruct(BREAK_POINT_INFO_TYPE));
-  new_break_point_info->set_code_offset(code_offset);
   new_break_point_info->set_source_position(source_position);
-  new_break_point_info->set_statement_position(statement_position);
   new_break_point_info->set_break_point_objects(
       isolate->heap()->undefined_value());
   BreakPointInfo::SetBreakPoint(new_break_point_info, break_point_object);
   debug_info->break_points()->set(index, *new_break_point_info);
 }
 
-// Get the break point objects for a code offset.
-Handle<Object> DebugInfo::GetBreakPointObjects(int code_offset) {
-  Object* break_point_info = GetBreakPointInfo(code_offset);
+// Get the break point objects for a source position.
+Handle<Object> DebugInfo::GetBreakPointObjects(int source_position) {
+  Object* break_point_info = GetBreakPointInfo(source_position);
   Isolate* isolate = GetIsolate();
   if (break_point_info->IsUndefined(isolate)) {
     return isolate->factory()->undefined_value();
@@ -18584,25 +18615,6 @@ Handle<Object> DebugInfo::FindBreakPointInfo(
   }
   return isolate->factory()->undefined_value();
 }
-
-
-// Find the index of the break point info object for the specified code
-// position.
-int DebugInfo::GetBreakPointInfoIndex(int code_offset) {
-  Isolate* isolate = GetIsolate();
-  if (break_points()->IsUndefined(isolate)) return kNoBreakPointInfo;
-  for (int i = 0; i < break_points()->length(); i++) {
-    if (!break_points()->get(i)->IsUndefined(isolate)) {
-      BreakPointInfo* break_point_info =
-          BreakPointInfo::cast(break_points()->get(i));
-      if (break_point_info->code_offset() == code_offset) {
-        return i;
-      }
-    }
-  }
-  return kNoBreakPointInfo;
-}
-
 
 // Remove the specified break point object.
 void BreakPointInfo::ClearBreakPoint(Handle<BreakPointInfo> break_point_info,
@@ -18903,6 +18915,62 @@ void JSDate::SetCachedFields(int64_t local_time_ms, DateCache* date_cache) {
   set_sec(Smi::FromInt(sec), SKIP_WRITE_BARRIER);
 }
 
+namespace {
+
+Script* ScriptFromJSValue(Object* in) {
+  DCHECK(in->IsJSValue());
+  JSValue* jsvalue = JSValue::cast(in);
+  DCHECK(jsvalue->value()->IsScript());
+  return Script::cast(jsvalue->value());
+}
+
+}  // namespace
+
+int JSMessageObject::GetLineNumber() const {
+  if (start_position() == -1) return Message::kNoLineNumberInfo;
+
+  Handle<Script> the_script = handle(ScriptFromJSValue(script()));
+
+  Script::PositionInfo info;
+  const Script::OffsetFlag offset_flag = Script::WITH_OFFSET;
+  if (!the_script->GetPositionInfo(start_position(), &info, offset_flag)) {
+    return Message::kNoLineNumberInfo;
+  }
+
+  return info.line + 1;
+}
+
+int JSMessageObject::GetColumnNumber() const {
+  if (start_position() == -1) return -1;
+
+  Handle<Script> the_script = handle(ScriptFromJSValue(script()));
+
+  Script::PositionInfo info;
+  const Script::OffsetFlag offset_flag = Script::WITH_OFFSET;
+  if (!the_script->GetPositionInfo(start_position(), &info, offset_flag)) {
+    return -1;
+  }
+
+  return info.column;  // Note: No '+1' in contrast to GetLineNumber.
+}
+
+Handle<String> JSMessageObject::GetSourceLine() const {
+  Handle<Script> the_script = handle(ScriptFromJSValue(script()));
+
+  Isolate* isolate = the_script->GetIsolate();
+  if (the_script->type() == Script::TYPE_WASM) {
+    return isolate->factory()->empty_string();
+  }
+
+  Script::PositionInfo info;
+  const Script::OffsetFlag offset_flag = Script::WITH_OFFSET;
+  if (!the_script->GetPositionInfo(start_position(), &info, offset_flag)) {
+    return isolate->factory()->empty_string();
+  }
+
+  Handle<String> src = handle(String::cast(the_script->source()), isolate);
+  return isolate->factory()->NewSubString(src, info.line_start, info.line_end);
+}
 
 void JSArrayBuffer::Neuter() {
   CHECK(is_neuterable());
@@ -19018,7 +19086,6 @@ Handle<JSArrayBuffer> JSTypedArray::GetBuffer() {
   Handle<JSTypedArray> self(this);
   return MaterializeArrayBuffer(self);
 }
-
 
 Handle<PropertyCell> PropertyCell::InvalidateEntry(
     Handle<GlobalDictionary> dictionary, int entry) {
@@ -19162,6 +19229,7 @@ int JSGeneratorObject::source_position() const {
   int code_offset;
   if (function()->shared()->HasBytecodeArray()) {
     // New-style generators.
+    DCHECK(!function()->shared()->HasBaselineCode());
     code_offset = Smi::cast(input_or_debug_pos())->value();
     // The stored bytecode offset is relative to a different base than what
     // is used in the source position table, hence the subtraction.
@@ -19169,6 +19237,7 @@ int JSGeneratorObject::source_position() const {
     code = AbstractCode::cast(function()->shared()->bytecode_array());
   } else {
     // Old-style generators.
+    DCHECK(function()->shared()->HasBaselineCode());
     code_offset = continuation();
     CHECK(0 <= code_offset);
     CHECK(code_offset < function()->code()->instruction_size());

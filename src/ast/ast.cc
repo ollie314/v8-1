@@ -65,26 +65,12 @@ MaterializedLiteral* AstNode::AsMaterializedLiteral() {
 
 #undef RETURN_NODE
 
-InitializationFlag Declaration::initialization() const {
-  switch (node_type()) {
-#define GENERATE_CASE(Node) \
-  case k##Node:             \
-    return static_cast<const Node*>(this)->initialization();
-    DECLARATION_NODE_LIST(GENERATE_CASE);
-#undef GENERATE_CASE
-    default:
-      UNREACHABLE();
-      return kNeedsInitialization;
-  }
-}
-
 bool Expression::IsSmiLiteral() const {
-  return IsLiteral() && AsLiteral()->value()->IsSmi();
+  return IsLiteral() && AsLiteral()->raw_value()->IsSmi();
 }
-
 
 bool Expression::IsStringLiteral() const {
-  return IsLiteral() && AsLiteral()->value()->IsString();
+  return IsLiteral() && AsLiteral()->raw_value()->IsString();
 }
 
 bool Expression::IsPropertyName() const {
@@ -93,16 +79,12 @@ bool Expression::IsPropertyName() const {
 
 bool Expression::IsNullLiteral() const {
   if (!IsLiteral()) return false;
-  Handle<Object> value = AsLiteral()->value();
-  return !value->IsSmi() &&
-         value->IsNull(HeapObject::cast(*value)->GetIsolate());
+  return AsLiteral()->raw_value()->IsNull();
 }
 
 bool Expression::IsUndefinedLiteral() const {
   if (IsLiteral()) {
-    Handle<Object> value = AsLiteral()->value();
-    if (!value->IsSmi() &&
-        value->IsUndefined(HeapObject::cast(*value)->GetIsolate())) {
+    if (AsLiteral()->raw_value()->IsUndefined()) {
       return true;
     }
   }
@@ -181,9 +163,9 @@ bool Statement::IsJump() const {
   }
 }
 
-VariableProxy::VariableProxy(Zone* zone, Variable* var, int start_position,
+VariableProxy::VariableProxy(Variable* var, int start_position,
                              int end_position)
-    : Expression(zone, start_position, kVariableProxy),
+    : Expression(start_position, kVariableProxy),
       bit_field_(IsThisField::encode(var->is_this()) |
                  IsAssignedField::encode(false) |
                  IsResolvedField::encode(false)),
@@ -193,10 +175,10 @@ VariableProxy::VariableProxy(Zone* zone, Variable* var, int start_position,
   BindTo(var);
 }
 
-VariableProxy::VariableProxy(Zone* zone, const AstRawString* name,
+VariableProxy::VariableProxy(const AstRawString* name,
                              Variable::Kind variable_kind, int start_position,
                              int end_position)
-    : Expression(zone, start_position, kVariableProxy),
+    : Expression(start_position, kVariableProxy),
       bit_field_(IsThisField::encode(variable_kind == Variable::THIS) |
                  IsAssignedField::encode(false) |
                  IsResolvedField::encode(false)),
@@ -204,8 +186,8 @@ VariableProxy::VariableProxy(Zone* zone, const AstRawString* name,
       raw_name_(name),
       next_unresolved_(nullptr) {}
 
-VariableProxy::VariableProxy(Zone* zone, const VariableProxy* copy_from)
-    : Expression(zone, copy_from->position(), kVariableProxy),
+VariableProxy::VariableProxy(const VariableProxy* copy_from)
+    : Expression(copy_from->position(), kVariableProxy),
       bit_field_(copy_from->bit_field_),
       end_position_(copy_from->end_position_),
       next_unresolved_(nullptr) {
@@ -268,9 +250,9 @@ void ForInStatement::AssignFeedbackVectorSlots(Isolate* isolate,
   for_in_feedback_slot_ = spec->AddGeneralSlot();
 }
 
-Assignment::Assignment(Zone* zone, Token::Value op, Expression* target,
-                       Expression* value, int pos)
-    : Expression(zone, pos, kAssignment),
+Assignment::Assignment(Token::Value op, Expression* target, Expression* value,
+                       int pos)
+    : Expression(pos, kAssignment),
       bit_field_(
           IsUninitializedField::encode(false) | KeyTypeField::encode(ELEMENT) |
           StoreModeField::encode(STANDARD_STORE) | TokenField::encode(op)),
@@ -289,6 +271,9 @@ void CountOperation::AssignFeedbackVectorSlots(Isolate* isolate,
                                                FeedbackVectorSpec* spec,
                                                FeedbackVectorSlotCache* cache) {
   AssignVectorSlots(expression(), spec, &slot_);
+  // Assign a slot to collect feedback about binary operations. Used only in
+  // ignition. Fullcodegen uses AstId to record type feedback.
+  binary_operation_slot_ = spec->AddGeneralSlot();
 }
 
 
@@ -734,6 +719,22 @@ void BinaryOperation::RecordToBooleanTypeFeedback(TypeFeedbackOracle* oracle) {
   set_to_boolean_types(oracle->ToBooleanTypes(right()->test_id()));
 }
 
+void BinaryOperation::AssignFeedbackVectorSlots(
+    Isolate* isolate, FeedbackVectorSpec* spec,
+    FeedbackVectorSlotCache* cache) {
+  // Feedback vector slot is only used by interpreter for binary operations.
+  // Full-codegen uses AstId to record type feedback.
+  switch (op()) {
+    // Comma, logical_or and logical_and do not collect type feedback.
+    case Token::COMMA:
+    case Token::AND:
+    case Token::OR:
+      return;
+    default:
+      type_feedback_slot_ = spec->AddGeneralSlot();
+      return;
+  }
+}
 
 static bool IsTypeof(Expression* expr) {
   UnaryOperation* maybe_unary = expr->AsUnaryOperation();
@@ -886,37 +887,31 @@ bool Expression::IsMonomorphic() const {
   }
 }
 
-bool Call::IsUsingCallFeedbackICSlot(Isolate* isolate) const {
-  CallType call_type = GetCallType(isolate);
-  if (call_type == POSSIBLY_EVAL_CALL) {
-    return false;
-  }
-  return true;
+bool Call::IsUsingCallFeedbackICSlot() const {
+  return GetCallType() != POSSIBLY_EVAL_CALL;
 }
 
-
-bool Call::IsUsingCallFeedbackSlot(Isolate* isolate) const {
+bool Call::IsUsingCallFeedbackSlot() const {
   // SuperConstructorCall uses a CallConstructStub, which wants
   // a Slot, in addition to any IC slots requested elsewhere.
-  return GetCallType(isolate) == SUPER_CALL;
+  return GetCallType() == SUPER_CALL;
 }
 
 
 void Call::AssignFeedbackVectorSlots(Isolate* isolate, FeedbackVectorSpec* spec,
                                      FeedbackVectorSlotCache* cache) {
-  if (IsUsingCallFeedbackICSlot(isolate)) {
+  if (IsUsingCallFeedbackICSlot()) {
     ic_slot_ = spec->AddCallICSlot();
   }
-  if (IsUsingCallFeedbackSlot(isolate)) {
+  if (IsUsingCallFeedbackSlot()) {
     stub_slot_ = spec->AddGeneralSlot();
   }
 }
 
-
-Call::CallType Call::GetCallType(Isolate* isolate) const {
+Call::CallType Call::GetCallType() const {
   VariableProxy* proxy = expression()->AsVariableProxy();
   if (proxy != NULL) {
-    if (proxy->var()->is_possibly_eval(isolate)) {
+    if (is_possibly_eval()) {
       return POSSIBLY_EVAL_CALL;
     } else if (proxy->var()->IsUnallocatedOrGlobalSlot()) {
       return GLOBAL_CALL;
@@ -940,10 +935,9 @@ Call::CallType Call::GetCallType(Isolate* isolate) const {
   return OTHER_CALL;
 }
 
-
-CaseClause::CaseClause(Zone* zone, Expression* label,
-                       ZoneList<Statement*>* statements, int pos)
-    : Expression(zone, pos, kCaseClause),
+CaseClause::CaseClause(Expression* label, ZoneList<Statement*>* statements,
+                       int pos)
+    : Expression(pos, kCaseClause),
       label_(label),
       statements_(statements),
       compare_type_(Type::None()) {}
@@ -962,7 +956,6 @@ bool Literal::Match(void* literal1, void* literal2) {
   return (x->IsString() && y->IsString() && x->AsString() == y->AsString()) ||
          (x->IsNumber() && y->IsNumber() && x->AsNumber() == y->AsNumber());
 }
-
 
 }  // namespace internal
 }  // namespace v8

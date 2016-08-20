@@ -59,9 +59,6 @@ void LCodeGen::FinishCode(Handle<Code> code) {
   DCHECK(is_done());
   code->set_stack_slots(GetTotalFrameSlotCount());
   code->set_safepoint_table_offset(safepoints_.GetCodeOffset());
-  Handle<ByteArray> source_positions =
-      source_position_table_builder_.ToSourcePositionTable();
-  code->set_source_position_table(*source_positions);
   PopulateDeoptimizationData(code);
 }
 
@@ -3652,10 +3649,8 @@ void LCodeGen::DoMathPowHalf(LMathPowHalf* instr) {
   // Math.sqrt(-Infinity) == NaN
   Label done;
   __ Move(temp, static_cast<double>(-V8_INFINITY));
-  __ BranchF(USE_DELAY_SLOT, &done, NULL, eq, temp, input);
-  // Set up Infinity in the delay slot.
-  // result is overwritten if the branch is not taken.
-  __ neg_d(result, temp);
+  __ Neg_d(result, temp);
+  __ BranchF(&done, NULL, eq, temp, input);
 
   // Add +0 to convert -0 to +0.
   __ add_d(result, input, kDoubleRegZero);

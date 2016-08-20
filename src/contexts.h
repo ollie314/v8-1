@@ -37,8 +37,11 @@ enum ContextLookupFlags {
 #define NATIVE_CONTEXT_INTRINSIC_FUNCTIONS(V)                           \
   V(IS_ARRAYLIKE, JSFunction, is_arraylike)                             \
   V(GET_TEMPLATE_CALL_SITE_INDEX, JSFunction, get_template_call_site)   \
+  V(MAKE_ERROR_INDEX, JSFunction, make_error)                           \
   V(MAKE_RANGE_ERROR_INDEX, JSFunction, make_range_error)               \
+  V(MAKE_SYNTAX_ERROR_INDEX, JSFunction, make_syntax_error)             \
   V(MAKE_TYPE_ERROR_INDEX, JSFunction, make_type_error)                 \
+  V(MAKE_URI_ERROR_INDEX, JSFunction, make_uri_error)                   \
   V(OBJECT_DEFINE_PROPERTIES, JSFunction, object_define_properties)     \
   V(OBJECT_DEFINE_PROPERTY, JSFunction, object_define_property)         \
   V(OBJECT_FREEZE, JSFunction, object_freeze)                           \
@@ -75,9 +78,6 @@ enum ContextLookupFlags {
   V(MAP_GET_METHOD_INDEX, JSFunction, map_get)                              \
   V(MAP_HAS_METHOD_INDEX, JSFunction, map_has)                              \
   V(MAP_SET_METHOD_INDEX, JSFunction, map_set)                              \
-  V(MESSAGE_GET_COLUMN_NUMBER_INDEX, JSFunction, message_get_column_number) \
-  V(MESSAGE_GET_LINE_NUMBER_INDEX, JSFunction, message_get_line_number)     \
-  V(MESSAGE_GET_SOURCE_LINE_INDEX, JSFunction, message_get_source_line)     \
   V(OBJECT_VALUE_OF, JSFunction, object_value_of)                           \
   V(OBJECT_TO_STRING, JSFunction, object_to_string)                         \
   V(PROMISE_CATCH_INDEX, JSFunction, promise_catch)                         \

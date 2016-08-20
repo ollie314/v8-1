@@ -79,6 +79,15 @@ class Interpreter {
   template <class Generator>
   void DoBinaryOp(InterpreterAssembler* assembler);
 
+  // Generates code to perform the binary operation via |Generator|.
+  template <class Generator>
+  void DoBinaryOpWithFeedback(InterpreterAssembler* assembler);
+
+  // Generates code to perform the bitwise binary operation corresponding to
+  // |bitwise_op| while gathering type feedback.
+  void DoBitwiseBinaryOp(Token::Value bitwise_op,
+                         InterpreterAssembler* assembler);
+
   // Generates code to perform the binary operation via |Generator| using
   // an immediate value rather the accumulator as the rhs operand.
   template <class Generator>
@@ -87,6 +96,11 @@ class Interpreter {
   // Generates code to perform the unary operation via |Generator|.
   template <class Generator>
   void DoUnaryOp(InterpreterAssembler* assembler);
+
+  // Generates code to perform the unary operation via |Generator| while
+  // gatering type feedback.
+  template <class Generator>
+  void DoUnaryOpWithFeedback(InterpreterAssembler* assembler);
 
   // Generates code to perform the comparison operation associated with
   // |compare_op|.

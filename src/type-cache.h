@@ -38,6 +38,7 @@ class TypeCache final {
   Type* const kFloat64 = CreateNative(Type::Number(), Type::UntaggedFloat64());
 
   Type* const kSmi = CreateNative(Type::SignedSmall(), Type::TaggedSigned());
+  Type* const kHoleySmi = Type::Union(kSmi, Type::Hole(), zone());
   Type* const kHeapNumber = CreateNative(Type::Number(), Type::TaggedPointer());
 
   Type* const kSingletonZero = CreateRange(0.0, 0.0);
@@ -49,6 +50,7 @@ class TypeCache final {
   Type* const kTenOrUndefined =
       Type::Union(kSingletonTen, Type::Undefined(), zone());
   Type* const kMinusOneOrZero = CreateRange(-1.0, 0.0);
+  Type* const kMinusOneToOne = CreateRange(-1.0, 1.0);
   Type* const kZeroOrOne = CreateRange(0.0, 1.0);
   Type* const kZeroOrOneOrNaN = Type::Union(kZeroOrOne, Type::NaN(), zone());
   Type* const kZeroToThirtyOne = CreateRange(0.0, 31.0);

@@ -18,6 +18,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -957,7 +958,7 @@ class V8_EXPORT SealHandleScope {
   void* operator new(size_t size);
   void operator delete(void*, size_t);
 
-  internal::Isolate* isolate_;
+  internal::Isolate* const isolate_;
   internal::Object** prev_limit_;
   int prev_sealed_level_;
 };
@@ -1952,6 +1953,7 @@ class V8_EXPORT Value : public Data {
    */
   bool IsProxy() const;
 
+  bool IsWebAssemblyCompiledModule() const;
 
   V8_WARN_UNUSED_RESULT MaybeLocal<Boolean> ToBoolean(
       Local<Context> context) const;
@@ -3461,6 +3463,19 @@ class V8_EXPORT Proxy : public Object {
   static void CheckCast(Value* obj);
 };
 
+class V8_EXPORT WasmCompiledModule : public Object {
+ public:
+  typedef std::pair<std::unique_ptr<const uint8_t[]>, size_t> SerializedModule;
+
+  SerializedModule Serialize();
+  static MaybeLocal<WasmCompiledModule> Deserialize(
+      Isolate* isolate, const SerializedModule& serialized_data);
+  V8_INLINE static WasmCompiledModule* Cast(Value* obj);
+
+ private:
+  WasmCompiledModule();
+  static void CheckCast(Value* obj);
+};
 
 #ifndef V8_ARRAY_BUFFER_INTERNAL_FIELD_COUNT
 // The number of required internal fields can be defined by embedder.
@@ -5693,7 +5708,7 @@ class V8_EXPORT Isolate {
     ~SuppressMicrotaskExecutionScope();
 
    private:
-    internal::Isolate* isolate_;
+    internal::Isolate* const isolate_;
 
     // Prevent copying of Scope objects.
     SuppressMicrotaskExecutionScope(const SuppressMicrotaskExecutionScope&);
@@ -8561,6 +8576,12 @@ Proxy* Proxy::Cast(v8::Value* value) {
   return static_cast<Proxy*>(value);
 }
 
+WasmCompiledModule* WasmCompiledModule::Cast(v8::Value* value) {
+#ifdef V8_ENABLE_CHECKS
+  CheckCast(value);
+#endif
+  return static_cast<WasmCompiledModule*>(value);
+}
 
 Promise::Resolver* Promise::Resolver::Cast(v8::Value* value) {
 #ifdef V8_ENABLE_CHECKS

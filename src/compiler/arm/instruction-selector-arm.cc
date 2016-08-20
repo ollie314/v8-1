@@ -402,6 +402,8 @@ void InstructionSelector::VisitLoad(Node* node) {
     case MachineRepresentation::kWord16:
       opcode = load_rep.IsUnsigned() ? kArmLdrh : kArmLdrsh;
       break;
+    case MachineRepresentation::kTaggedSigned:   // Fall through.
+    case MachineRepresentation::kTaggedPointer:  // Fall through.
     case MachineRepresentation::kTagged:  // Fall through.
     case MachineRepresentation::kWord32:
       opcode = kArmLdr;
@@ -481,6 +483,8 @@ void InstructionSelector::VisitStore(Node* node) {
       case MachineRepresentation::kWord16:
         opcode = kArmStrh;
         break;
+      case MachineRepresentation::kTaggedSigned:   // Fall through.
+      case MachineRepresentation::kTaggedPointer:  // Fall through.
       case MachineRepresentation::kTagged:  // Fall through.
       case MachineRepresentation::kWord32:
         opcode = kArmStr;
@@ -640,6 +644,8 @@ void InstructionSelector::VisitCheckedLoad(Node* node) {
       opcode = kCheckedLoadFloat64;
       break;
     case MachineRepresentation::kBit:      // Fall through.
+    case MachineRepresentation::kTaggedSigned:   // Fall through.
+    case MachineRepresentation::kTaggedPointer:  // Fall through.
     case MachineRepresentation::kTagged:   // Fall through.
     case MachineRepresentation::kWord64:   // Fall through.
     case MachineRepresentation::kSimd128:  // Fall through.
@@ -682,6 +688,8 @@ void InstructionSelector::VisitCheckedStore(Node* node) {
       opcode = kCheckedStoreFloat64;
       break;
     case MachineRepresentation::kBit:      // Fall through.
+    case MachineRepresentation::kTaggedSigned:   // Fall through.
+    case MachineRepresentation::kTaggedPointer:  // Fall through.
     case MachineRepresentation::kTagged:   // Fall through.
     case MachineRepresentation::kWord64:   // Fall through.
     case MachineRepresentation::kSimd128:  // Fall through.
@@ -1416,76 +1424,30 @@ void InstructionSelector::VisitFloat64Add(Node* node) {
   VisitRRR(this, kArmVaddF64, node);
 }
 
-namespace {
-void VisitFloat32SubHelper(InstructionSelector* selector, Node* node) {
-  ArmOperandGenerator g(selector);
-  Float32BinopMatcher m(node);
-  if (m.right().IsFloat32Mul() && selector->CanCover(node, m.right().node())) {
-    Float32BinopMatcher mright(m.right().node());
-    selector->Emit(kArmVmlsF32, g.DefineSameAsFirst(node),
-                   g.UseRegister(m.left().node()),
-                   g.UseRegister(mright.left().node()),
-                   g.UseRegister(mright.right().node()));
-    return;
-  }
-  VisitRRR(selector, kArmVsubF32, node);
-}
-
-void VisitFloat64SubHelper(InstructionSelector* selector, Node* node) {
-  ArmOperandGenerator g(selector);
-  Float64BinopMatcher m(node);
-  if (m.right().IsFloat64Mul() && selector->CanCover(node, m.right().node())) {
-    Float64BinopMatcher mright(m.right().node());
-    selector->Emit(kArmVmlsF64, g.DefineSameAsFirst(node),
-                   g.UseRegister(m.left().node()),
-                   g.UseRegister(mright.left().node()),
-                   g.UseRegister(mright.right().node()));
-    return;
-  }
-  VisitRRR(selector, kArmVsubF64, node);
-}
-}  // namespace
-
 void InstructionSelector::VisitFloat32Sub(Node* node) {
   ArmOperandGenerator g(this);
   Float32BinopMatcher m(node);
-  if (m.left().IsMinusZero()) {
-    Emit(kArmVnegF32, g.DefineAsRegister(node),
-         g.UseRegister(m.right().node()));
+  if (m.right().IsFloat32Mul() && CanCover(node, m.right().node())) {
+    Float32BinopMatcher mright(m.right().node());
+    Emit(kArmVmlsF32, g.DefineSameAsFirst(node), g.UseRegister(m.left().node()),
+         g.UseRegister(mright.left().node()),
+         g.UseRegister(mright.right().node()));
     return;
   }
-  VisitFloat32SubHelper(this, node);
-}
-
-void InstructionSelector::VisitFloat32SubPreserveNan(Node* node) {
-  VisitFloat32SubHelper(this, node);
+  VisitRRR(this, kArmVsubF32, node);
 }
 
 void InstructionSelector::VisitFloat64Sub(Node* node) {
   ArmOperandGenerator g(this);
   Float64BinopMatcher m(node);
-  if (m.left().IsMinusZero()) {
-    if (m.right().IsFloat64RoundDown() &&
-        CanCover(m.node(), m.right().node())) {
-      if (m.right().InputAt(0)->opcode() == IrOpcode::kFloat64Sub &&
-          CanCover(m.right().node(), m.right().InputAt(0))) {
-        Float64BinopMatcher mright0(m.right().InputAt(0));
-        if (mright0.left().IsMinusZero()) {
-          Emit(kArmVrintpF64, g.DefineAsRegister(node),
-               g.UseRegister(mright0.right().node()));
-          return;
-        }
-      }
-    }
-    Emit(kArmVnegF64, g.DefineAsRegister(node),
-         g.UseRegister(m.right().node()));
+  if (m.right().IsFloat64Mul() && CanCover(node, m.right().node())) {
+    Float64BinopMatcher mright(m.right().node());
+    Emit(kArmVmlsF64, g.DefineSameAsFirst(node), g.UseRegister(m.left().node()),
+         g.UseRegister(mright.left().node()),
+         g.UseRegister(mright.right().node()));
     return;
   }
-  VisitFloat64SubHelper(this, node);
-}
-
-void InstructionSelector::VisitFloat64SubPreserveNan(Node* node) {
-  VisitFloat64SubHelper(this, node);
+  VisitRRR(this, kArmVsubF64, node);
 }
 
 void InstructionSelector::VisitFloat32Mul(Node* node) {

@@ -272,8 +272,7 @@ template <typename T, class P = FreeStoreAllocationPolicy> class List;
 
 // The Strict Mode (ECMA-262 5th edition, 4.2.2).
 
-enum LanguageMode { SLOPPY, STRICT, LANGUAGE_END = 3 };
-
+enum LanguageMode : uint32_t { SLOPPY, STRICT, LANGUAGE_END };
 
 inline std::ostream& operator<<(std::ostream& os, const LanguageMode& mode) {
   switch (mode) {
@@ -430,6 +429,7 @@ class ParameterCount;
 class Foreign;
 class Scope;
 class DeclarationScope;
+class ModuleScope;
 class ScopeInfo;
 class Script;
 class Smi;
@@ -886,9 +886,6 @@ enum VariableMode {
 
   LET,  // declared via 'let' declarations (first lexical)
 
-  // TODO(neis): Is it correct to make this one of the lexical modes?
-  IMPORT,  // declared via 'import' declarations (except namespace imports)
-
   CONST,  // declared via 'const' declarations (last lexical)
 
   // Variables introduced by the compiler:
@@ -924,9 +921,8 @@ inline bool IsLexicalVariableMode(VariableMode mode) {
 
 
 inline bool IsImmutableVariableMode(VariableMode mode) {
-  return mode == CONST || mode == CONST_LEGACY || mode == IMPORT;
+  return mode == CONST || mode == CONST_LEGACY;
 }
-
 
 enum class VariableLocation {
   // Before and during variable allocation, a variable whose location is
@@ -958,9 +954,11 @@ enum class VariableLocation {
   // A named slot in a heap context.  name() is the variable name in the
   // context object on the heap, with lookup starting at the current
   // context.  index() is invalid.
-  LOOKUP
-};
+  LOOKUP,
 
+  // A named slot in a module's export table.
+  MODULE
+};
 
 // ES6 Draft Rev3 10.2 specifies declarative environment records with mutable
 // and immutable bindings that can be in two states: initialized and
@@ -1149,6 +1147,15 @@ inline uint32_t ObjectHash(Address address) {
   return static_cast<uint32_t>(bit_cast<uintptr_t>(address) >>
                                kPointerSizeLog2);
 }
+
+// Type feedback is encoded in such a way that, we can combine the feedback
+// at different points by performing an 'OR' operation. Type feedback moves
+// to a more generic type when we combine feedback.
+// kSignedSmall -> kNumber  -> kAny
+class BinaryOperationFeedback {
+ public:
+  enum { kNone = 0x00, kSignedSmall = 0x01, kNumber = 0x3, kAny = 0x7 };
+};
 
 }  // namespace internal
 }  // namespace v8

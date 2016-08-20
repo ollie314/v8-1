@@ -5,12 +5,14 @@
 #include <memory>
 
 #include "src/base/atomic-utils.h"
+#include "src/code-stubs.h"
+
 #include "src/macro-assembler.h"
 #include "src/objects.h"
 #include "src/property-descriptor.h"
-#include "src/v8.h"
-
 #include "src/simulator.h"
+#include "src/snapshot/snapshot.h"
+#include "src/v8.h"
 
 #include "src/wasm/ast-decoder.h"
 #include "src/wasm/module-decoder.h"
@@ -469,7 +471,7 @@ static MaybeHandle<JSFunction> ReportFFIError(
   return MaybeHandle<JSFunction>();
 }
 
-static MaybeHandle<JSFunction> LookupFunction(
+static MaybeHandle<JSReceiver> LookupFunction(
     ErrorThrower& thrower, Factory* factory, Handle<JSReceiver> ffi,
     uint32_t index, Handle<String> module_name,
     MaybeHandle<String> function_name) {
@@ -507,12 +509,12 @@ static MaybeHandle<JSFunction> LookupFunction(
     function = module;
   }
 
-  if (!function->IsJSFunction()) {
-    return ReportFFIError(thrower, "not a function", index, module_name,
+  if (!function->IsCallable()) {
+    return ReportFFIError(thrower, "not a callable", index, module_name,
                           function_name);
   }
 
-  return Handle<JSFunction>::cast(function);
+  return Handle<JSReceiver>::cast(function);
 }
 
 namespace {
@@ -659,23 +661,27 @@ bool CompileWrappersToImportedFunctions(Isolate* isolate,
       int param_count = sig_data_size - ret_count;
       CHECK(param_count >= 0);
 
-      MaybeHandle<JSFunction> function = LookupFunction(
+      MaybeHandle<JSReceiver> function = LookupFunction(
           *thrower, isolate->factory(), ffi, index, module_name, function_name);
       if (function.is_null()) return false;
       Handle<Code> code;
-      Handle<JSFunction> func = function.ToHandleChecked();
-      Handle<Code> export_wrapper_code = handle(func->code());
+      Handle<JSReceiver> target = function.ToHandleChecked();
       bool isMatch = false;
-      if (export_wrapper_code->kind() == Code::JS_TO_WASM_FUNCTION) {
-        int exported_param_count =
-            Smi::cast(func->GetInternalField(kInternalArity))->value();
-        Handle<ByteArray> exportedSig = Handle<ByteArray>(
-            ByteArray::cast(func->GetInternalField(kInternalSignature)));
-        if (exported_param_count == param_count &&
-            exportedSig->length() == sig_data->length() &&
-            memcmp(exportedSig->data(), sig_data->data(),
-                   exportedSig->length()) == 0) {
-          isMatch = true;
+      Handle<Code> export_wrapper_code;
+      if (target->IsJSFunction()) {
+        Handle<JSFunction> func = Handle<JSFunction>::cast(target);
+        export_wrapper_code = handle(func->code());
+        if (export_wrapper_code->kind() == Code::JS_TO_WASM_FUNCTION) {
+          int exported_param_count =
+              Smi::cast(func->GetInternalField(kInternalArity))->value();
+          Handle<ByteArray> exportedSig = Handle<ByteArray>(
+              ByteArray::cast(func->GetInternalField(kInternalSignature)));
+          if (exported_param_count == param_count &&
+              exportedSig->length() == sig_data->length() &&
+              memcmp(exportedSig->data(), sig_data->data(),
+                     exportedSig->length()) == 0) {
+            isMatch = true;
+          }
         }
       }
       if (isMatch) {
@@ -702,7 +708,7 @@ bool CompileWrappersToImportedFunctions(Isolate* isolate,
                sizeof(MachineRepresentation) * sig_data_size);
         FunctionSig sig(ret_count, param_count, reps);
 
-        code = compiler::CompileWasmToJSWrapper(isolate, func, &sig, index,
+        code = compiler::CompileWasmToJSWrapper(isolate, target, &sig, index,
                                                 module_name, function_name);
       }
       imports.push_back(code);
@@ -1571,6 +1577,17 @@ int GetNumberOfFunctions(JSObject* wasm) {
   return ByteArray::cast(func_names_obj)->get_int(0);
 }
 
+Handle<JSObject> CreateCompiledModuleObject(
+    Isolate* isolate, Handle<FixedArray> compiled_module) {
+  Handle<JSFunction> module_cons(
+      isolate->native_context()->wasm_module_constructor());
+  Handle<JSObject> module_obj = isolate->factory()->NewJSObject(module_cons);
+  module_obj->SetInternalField(0, *compiled_module);
+  Handle<Symbol> module_sym(isolate->native_context()->wasm_module_sym());
+  Object::SetProperty(module_obj, module_sym, module_obj, STRICT).Check();
+  return module_obj;
+}
+
 namespace testing {
 
 int32_t CompileAndRunWasmModule(Isolate* isolate, const byte* module_start,
@@ -1611,10 +1628,16 @@ int32_t CompileAndRunWasmModule(Isolate* isolate, const byte* module_start,
                               Handle<JSArrayBuffer>::null())
           .ToHandleChecked();
 
+  return CallFunction(isolate, instance, &thrower, "main", 0, nullptr);
+}
+
+int32_t CallFunction(Isolate* isolate, Handle<JSObject> instance,
+                     ErrorThrower* thrower, const char* name, int argc,
+                     Handle<Object> argv[]) {
   Handle<Name> exports = isolate->factory()->InternalizeUtf8String("exports");
   Handle<JSObject> exports_object = Handle<JSObject>::cast(
       JSObject::GetProperty(instance, exports).ToHandleChecked());
-  Handle<Name> main_name = isolate->factory()->NewStringFromStaticChars("main");
+  Handle<Name> main_name = isolate->factory()->NewStringFromAsciiChecked(name);
   PropertyDescriptor desc;
   Maybe<bool> property_found = JSReceiver::GetOwnPropertyDescriptor(
       isolate, exports_object, main_name, &desc);
@@ -1625,11 +1648,11 @@ int32_t CompileAndRunWasmModule(Isolate* isolate, const byte* module_start,
   // Call the JS function.
   Handle<Object> undefined = isolate->factory()->undefined_value();
   MaybeHandle<Object> retval =
-      Execution::Call(isolate, main_export, undefined, 0, nullptr);
+      Execution::Call(isolate, main_export, undefined, argc, argv);
 
   // The result should be a number.
   if (retval.is_null()) {
-    thrower.Error("WASM.compileRun() failed: Invocation was null");
+    thrower->Error("WASM.compileRun() failed: Invocation was null");
     return -1;
   }
   Handle<Object> result = retval.ToHandleChecked();
@@ -1639,7 +1662,7 @@ int32_t CompileAndRunWasmModule(Isolate* isolate, const byte* module_start,
   if (result->IsHeapNumber()) {
     return static_cast<int32_t>(HeapNumber::cast(*result)->value());
   }
-  thrower.Error("WASM.compileRun() failed: Return value should be number");
+  thrower->Error("WASM.compileRun() failed: Return value should be number");
   return -1;
 }
 

@@ -15,6 +15,7 @@
 #include "src/bootstrapper.h"
 #include "src/codegen.h"
 #include "src/compilation-cache.h"
+#include "src/compiler-dispatcher/optimizing-compile-dispatcher.h"
 #include "src/compiler/pipeline.h"
 #include "src/crankshaft/hydrogen.h"
 #include "src/debug/debug.h"
@@ -448,7 +449,7 @@ bool ShouldUseIgnition(CompilationInfo* info) {
   // When requesting debug code as a replacement for existing code, we provide
   // the same kind as the existing code (to prevent implicit tier-change).
   if (info->is_debug() && info->shared_info()->is_compiled()) {
-    return info->shared_info()->HasBytecodeArray();
+    return !info->shared_info()->HasBaselineCode();
   }
 
   // Since we can't OSR from Ignition, skip Ignition for asm.js functions.
@@ -476,7 +477,8 @@ int CodeAndMetadataSize(CompilationInfo* info) {
 bool GenerateUnoptimizedCode(CompilationInfo* info) {
   bool success;
   EnsureFeedbackMetadata(info);
-  if (FLAG_validate_asm && info->scope()->asm_module()) {
+  if (FLAG_validate_asm && info->scope()->asm_module() &&
+      !info->shared_info()->is_asm_wasm_broken()) {
     MaybeHandle<FixedArray> wasm_data;
     wasm_data = AsmJs::ConvertAsmToWasm(info->parse_info());
     if (!wasm_data.is_null()) {
@@ -513,8 +515,7 @@ bool CompileUnoptimizedCode(CompilationInfo* info) {
 
 void InstallSharedScopeInfo(CompilationInfo* info,
                             Handle<SharedFunctionInfo> shared) {
-  Handle<ScopeInfo> scope_info =
-      ScopeInfo::Create(info->isolate(), info->zone(), info->scope());
+  Handle<ScopeInfo> scope_info = info->scope()->GetScopeInfo(info->isolate());
   shared->set_scope_info(*scope_info);
 }
 
@@ -526,8 +527,6 @@ void InstallSharedCompilationResult(CompilationInfo* info,
   if (info->is_debug() && info->has_bytecode_array()) {
     shared->ClearBytecodeArray();
   }
-  // Assert that we are not overwriting (possibly patched) debug code.
-  DCHECK(!shared->HasDebugInfo());
   DCHECK(!info->code().is_null());
   shared->ReplaceCode(*info->code());
   if (info->has_bytecode_array()) {
@@ -540,9 +539,8 @@ MUST_USE_RESULT MaybeHandle<Code> GetUnoptimizedCode(CompilationInfo* info) {
   VMState<COMPILER> state(info->isolate());
   PostponeInterruptsScope postpone(info->isolate());
 
-  // Create a canonical handle scope if compiling ignition bytecode. This is
-  // required by the constant array builder to de-duplicate common objects
-  // without dereferencing handles.
+  // Create a canonical handle scope before internalizing parsed values if
+  // compiling bytecode. This is required for off-thread bytecode generation.
   std::unique_ptr<CanonicalHandleScope> canonical;
   if (FLAG_ignition) canonical.reset(new CanonicalHandleScope(info->isolate()));
 
@@ -993,7 +991,7 @@ MaybeHandle<Code> GetBaselineCode(Handle<JSFunction> function) {
   // TODO(4280): For now we play it safe and remove the bytecode array when we
   // switch to baseline code. We might consider keeping around the bytecode so
   // that it can be used as the "source of truth" eventually.
-  shared->ClearBytecodeArray();
+  if (!FLAG_ignition_preserve_bytecode) shared->ClearBytecodeArray();
 
   // Update the shared function info with the scope info.
   InstallSharedScopeInfo(&info, shared);
@@ -1034,6 +1032,12 @@ MaybeHandle<Code> GetLazyCode(Handle<JSFunction> function) {
 
   if (function->shared()->is_compiled()) {
     return Handle<Code>(function->shared()->code());
+  }
+
+  if (function->shared()->HasBytecodeArray()) {
+    Handle<Code> entry = isolate->builtins()->InterpreterEntryTrampoline();
+    function->shared()->ReplaceCode(*entry);
+    return entry;
   }
 
   Zone zone(isolate->allocator());
@@ -1077,9 +1081,8 @@ Handle<SharedFunctionInfo> CompileToplevel(CompilationInfo* info) {
   ParseInfo* parse_info = info->parse_info();
   Handle<Script> script = parse_info->script();
 
-  // Create a canonical handle scope if compiling ignition bytecode. This is
-  // required by the constant array builder to de-duplicate common objects
-  // without dereferencing handles.
+  // Create a canonical handle scope before internalizing parsed values if
+  // compiling bytecode. This is required for off-thread bytecode generation.
   std::unique_ptr<CanonicalHandleScope> canonical;
   if (FLAG_ignition) canonical.reset(new CanonicalHandleScope(isolate));
 
@@ -1434,7 +1437,9 @@ bool Compiler::EnsureDeoptimizationSupport(CompilationInfo* info) {
     // TODO(4280): For now we play it safe and remove the bytecode array when we
     // switch to baseline code. We might consider keeping around the bytecode so
     // that it can be used as the "source of truth" eventually.
-    shared->ClearBytecodeArray();
+    if (shared->HasBytecodeArray()) {
+      if (!FLAG_ignition_preserve_bytecode) shared->ClearBytecodeArray();
+    }
 
     // The scope info might not have been set if a lazily compiled
     // function is inlined before being called for the first time.
@@ -1753,16 +1758,18 @@ Handle<SharedFunctionInfo> Compiler::GetSharedFunctionInfo(
     maybe_existing = script->FindSharedFunctionInfo(literal);
   }
 
-  // We found an existing shared function info. If it's already compiled,
-  // don't worry about compiling it, and simply return it. If it's not yet
-  // compiled, continue to decide whether to eagerly compile.
-  // Carry on if we are compiling eager to obtain code for debugging,
-  // unless we already have code with debut break slots.
+  // We found an existing shared function info. If it has any sort of code
+  // attached, don't worry about compiling and simply return it. Otherwise,
+  // continue to decide whether to eagerly compile.
+  // Note that we also carry on if we are compiling eager to obtain code for
+  // debugging, unless we already have code with debug break slots.
   Handle<SharedFunctionInfo> existing;
-  if (maybe_existing.ToHandle(&existing) && existing->is_compiled()) {
+  if (maybe_existing.ToHandle(&existing)) {
     DCHECK(!existing->is_toplevel());
-    if (!outer_info->is_debug() || existing->HasDebugCode()) {
-      return existing;
+    if (existing->HasBaselineCode() || existing->HasBytecodeArray()) {
+      if (!outer_info->is_debug() || existing->HasDebugCode()) {
+        return existing;
+      }
     }
   }
 
@@ -1811,6 +1818,13 @@ Handle<SharedFunctionInfo> Compiler::GetSharedFunctionInfo(
   RuntimeCallTimerScope runtimeTimer(isolate, &RuntimeCallStats::CompileCode);
   TRACE_EVENT_RUNTIME_CALL_STATS_TRACING_SCOPED(
       isolate, &tracing::TraceEventStatsTable::CompileCode);
+
+  // Create a canonical handle scope if compiling ignition bytecode. This is
+  // required by the constant array builder to de-duplicate common objects
+  // without dereferencing handles.
+  std::unique_ptr<CanonicalHandleScope> canonical;
+  if (FLAG_ignition) canonical.reset(new CanonicalHandleScope(info.isolate()));
+
   if (lazy) {
     info.SetCode(isolate->builtins()->CompileLazy());
   } else if (Renumber(info.parse_info()) && GenerateUnoptimizedCode(&info)) {

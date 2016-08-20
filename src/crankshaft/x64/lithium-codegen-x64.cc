@@ -66,9 +66,6 @@ void LCodeGen::FinishCode(Handle<Code> code) {
   DCHECK(is_done());
   code->set_stack_slots(GetTotalFrameSlotCount());
   code->set_safepoint_table_offset(safepoints_.GetCodeOffset());
-  Handle<ByteArray> source_positions =
-      source_position_table_builder_.ToSourcePositionTable();
-  code->set_source_position_table(*source_positions);
   PopulateDeoptimizationData(code);
 }
 
@@ -4693,7 +4690,8 @@ void LCodeGen::EmitNumberUntagD(LNumberUntagD* instr, Register input_reg,
       DeoptimizeIf(not_equal, instr,
                    DeoptimizeReason::kNotAHeapNumberUndefined);
 
-      __ Pcmpeqd(result_reg, result_reg);
+      __ Xorpd(result_reg, result_reg);
+      __ Divsd(result_reg, result_reg);
       __ jmp(&done, Label::kNear);
     }
   } else {

@@ -55,6 +55,12 @@ const WasmCodePosition kNoCodePosition = -1;
   V(BrTable, 0x08, _)             \
   V(Return, 0x09, _)              \
   V(Unreachable, 0x0a, _)         \
+  V(Throw, 0xfa, _)               \
+  V(TryCatch, 0xfb, _)            \
+  V(TryCatchFinally, 0xfc, _)     \
+  V(TryFinally, 0xfd, _)          \
+  V(Catch, 0xfe, _)               \
+  V(Finally, 0xff, _)             \
   V(End, 0x0F, _)
 
 // Constants, locals, globals, and calls.
@@ -391,9 +397,6 @@ const WasmCodePosition kNoCodePosition = -1;
   V(S128Xor, 0xe578, s_ss)             \
   V(S128Not, 0xe579, s_s)
 
-// For enabling JIT functionality
-#define FOREACH_JIT_OPCODE(V) V(JITSingleFunction, 0xf0, _)
-
 // All opcodes.
 #define FOREACH_OPCODE(V)        \
   FOREACH_CONTROL_OPCODE(V)      \
@@ -404,8 +407,7 @@ const WasmCodePosition kNoCodePosition = -1;
   FOREACH_LOAD_MEM_OPCODE(V)     \
   FOREACH_MISC_MEM_OPCODE(V)     \
   FOREACH_ASMJS_COMPAT_OPCODE(V) \
-  FOREACH_SIMD_OPCODE(V)         \
-  FOREACH_JIT_OPCODE(V)
+  FOREACH_SIMD_OPCODE(V)
 
 // All signatures.
 #define FOREACH_SIGNATURE(V)         \

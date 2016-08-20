@@ -820,6 +820,12 @@ bool Decoder::DecodeFourByte(Instruction* instr) {
     case LLGHR:
       Format(instr, "llghr\t'r5,'r6");
       break;
+    case LOCR:
+      Format(instr, "locr\t'm1,'r5,'r6");
+      break;
+    case LOCGR:
+      Format(instr, "locgr\t'm1,'r5,'r6");
+      break;
     case LNGR:
       Format(instr, "lngr\t'r5,'r6");
       break;
@@ -994,6 +1000,9 @@ bool Decoder::DecodeFourByte(Instruction* instr) {
     case LCDBR:
       Format(instr, "lcdbr\t'f5,'f6");
       break;
+    case LCEBR:
+      Format(instr, "lcebr\t'f5,'f6");
+      break;
     case STH:
       Format(instr, "sth\t'r1,'d1('r2d,'r3)");
       break;
@@ -1085,6 +1094,9 @@ bool Decoder::DecodeSixByte(Instruction* instr) {
     case IIHF:
       Format(instr, "iihf\t'r1,'i7");
       break;
+    case LGFI:
+      Format(instr, "lgfi\t'r1,'i7");
+      break;
     case IILF:
       Format(instr, "iilf\t'r1,'i7");
       break;
@@ -1129,6 +1141,12 @@ bool Decoder::DecodeSixByte(Instruction* instr) {
       break;
     case RISBGN:
       Format(instr, "risbgn\t'r1,'r2,'i9,'ia,'ib");
+      break;
+    case LOCG:
+      Format(instr, "locg\t'm2,'r1,'d2('r3)");
+      break;
+    case LOC:
+      Format(instr, "loc\t'm2,'r1,'d2('r3)");
       break;
     case LMY:
       Format(instr, "lmy\t'r1,'r2,'d2('r3)");

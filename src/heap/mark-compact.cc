@@ -597,9 +597,12 @@ const char* AllocationSpaceName(AllocationSpace space) {
 void MarkCompactCollector::ComputeEvacuationHeuristics(
     int area_size, int* target_fragmentation_percent,
     int* max_evacuated_bytes) {
-  // For memory reducing mode we directly define both constants.
+  // For memory reducing and optimize for memory mode we directly define both
+  // constants.
   const int kTargetFragmentationPercentForReduceMemory = 20;
   const int kMaxEvacuatedBytesForReduceMemory = 12 * Page::kPageSize;
+  const int kTargetFragmentationPercentForOptimizeMemory = 20;
+  const int kMaxEvacuatedBytesForOptimizeMemory = 6 * MB;
 
   // For regular mode (which is latency critical) we define less aggressive
   // defaults to start and switch to a trace-based (using compaction speed)
@@ -613,6 +616,10 @@ void MarkCompactCollector::ComputeEvacuationHeuristics(
   if (heap()->ShouldReduceMemory()) {
     *target_fragmentation_percent = kTargetFragmentationPercentForReduceMemory;
     *max_evacuated_bytes = kMaxEvacuatedBytesForReduceMemory;
+  } else if (heap()->ShouldOptimizeForMemoryUsage()) {
+    *target_fragmentation_percent =
+        kTargetFragmentationPercentForOptimizeMemory;
+    *max_evacuated_bytes = kMaxEvacuatedBytesForOptimizeMemory;
   } else {
     const double estimated_compaction_speed =
         heap()->tracer()->CompactionSpeedInBytesPerMillisecond();
@@ -2216,14 +2223,6 @@ void MarkCompactCollector::TracePossibleWrapper(JSObject* js_object) {
   }
 }
 
-void MarkCompactCollector::RegisterExternallyReferencedObject(Object** object) {
-  DCHECK(in_use());
-  HeapObject* heap_object = HeapObject::cast(*object);
-  DCHECK(heap_->Contains(heap_object));
-  MarkBit mark_bit = ObjectMarking::MarkBitFrom(heap_object);
-  MarkObject(heap_object, mark_bit);
-}
-
 class MarkCompactCollector::ObjectStatsVisitor
     : public MarkCompactCollector::HeapObjectVisitor {
  public:
@@ -2984,6 +2983,11 @@ bool MarkCompactCollector::IsSlotInBlackObject(MemoryChunk* p, Address slot) {
   base_address += (cell_index - base_address_cell_index) *
                   Bitmap::kBitsPerCell * kPointerSize;
   Address address = base_address + offset * kPointerSize;
+
+  // If the found mark bit is part of a black area, the slot cannot be part
+  // of a live object since it is not marked.
+  if (p->IsBlackAreaEndMarker(address + kPointerSize)) return false;
+
   HeapObject* object = HeapObject::FromAddress(address);
   CHECK(Marking::IsBlack(ObjectMarking::MarkBitFrom(object)));
   CHECK(object->address() < reinterpret_cast<Address>(slot));
@@ -3364,6 +3368,9 @@ int MarkCompactCollector::Sweeper::RawSweep(
   // Before we sweep objects on the page, we free dead array buffers which
   // requires valid mark bits.
   ArrayBufferTracker::FreeDead(p);
+
+  // We also release the black area markers here.
+  p->ReleaseBlackAreaEndMarkerMap();
 
   Address free_start = p->area_start();
   DCHECK(reinterpret_cast<intptr_t>(free_start) % (32 * kPointerSize) == 0);
@@ -3908,6 +3915,7 @@ void MarkCompactCollector::StartSweepSpace(PagedSpace* space) {
     if (p->IsEvacuationCandidate()) {
       // Will be processed in EvacuateNewSpaceAndCandidates.
       DCHECK(evacuation_candidates_.length() > 0);
+      DCHECK(!p->HasBlackAreas());
       continue;
     }
 

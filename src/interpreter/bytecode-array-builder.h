@@ -34,7 +34,7 @@ class BytecodeArrayBuilder final : public ZoneObject {
       SourcePositionTableBuilder::RecordingMode source_position_mode =
           SourcePositionTableBuilder::RECORD_SOURCE_POSITIONS);
 
-  Handle<BytecodeArray> ToBytecodeArray();
+  Handle<BytecodeArray> ToBytecodeArray(Isolate* isolate);
 
   // Get the number of parameters expected by function.
   int parameter_count() const {
@@ -135,8 +135,21 @@ class BytecodeArrayBuilder final : public ZoneObject {
   // constant pool index |entry|.
   BytecodeArrayBuilder& CreateClosure(size_t entry, int flags);
 
+  // Create a new local context for a |scope_info| and a closure which should be
+  // in the accumulator.
+  BytecodeArrayBuilder& CreateBlockContext(Handle<ScopeInfo> scope_info);
+
+  // Create a new context for a catch block with |exception| and |name| and the
+  // closure in the accumulator.
+  BytecodeArrayBuilder& CreateCatchContext(Register exception,
+                                           Handle<String> name);
+
   // Create a new context with size |slots|.
   BytecodeArrayBuilder& CreateFunctionContext(int slots);
+
+  // Creates a new context for a with-statement with the |object| in a register
+  // and the closure in the accumulator.
+  BytecodeArrayBuilder& CreateWithContext(Register object);
 
   // Create a new arguments object in the accumulator.
   BytecodeArrayBuilder& CreateArguments(CreateArgumentsType type);
@@ -147,7 +160,8 @@ class BytecodeArrayBuilder final : public ZoneObject {
   BytecodeArrayBuilder& CreateArrayLiteral(Handle<FixedArray> constant_elements,
                                            int literal_index, int flags);
   BytecodeArrayBuilder& CreateObjectLiteral(
-      Handle<FixedArray> constant_properties, int literal_index, int flags);
+      Handle<FixedArray> constant_properties, int literal_index, int flags,
+      Register output);
 
   // Push the context in accumulator as the new context, and store in register
   // |context|.
@@ -199,10 +213,13 @@ class BytecodeArrayBuilder final : public ZoneObject {
                                       size_t receiver_args_count);
 
   // Operators (register holds the lhs value, accumulator holds the rhs value).
-  BytecodeArrayBuilder& BinaryOperation(Token::Value binop, Register reg);
+  // Type feedback will be recorded in the |feedback_slot|
+  BytecodeArrayBuilder& BinaryOperation(Token::Value binop, Register reg,
+                                        int feedback_slot);
 
   // Count Operators (value stored in accumulator).
-  BytecodeArrayBuilder& CountOperation(Token::Value op);
+  // Type feedback will be recorded in the |feedback_slot|
+  BytecodeArrayBuilder& CountOperation(Token::Value op, int feedback_slot);
 
   // Unary Operators.
   BytecodeArrayBuilder& LogicalNot();
@@ -355,7 +372,6 @@ class BytecodeArrayBuilder final : public ZoneObject {
 
   void LeaveBasicBlock() { return_seen_in_block_ = false; }
 
-  Isolate* isolate() const { return isolate_; }
   BytecodeArrayWriter* bytecode_array_writer() {
     return &bytecode_array_writer_;
   }
@@ -370,7 +386,6 @@ class BytecodeArrayBuilder final : public ZoneObject {
     return &handler_table_builder_;
   }
 
-  Isolate* isolate_;
   Zone* zone_;
   bool bytecode_generated_;
   ConstantArrayBuilder constant_array_builder_;

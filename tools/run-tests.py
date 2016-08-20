@@ -71,7 +71,6 @@ TEST_MAP = {
     "preparser",
     "intl",
     "unittests",
-    "inspector_protocol_parser_test",
   ],
   # This needs to stay in sync with test/default.isolate.
   "default": [
@@ -82,7 +81,6 @@ TEST_MAP = {
     "preparser",
     "intl",
     "unittests",
-    "inspector_protocol_parser_test",
   ],
   # This needs to stay in sync with test/optimize_for_size.isolate.
   "optimize_for_size": [
@@ -252,15 +250,11 @@ def BuildOptions():
   result.add_option("--download-data", help="Download missing test suite data",
                     default=False, action="store_true")
   result.add_option("--download-data-only",
-                    help="Download missing test suite data and exit",
+                    help="Deprecated",
                     default=False, action="store_true")
   result.add_option("--extra-flags",
                     help="Additional flags to pass to each test command",
                     default="")
-  # TODO(machenbach): Remove this flag when not reference by infrastructure.
-  result.add_option("--ignition-turbofan",
-                    help="Deprecated",
-                    default=False, action="store_true")
   result.add_option("--isolates", help="Whether to test isolates",
                     default=False, action="store_true")
   result.add_option("-j", help="The number of parallel tasks to run",
@@ -670,6 +664,9 @@ def Main():
 
   if options.download_data_only:
     return exit_code
+
+  for s in suites:
+    s.PrepareSources()
 
   for (arch, mode) in options.arch_and_mode:
     try:

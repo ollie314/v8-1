@@ -618,7 +618,9 @@ PipelineCompilationJob::Status PipelineCompilationJob::CreateGraphImpl() {
   // TODO(mstarzinger): Hack to ensure that certain call descriptors are
   // initialized on the main thread, since it is needed off-thread by the
   // effect control linearizer.
-  CodeFactory::CopyFixedArray(info()->isolate());
+  CodeFactory::CopyFastSmiOrObjectElements(info()->isolate());
+  CodeFactory::GrowFastDoubleElements(info()->isolate());
+  CodeFactory::GrowFastSmiOrObjectElements(info()->isolate());
   CodeFactory::ToNumber(info()->isolate());
 
   linkage_ = new (&zone_) Linkage(Linkage::ComputeIncoming(&zone_, info()));
@@ -898,7 +900,12 @@ struct TypedLoweringPhase {
     JSGraphReducer graph_reducer(data->jsgraph(), temp_zone);
     DeadCodeElimination dead_code_elimination(&graph_reducer, data->graph(),
                                               data->common());
-    JSBuiltinReducer builtin_reducer(&graph_reducer, data->jsgraph());
+    JSBuiltinReducer builtin_reducer(
+        &graph_reducer, data->jsgraph(),
+        data->info()->is_deoptimization_enabled()
+            ? JSBuiltinReducer::kDeoptimizationEnabled
+            : JSBuiltinReducer::kNoFlags,
+        data->info()->dependencies());
     MaybeHandle<LiteralsArray> literals_array =
         data->info()->is_native_context_specializing()
             ? handle(data->info()->closure()->literals(), data->isolate())
@@ -1056,12 +1063,36 @@ struct EffectControlLinearizationPhase {
   }
 };
 
-struct StoreStoreEliminationPhase {
-  static const char* phase_name() { return "Store-store elimination"; }
+// The store-store elimination greatly benefits from doing a common operator
+// reducer just before it, to eliminate conditional deopts with a constant
+// condition.
+
+struct DeadCodeEliminationPhase {
+  static const char* phase_name() { return "common operator reducer"; }
 
   void Run(PipelineData* data, Zone* temp_zone) {
-    StoreStoreElimination store_store_elimination(data->jsgraph(), temp_zone);
-    store_store_elimination.Run();
+    // Run the common operator reducer.
+    JSGraphReducer graph_reducer(data->jsgraph(), temp_zone);
+    DeadCodeElimination dead_code_elimination(&graph_reducer, data->graph(),
+                                              data->common());
+    CommonOperatorReducer common_reducer(&graph_reducer, data->graph(),
+                                         data->common(), data->machine());
+    AddReducer(data, &graph_reducer, &dead_code_elimination);
+    AddReducer(data, &graph_reducer, &common_reducer);
+    graph_reducer.ReduceGraph();
+  }
+};
+
+struct StoreStoreEliminationPhase {
+  static const char* phase_name() { return "store-store elimination"; }
+
+  void Run(PipelineData* data, Zone* temp_zone) {
+    GraphTrimmer trimmer(temp_zone, data->graph());
+    NodeVector roots(temp_zone);
+    data->jsgraph()->GetCachedNodes(&roots);
+    trimmer.TrimGraph(roots.begin(), roots.end());
+
+    StoreStoreElimination::Run(data->jsgraph(), temp_zone);
   }
 };
 
@@ -1551,6 +1582,9 @@ bool PipelineImpl::OptimizeGraph(Linkage* linkage) {
 
   Run<EffectControlLinearizationPhase>();
   RunPrintAndVerify("Effect and control linearized", true);
+
+  Run<DeadCodeEliminationPhase>();
+  RunPrintAndVerify("Common operator reducer", true);
 
   if (FLAG_turbo_store_elimination) {
     Run<StoreStoreEliminationPhase>();

@@ -194,12 +194,16 @@ void InstructionSelector::VisitLoad(Node* node) {
       opcode = load_rep.IsSigned() ? kPPC_LoadWordS16 : kPPC_LoadWordU16;
       break;
 #if !V8_TARGET_ARCH_PPC64
+    case MachineRepresentation::kTaggedSigned:   // Fall through.
+    case MachineRepresentation::kTaggedPointer:  // Fall through.
     case MachineRepresentation::kTagged:  // Fall through.
 #endif
     case MachineRepresentation::kWord32:
       opcode = kPPC_LoadWordU32;
       break;
 #if V8_TARGET_ARCH_PPC64
+    case MachineRepresentation::kTaggedSigned:   // Fall through.
+    case MachineRepresentation::kTaggedPointer:  // Fall through.
     case MachineRepresentation::kTagged:  // Fall through.
     case MachineRepresentation::kWord64:
       opcode = kPPC_LoadWord64;
@@ -295,12 +299,16 @@ void InstructionSelector::VisitStore(Node* node) {
         opcode = kPPC_StoreWord16;
         break;
 #if !V8_TARGET_ARCH_PPC64
+      case MachineRepresentation::kTaggedSigned:   // Fall through.
+      case MachineRepresentation::kTaggedPointer:  // Fall through.
       case MachineRepresentation::kTagged:  // Fall through.
 #endif
       case MachineRepresentation::kWord32:
         opcode = kPPC_StoreWord32;
         break;
 #if V8_TARGET_ARCH_PPC64
+      case MachineRepresentation::kTaggedSigned:   // Fall through.
+      case MachineRepresentation::kTaggedPointer:  // Fall through.
       case MachineRepresentation::kTagged:  // Fall through.
       case MachineRepresentation::kWord64:
         opcode = kPPC_StoreWord64;
@@ -362,6 +370,8 @@ void InstructionSelector::VisitCheckedLoad(Node* node) {
       opcode = kCheckedLoadFloat64;
       break;
     case MachineRepresentation::kBit:     // Fall through.
+    case MachineRepresentation::kTaggedSigned:   // Fall through.
+    case MachineRepresentation::kTaggedPointer:  // Fall through.
     case MachineRepresentation::kTagged:  // Fall through.
 #if !V8_TARGET_ARCH_PPC64
     case MachineRepresentation::kWord64:  // Fall through.
@@ -408,6 +418,8 @@ void InstructionSelector::VisitCheckedStore(Node* node) {
       opcode = kCheckedStoreFloat64;
       break;
     case MachineRepresentation::kBit:     // Fall through.
+    case MachineRepresentation::kTaggedSigned:   // Fall through.
+    case MachineRepresentation::kTaggedPointer:  // Fall through.
     case MachineRepresentation::kTagged:  // Fall through.
 #if !V8_TARGET_ARCH_PPC64
     case MachineRepresentation::kWord64:  // Fall through.
@@ -877,7 +889,8 @@ void InstructionSelector::VisitWord64Sar(Node* node) {
       m.right().Is(32)) {
     // Just load and sign-extend the interesting 4 bytes instead. This happens,
     // for example, when we're loading and untagging SMIs.
-    BaseWithIndexAndDisplacement64Matcher mleft(m.left().node(), true);
+    BaseWithIndexAndDisplacement64Matcher mleft(m.left().node(),
+                                                AddressOption::kAllowAll);
     if (mleft.matches() && mleft.index() == nullptr) {
       int64_t offset = 0;
       Node* displacement = mleft.displacement();
@@ -1261,47 +1274,11 @@ void InstructionSelector::VisitFloat64Add(Node* node) {
 
 
 void InstructionSelector::VisitFloat32Sub(Node* node) {
-  PPCOperandGenerator g(this);
-  Float32BinopMatcher m(node);
-  if (m.left().IsMinusZero()) {
-    Emit(kPPC_NegDouble | MiscField::encode(1), g.DefineAsRegister(node),
-         g.UseRegister(m.right().node()));
-    return;
-  }
-  VisitRRR(this, kPPC_SubDouble | MiscField::encode(1), node);
-}
-
-void InstructionSelector::VisitFloat32SubPreserveNan(Node* node) {
-  PPCOperandGenerator g(this);
   VisitRRR(this, kPPC_SubDouble | MiscField::encode(1), node);
 }
 
 void InstructionSelector::VisitFloat64Sub(Node* node) {
   // TODO(mbrandy): detect multiply-subtract
-  PPCOperandGenerator g(this);
-  Float64BinopMatcher m(node);
-  if (m.left().IsMinusZero()) {
-    if (m.right().IsFloat64RoundDown() &&
-        CanCover(m.node(), m.right().node())) {
-      if (m.right().InputAt(0)->opcode() == IrOpcode::kFloat64Sub &&
-          CanCover(m.right().node(), m.right().InputAt(0))) {
-        Float64BinopMatcher mright0(m.right().InputAt(0));
-        if (mright0.left().IsMinusZero()) {
-          // -floor(-x) = ceil(x)
-          Emit(kPPC_CeilDouble, g.DefineAsRegister(node),
-               g.UseRegister(mright0.right().node()));
-          return;
-        }
-      }
-    }
-    Emit(kPPC_NegDouble, g.DefineAsRegister(node),
-         g.UseRegister(m.right().node()));
-    return;
-  }
-  VisitRRR(this, kPPC_SubDouble, node);
-}
-
-void InstructionSelector::VisitFloat64SubPreserveNan(Node* node) {
   VisitRRR(this, kPPC_SubDouble, node);
 }
 
@@ -1426,9 +1403,13 @@ void InstructionSelector::VisitFloat64RoundTiesEven(Node* node) {
   UNREACHABLE();
 }
 
-void InstructionSelector::VisitFloat32Neg(Node* node) { UNREACHABLE(); }
+void InstructionSelector::VisitFloat32Neg(Node* node) {
+  VisitRR(this, kPPC_NegDouble, node);
+}
 
-void InstructionSelector::VisitFloat64Neg(Node* node) { UNREACHABLE(); }
+void InstructionSelector::VisitFloat64Neg(Node* node) {
+  VisitRR(this, kPPC_NegDouble, node);
+}
 
 void InstructionSelector::VisitInt32AddWithOverflow(Node* node) {
   if (Node* ovf = NodeProperties::FindProjection(node, 1)) {

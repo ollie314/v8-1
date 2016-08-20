@@ -156,6 +156,8 @@ namespace internal {
   F(GetAllScopesDetails, 4, 1)                  \
   F(GetFunctionScopeCount, 1, 1)                \
   F(GetFunctionScopeDetails, 2, 1)              \
+  F(GetGeneratorScopeCount, 1, 1)               \
+  F(GetGeneratorScopeDetails, 2, 1)             \
   F(SetScopeVariableValue, 6, 1)                \
   F(DebugPrintScopes, 0, 1)                     \
   F(SetBreakPointsActive, 1, 1)                 \
@@ -281,52 +283,50 @@ namespace internal {
 #endif
 
 #define FOR_EACH_INTRINSIC_INTERNAL(F)              \
+  F(AllocateInNewSpace, 1, 1)                       \
+  F(AllocateInTargetSpace, 2, 1)                    \
+  F(AllocateSeqOneByteString, 1, 1)                 \
+  F(AllocateSeqTwoByteString, 1, 1)                 \
   F(CheckIsBootstrapping, 0, 1)                     \
-  F(ExportFromRuntime, 1, 1)                        \
+  F(CreateListFromArrayLike, 1, 1)                  \
+  F(EnqueueMicrotask, 1, 1)                         \
+  F(GetAndResetRuntimeCallStats, -1 /* <= 2 */, 1)  \
   F(ExportExperimentalFromRuntime, 1, 1)            \
+  F(ExportFromRuntime, 1, 1)                        \
+  F(IncrementUseCounter, 1, 1)                      \
   F(InstallToContext, 1, 1)                         \
-  F(Throw, 1, 1)                                    \
-  F(ReThrow, 1, 1)                                  \
-  F(UnwindAndFindExceptionHandler, 0, 1)            \
-  F(PromoteScheduledException, 0, 1)                \
-  F(ThrowReferenceError, 1, 1)                      \
-  F(ThrowApplyNonFunction, 1, 1)                    \
-  F(NewTypeError, 2, 1)                             \
-  F(NewSyntaxError, 2, 1)                           \
+  F(Interrupt, 0, 1)                                \
+  F(IS_VAR, 1, 1)                                   \
+  F(IsWasmObject, 1, 1)                             \
   F(NewReferenceError, 2, 1)                        \
+  F(NewSyntaxError, 2, 1)                           \
+  F(NewTypeError, 2, 1)                             \
+  F(OrdinaryHasInstance, 2, 1)                      \
+  F(PromiseRejectEvent, 3, 1)                       \
+  F(PromiseRevokeReject, 1, 1)                      \
+  F(PromoteScheduledException, 0, 1)                \
+  F(ReThrow, 1, 1)                                  \
+  F(RunMicrotasks, 0, 1)                            \
+  F(StackGuard, 0, 1)                               \
+  F(Throw, 1, 1)                                    \
+  F(ThrowApplyNonFunction, 1, 1)                    \
   F(ThrowCannotConvertToPrimitive, 0, 1)            \
+  F(ThrowCalledNonCallable, 1, 1)                   \
+  F(ThrowCalledOnNullOrUndefined, 1, 1)             \
+  F(ThrowConstructedNonConstructable, 1, 1)         \
+  F(ThrowDerivedConstructorReturnedNonObject, 0, 1) \
+  F(ThrowGeneratorRunning, 0, 1)                    \
   F(ThrowIllegalInvocation, 0, 1)                   \
   F(ThrowIncompatibleMethodReceiver, 2, 1)          \
   F(ThrowInvalidStringLength, 0, 1)                 \
   F(ThrowIteratorResultNotAnObject, 1, 1)           \
   F(ThrowNotGeneric, 1, 1)                          \
-  F(ThrowGeneratorRunning, 0, 1)                    \
+  F(ThrowReferenceError, 1, 1)                      \
   F(ThrowStackOverflow, 0, 1)                       \
   F(ThrowWasmError, 2, 1)                           \
-  F(JITSingleFunction, -1 /* >= 7 */, 1)            \
-  F(PromiseRejectEvent, 3, 1)                       \
-  F(PromiseRevokeReject, 1, 1)                      \
-  F(StackGuard, 0, 1)                               \
-  F(Interrupt, 0, 1)                                \
-  F(AllocateInNewSpace, 1, 1)                       \
-  F(AllocateInTargetSpace, 2, 1)                    \
-  F(AllocateSeqOneByteString, 1, 1)                 \
-  F(AllocateSeqTwoByteString, 1, 1)                 \
-  F(MessageGetStartPosition, 1, 1)                  \
-  F(MessageGetScript, 1, 1)                         \
-  F(IS_VAR, 1, 1)                                   \
-  F(ThrowConstructedNonConstructable, 1, 1)         \
-  F(ThrowDerivedConstructorReturnedNonObject, 0, 1) \
-  F(ThrowCalledNonCallable, 1, 1)                   \
-  F(ThrowCalledOnNullOrUndefined, 1, 1)             \
-  F(CreateListFromArrayLike, 1, 1)                  \
-  F(IncrementUseCounter, 1, 1)                      \
-  F(GetAndResetRuntimeCallStats, -1 /* <= 2 */, 1)  \
-  F(EnqueueMicrotask, 1, 1)                         \
-  F(RunMicrotasks, 0, 1)                            \
-  F(OrdinaryHasInstance, 2, 1)                      \
-  F(IsWasmObject, 1, 1)                             \
-  F(Typeof, 1, 1)
+  F(ThrowUndefinedOrNullToObject, 1, 1)             \
+  F(Typeof, 1, 1)                                   \
+  F(UnwindAndFindExceptionHandler, 0, 1)
 
 #define FOR_EACH_INTRINSIC_LITERALS(F) \
   F(CreateRegExpLiteral, 4, 1)         \
@@ -372,7 +372,6 @@ namespace internal {
   F(SetPrototype, 2, 1)                              \
   F(OptimizeObjectForAddingMultipleProperties, 2, 1) \
   F(GetProperty, 2, 1)                               \
-  F(GetGlobal, 3, 1)                                 \
   F(KeyedGetProperty, 2, 1)                          \
   F(StoreGlobalViaContext_Sloppy, 2, 1)              \
   F(StoreGlobalViaContext_Strict, 2, 1)              \
@@ -465,7 +464,6 @@ namespace internal {
   F(DeclareGlobals, 3, 1)               \
   F(DeclareGlobalsForInterpreter, 3, 1) \
   F(InitializeVarGlobal, 3, 1)          \
-  F(InitializeConstGlobal, 2, 1)        \
   F(DeclareEvalFunction, 2, 1)          \
   F(DeclareEvalVar, 1, 1)               \
   F(NewSloppyArguments_Generic, 1, 1)   \
@@ -838,12 +836,15 @@ namespace internal {
   F(RunningInSimulator, 0, 1)                 \
   F(IsConcurrentRecompilationSupported, 0, 1) \
   F(OptimizeFunctionOnNextCall, -1, 1)        \
+  F(InterpretFunctionOnNextCall, 1, 1)        \
+  F(BaselineFunctionOnNextCall, 1, 1)         \
   F(OptimizeOsr, -1, 1)                       \
   F(NeverOptimizeFunction, 1, 1)              \
   F(GetOptimizationStatus, -1, 1)             \
   F(UnblockConcurrentRecompilation, 0, 1)     \
   F(GetOptimizationCount, 1, 1)               \
   F(GetUndetectable, 0, 1)                    \
+  F(GetCallable, 0, 1)                        \
   F(ClearFunctionTypeFeedback, 1, 1)          \
   F(CheckWasmWrapperElision, 2, 1)            \
   F(NotifyContextDisposed, 0, 1)              \
@@ -882,7 +883,10 @@ namespace internal {
   F(HasFixedFloat32Elements, 1, 1)            \
   F(HasFixedFloat64Elements, 1, 1)            \
   F(HasFixedUint8ClampedElements, 1, 1)       \
-  F(SpeciesProtector, 0, 1)
+  F(SpeciesProtector, 0, 1)                   \
+  F(SerializeWasmModule, 1, 1)                \
+  F(DeserializeWasmModule, 1, 1)              \
+  F(IsAsmWasmCode, 1, 1)
 
 #define FOR_EACH_INTRINSIC_TYPEDARRAY(F)     \
   F(ArrayBufferGetByteLength, 1, 1)          \
@@ -917,7 +921,9 @@ namespace internal {
   F(DataViewSetFloat32, 4, 1)                \
   F(DataViewSetFloat64, 4, 1)
 
-#define FOR_EACH_INTRINSIC_WASM(F) F(WasmGrowMemory, 1, 1)
+#define FOR_EACH_INTRINSIC_WASM(F) \
+  F(WasmGrowMemory, 1, 1)          \
+  F(WasmThrowTypeError, 0, 1)
 
 #define FOR_EACH_INTRINSIC_RETURN_PAIR(F) \
   F(LoadLookupSlotForCall, 1, 2)
@@ -940,6 +946,7 @@ namespace internal {
   F(KeyedStoreIC_Slow, 5, 1)                     \
   F(LoadElementWithInterceptor, 2, 1)            \
   F(LoadGlobalIC_Miss, 2, 1)                     \
+  F(LoadGlobalIC_Slow, 2, 1)                     \
   F(LoadIC_Miss, 4, 1)                           \
   F(LoadIC_MissFromStubFailure, 4, 1)            \
   F(LoadPropertyWithInterceptor, 3, 1)           \
@@ -1062,7 +1069,7 @@ class Runtime : public AllStatic {
 
   MUST_USE_RESULT static MaybeHandle<Object> GetObjectProperty(
       Isolate* isolate, Handle<Object> object, Handle<Object> key,
-      bool should_throw_reference_error = false);
+      bool* is_found_out = nullptr);
 
   enum TypedArrayId {
     // arrayIds below should be synchronized with typedarray.js natives.
@@ -1130,8 +1137,8 @@ class AllocateTargetSpace : public BitField<AllocationSpace, 1, 3> {};
 
 class DeclareGlobalsEvalFlag : public BitField<bool, 0, 1> {};
 class DeclareGlobalsNativeFlag : public BitField<bool, 1, 1> {};
-STATIC_ASSERT(LANGUAGE_END == 3);
-class DeclareGlobalsLanguageMode : public BitField<LanguageMode, 2, 2> {};
+STATIC_ASSERT(LANGUAGE_END == 2);
+class DeclareGlobalsLanguageMode : public BitField<LanguageMode, 2, 1> {};
 
 }  // namespace internal
 }  // namespace v8

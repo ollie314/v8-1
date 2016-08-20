@@ -1264,11 +1264,6 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ sub_s(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
                i.InputDoubleRegister(1));
       break;
-    case kMips64SubPreserveNanS:
-      __ SubNanPreservePayloadAndSign_s(i.OutputDoubleRegister(),
-                                        i.InputDoubleRegister(0),
-                                        i.InputDoubleRegister(1));
-      break;
     case kMips64MulS:
       // TODO(plind): add special case: right op is -1.0, see arm port.
       __ mul_s(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
@@ -1296,7 +1291,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ abs_s(i.OutputSingleRegister(), i.InputSingleRegister(0));
       break;
     case kMips64NegS:
-      __ neg_s(i.OutputSingleRegister(), i.InputSingleRegister(0));
+      __ Neg_s(i.OutputSingleRegister(), i.InputSingleRegister(0));
       break;
     case kMips64SqrtS: {
       __ sqrt_s(i.OutputDoubleRegister(), i.InputDoubleRegister(0));
@@ -1321,11 +1316,6 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kMips64SubD:
       __ sub_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
                i.InputDoubleRegister(1));
-      break;
-    case kMips64SubPreserveNanD:
-      __ SubNanPreservePayloadAndSign_d(i.OutputDoubleRegister(),
-                                        i.InputDoubleRegister(0),
-                                        i.InputDoubleRegister(1));
       break;
     case kMips64MulD:
       // TODO(plind): add special case: right op is -1.0, see arm port.
@@ -1353,7 +1343,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ abs_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0));
       break;
     case kMips64NegD:
-      __ neg_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0));
+      __ Neg_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0));
       break;
     case kMips64SqrtD: {
       __ sqrt_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0));
@@ -1742,6 +1732,15 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       } else {
         __ sd(i.InputRegister(0), MemOperand(sp, i.InputInt32(1)));
       }
+      break;
+    }
+    case kMips64ByteSwap64: {
+      __ ByteSwapSigned(i.OutputRegister(0), i.InputRegister(0), 8);
+      break;
+    }
+    case kMips64ByteSwap32: {
+      __ ByteSwapUnsigned(i.OutputRegister(0), i.InputRegister(0), 4);
+      __ dsrl32(i.OutputRegister(0), i.OutputRegister(0), 0);
       break;
     }
     case kCheckedLoadInt8:

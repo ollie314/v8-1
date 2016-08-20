@@ -596,7 +596,7 @@ class IndentedScope BASE_EMBEDDED {
 //-----------------------------------------------------------------------------
 
 AstPrinter::AstPrinter(Isolate* isolate)
-    : output_(nullptr), size_(0), pos_(0), indent_(0) {
+    : isolate_(isolate), output_(nullptr), size_(0), pos_(0), indent_(0) {
   InitializeAstVisitor(isolate);
 }
 
@@ -722,8 +722,7 @@ void AstPrinter::VisitBlock(Block* node) {
 
 // TODO(svenpanne) Start with IndentedScope.
 void AstPrinter::VisitVariableDeclaration(VariableDeclaration* node) {
-  PrintLiteralWithModeIndented(Variable::Mode2String(node->mode()),
-                               node->proxy()->var(),
+  PrintLiteralWithModeIndented("VARIABLE", node->proxy()->var(),
                                node->proxy()->name());
 }
 
@@ -1062,6 +1061,9 @@ void AstPrinter::VisitVariableProxy(VariableProxy* node) {
         break;
       case VariableLocation::LOOKUP:
         SNPrintF(buf + pos, " lookup");
+        break;
+      case VariableLocation::MODULE:
+        SNPrintF(buf + pos, " module");
         break;
     }
     PrintLiteralWithModeIndented(buf.start(), var, node->name());

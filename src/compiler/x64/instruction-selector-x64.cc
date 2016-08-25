@@ -1388,6 +1388,13 @@ void InstructionSelector::VisitFloat32Sqrt(Node* node) {
   VisitRO(this, node, kSSEFloat32Sqrt);
 }
 
+void InstructionSelector::VisitFloat32Max(Node* node) {
+  VisitRRO(this, node, kSSEFloat32Max);
+}
+
+void InstructionSelector::VisitFloat32Min(Node* node) {
+  VisitRRO(this, node, kSSEFloat32Min);
+}
 
 void InstructionSelector::VisitFloat64Add(Node* node) {
   VisitFloatBinop(this, node, kAVXFloat64Add, kSSEFloat64Add);
@@ -2204,6 +2211,17 @@ void InstructionSelector::VisitAtomicStore(Node* node) {
   inputs[input_count++] = g.UseUniqueRegister(value);
   InstructionCode code = opcode | AddressingModeField::encode(addressing_mode);
   Emit(code, 0, static_cast<InstructionOperand*>(nullptr), input_count, inputs);
+}
+
+void InstructionSelector::VisitCreateInt32x4(Node* node) {
+  X64OperandGenerator g(this);
+  Emit(kX64Int32x4Create, g.DefineAsRegister(node), g.Use(node->InputAt(0)));
+}
+
+void InstructionSelector::VisitInt32x4ExtractLane(Node* node) {
+  X64OperandGenerator g(this);
+  Emit(kX64Int32x4ExtractLane, g.DefineAsRegister(node),
+       g.UseRegister(node->InputAt(0)), g.UseImmediate(node->InputAt(1)));
 }
 
 // static

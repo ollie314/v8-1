@@ -2,11 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "src/compiler/js-typed-lowering.h"
 #include "src/code-factory.h"
+#include "src/compilation-dependencies.h"
 #include "src/compiler/access-builder.h"
 #include "src/compiler/js-graph.h"
 #include "src/compiler/js-operator.h"
-#include "src/compiler/js-typed-lowering.h"
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node-properties.h"
 #include "src/compiler/operator-properties.h"
@@ -1025,43 +1026,18 @@ TEST_F(JSTypedLoweringTest, JSSubtractSmis) {
 // Test that instanceOf is reduced if and only if the right-hand side is a
 // function constant. Functional correctness is ensured elsewhere.
 
-TEST_F(JSTypedLoweringTest, JSInstanceOfSpecializationWithoutSmiCheck) {
+TEST_F(JSTypedLoweringTest, JSInstanceOfSpecialization) {
   Node* const context = Parameter(Type::Any());
   Node* const frame_state = EmptyFrameState();
   Node* const effect = graph()->start();
   Node* const control = graph()->start();
 
-  // Reduce if left-hand side is known to be an object.
-  Node* instanceOf =
-      graph()->NewNode(javascript()->InstanceOf(), Parameter(Type::Object(), 0),
-                       HeapConstant(isolate()->object_function()), context,
-                       frame_state, effect, control);
-  Node* dummy = graph()->NewNode(javascript()->ToObject(), instanceOf, context,
-                                 frame_state, effect, control);
-  Reduction r = Reduce(instanceOf);
-  ASSERT_TRUE(r.Changed());
-  ASSERT_EQ(r.replacement(), dummy->InputAt(0));
-  ASSERT_NE(instanceOf, dummy->InputAt(0));
-}
-
-
-TEST_F(JSTypedLoweringTest, JSInstanceOfSpecializationWithSmiCheck) {
-  Node* const context = Parameter(Type::Any());
-  Node* const frame_state = EmptyFrameState();
-  Node* const effect = graph()->start();
-  Node* const control = graph()->start();
-
-  // Reduce if left-hand side could be a Smi.
   Node* instanceOf =
       graph()->NewNode(javascript()->InstanceOf(), Parameter(Type::Any(), 0),
                        HeapConstant(isolate()->object_function()), context,
                        frame_state, effect, control);
-  Node* dummy = graph()->NewNode(javascript()->ToObject(), instanceOf, context,
-                                 frame_state, effect, control);
   Reduction r = Reduce(instanceOf);
   ASSERT_TRUE(r.Changed());
-  ASSERT_EQ(r.replacement(), dummy->InputAt(0));
-  ASSERT_NE(instanceOf, dummy->InputAt(0));
 }
 
 

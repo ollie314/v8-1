@@ -651,9 +651,24 @@ Type* Typer::Visitor::TypeInductionVariablePhi(Node* node) {
   DCHECK(res != induction_vars_->induction_variables().end());
   InductionVariable* induction_var = res->second;
 
+  InductionVariable::ArithmeticType arithmetic_type = induction_var->Type();
+
   double min = -V8_INFINITY;
   double max = V8_INFINITY;
-  if (increment_type->Min() >= 0) {
+
+  double increment_min;
+  double increment_max;
+  if (arithmetic_type == InductionVariable::ArithmeticType::kAddition) {
+    increment_min = increment_type->Min();
+    increment_max = increment_type->Max();
+  } else {
+    DCHECK(arithmetic_type == InductionVariable::ArithmeticType::kSubtraction);
+    increment_min = -increment_type->Max();
+    increment_max = -increment_type->Min();
+  }
+
+  if (increment_min >= 0) {
+    // increasing sequence
     min = initial_type->Min();
     for (auto bound : induction_var->upper_bounds()) {
       Type* bound_type = TypeOrNone(bound.bound);
@@ -668,11 +683,12 @@ Type* Typer::Visitor::TypeInductionVariablePhi(Node* node) {
       if (bound.kind == InductionVariable::kStrict) {
         bound_max -= 1;
       }
-      max = std::min(max, bound_max + increment_type->Max());
+      max = std::min(max, bound_max + increment_max);
     }
     // The upper bound must be at least the initial value's upper bound.
     max = std::max(max, initial_type->Max());
-  } else if (increment_type->Max() <= 0) {
+  } else if (increment_max <= 0) {
+    // decreasing sequence
     max = initial_type->Max();
     for (auto bound : induction_var->lower_bounds()) {
       Type* bound_type = TypeOrNone(bound.bound);
@@ -687,7 +703,7 @@ Type* Typer::Visitor::TypeInductionVariablePhi(Node* node) {
       if (bound.kind == InductionVariable::kStrict) {
         bound_min += 1;
       }
-      min = std::max(min, bound_min + increment_type->Min());
+      min = std::max(min, bound_min + increment_min);
     }
     // The lower bound must be at most the initial value's lower bound.
     min = std::min(min, initial_type->Min());
@@ -700,8 +716,11 @@ Type* Typer::Visitor::TypeInductionVariablePhi(Node* node) {
     OFStream os(stdout);
     os << std::setprecision(10);
     os << "Loop (" << NodeProperties::GetControlInput(node)->id()
-       << ") variable bounds for phi " << node->id() << ": (" << min << ", "
-       << max << ")\n";
+       << ") variable bounds in "
+       << (arithmetic_type == InductionVariable::ArithmeticType::kAddition
+               ? "addition"
+               : "subtraction")
+       << " for phi " << node->id() << ": (" << min << ", " << max << ")\n";
   }
   return Type::Range(min, max, typer_->zone());
 }
@@ -1961,28 +1980,6 @@ Type* Typer::Visitor::TypeChangeUint32ToUint64(Node* node) {
   return Type::Internal();
 }
 
-Type* Typer::Visitor::TypeImpossibleToWord32(Node* node) {
-  return Type::None();
-}
-
-Type* Typer::Visitor::TypeImpossibleToWord64(Node* node) {
-  return Type::None();
-}
-
-Type* Typer::Visitor::TypeImpossibleToFloat32(Node* node) {
-  return Type::None();
-}
-
-Type* Typer::Visitor::TypeImpossibleToFloat64(Node* node) {
-  return Type::None();
-}
-
-Type* Typer::Visitor::TypeImpossibleToTagged(Node* node) {
-  return Type::None();
-}
-
-Type* Typer::Visitor::TypeImpossibleToBit(Node* node) { return Type::None(); }
-
 Type* Typer::Visitor::TypeTruncateFloat64ToFloat32(Node* node) {
   return Type::Intersect(Type::Number(), Type::UntaggedFloat32(), zone());
 }
@@ -2084,6 +2081,9 @@ Type* Typer::Visitor::TypeFloat32LessThanOrEqual(Node* node) {
   return Type::Boolean();
 }
 
+Type* Typer::Visitor::TypeFloat32Max(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat32Min(Node* node) { return Type::Number(); }
 
 Type* Typer::Visitor::TypeFloat64Add(Node* node) { return Type::Number(); }
 

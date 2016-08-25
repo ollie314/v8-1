@@ -1003,14 +1003,6 @@ void Verifier::Visitor::Check(Node* node) {
       // CheckUpperIs(node, to));
       break;
     }
-    case IrOpcode::kImpossibleToWord32:
-    case IrOpcode::kImpossibleToWord64:
-    case IrOpcode::kImpossibleToFloat32:
-    case IrOpcode::kImpossibleToFloat64:
-    case IrOpcode::kImpossibleToTagged:
-    case IrOpcode::kImpossibleToBit:
-      break;
-
     case IrOpcode::kCheckBounds:
       CheckValueInputIs(node, 0, Type::Any());
       CheckValueInputIs(node, 1, Type::Unsigned31());
@@ -1186,6 +1178,8 @@ void Verifier::Visitor::Check(Node* node) {
     case IrOpcode::kFloat32Equal:
     case IrOpcode::kFloat32LessThan:
     case IrOpcode::kFloat32LessThanOrEqual:
+    case IrOpcode::kFloat32Max:
+    case IrOpcode::kFloat32Min:
     case IrOpcode::kFloat64Add:
     case IrOpcode::kFloat64Sub:
     case IrOpcode::kFloat64Neg:

@@ -56,7 +56,8 @@ namespace internal {
   F(FixedArrayGet, 2, 1)             \
   F(FixedArraySet, 3, 1)             \
   F(ArraySpeciesConstructor, 1, 1)   \
-  F(ArrayIncludes_Slow, 3, 1)
+  F(ArrayIncludes_Slow, 3, 1)        \
+  F(ArrayIndexOf, 3, 1)
 
 #define FOR_EACH_INTRINSIC_ATOMICS(F)           \
   F(ThrowNotIntegerSharedTypedArrayError, 1, 1) \
@@ -303,6 +304,7 @@ namespace internal {
   F(NewTypeError, 2, 1)                             \
   F(OrdinaryHasInstance, 2, 1)                      \
   F(PromiseRejectEvent, 3, 1)                       \
+  F(PromiseRejectEventFromStack, 2, 1)              \
   F(PromiseRevokeReject, 1, 1)                      \
   F(PromoteScheduledException, 0, 1)                \
   F(ReThrow, 1, 1)                                  \
@@ -886,7 +888,8 @@ namespace internal {
   F(SpeciesProtector, 0, 1)                   \
   F(SerializeWasmModule, 1, 1)                \
   F(DeserializeWasmModule, 1, 1)              \
-  F(IsAsmWasmCode, 1, 1)
+  F(IsAsmWasmCode, 1, 1)                      \
+  F(IsNotAsmWasmCode, 1, 1)
 
 #define FOR_EACH_INTRINSIC_TYPEDARRAY(F)     \
   F(ArrayBufferGetByteLength, 1, 1)          \

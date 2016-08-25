@@ -4576,6 +4576,13 @@ Maybe<bool> Object::SetPropertyInternal(LookupIterator* it,
           if (result.IsNothing() || result.FromJust()) return result;
           // Interceptor modified the store target but failed to set the
           // property.
+          // TODO(jochen): Remove after we've identified the faulty interceptor.
+          if (!store_target_map.is_null() &&
+              *store_target_map != it->GetStoreTarget()->map()) {
+            it->isolate()->PushStackTraceAndDie(
+                0xabababaa, v8::ToCData<void*>(it->GetInterceptor()->setter()),
+                nullptr, 0xabababab);
+          }
           Utils::ApiCheck(store_target_map.is_null() ||
                               *store_target_map == it->GetStoreTarget()->map(),
                           it->IsElement() ? "v8::IndexedPropertySetterCallback"
@@ -8623,7 +8630,7 @@ MaybeHandle<Object> JSObject::DefineAccessor(LookupIterator* it,
   DCHECK(getter->IsCallable() || getter->IsUndefined(isolate) ||
          getter->IsNull(isolate) || getter->IsFunctionTemplateInfo());
   DCHECK(setter->IsCallable() || setter->IsUndefined(isolate) ||
-         setter->IsNull(isolate) || getter->IsFunctionTemplateInfo());
+         setter->IsNull(isolate) || setter->IsFunctionTemplateInfo());
   it->TransitionToAccessorProperty(getter, setter, attributes);
 
   return isolate->factory()->undefined_value();
@@ -10170,20 +10177,74 @@ bool ArrayList::IsFull() {
   return kFirstIndex + Length() == capacity;
 }
 
+namespace {
 
-Handle<ArrayList> ArrayList::EnsureSpace(Handle<ArrayList> array, int length) {
+Handle<FixedArray> EnsureSpaceInFixedArray(Handle<FixedArray> array,
+                                           int length) {
   int capacity = array->length();
-  bool empty = (capacity == 0);
-  if (capacity < kFirstIndex + length) {
+  if (capacity < length) {
     Isolate* isolate = array->GetIsolate();
-    int new_capacity = kFirstIndex + length;
+    int new_capacity = length;
     new_capacity = new_capacity + Max(new_capacity / 2, 2);
     int grow_by = new_capacity - capacity;
     array = Handle<ArrayList>::cast(
         isolate->factory()->CopyFixedArrayAndGrow(array, grow_by));
-    if (empty) array->SetLength(0);
   }
   return array;
+}
+
+}  // namespace
+
+Handle<ArrayList> ArrayList::EnsureSpace(Handle<ArrayList> array, int length) {
+  const bool empty = (array->length() == 0);
+  auto ret = Handle<ArrayList>::cast(
+      EnsureSpaceInFixedArray(array, kFirstIndex + length));
+  if (empty) ret->SetLength(0);
+  return ret;
+}
+
+// static
+Handle<FrameArray> FrameArray::AppendJSFrame(Handle<FrameArray> in,
+                                             Handle<Object> receiver,
+                                             Handle<JSFunction> function,
+                                             Handle<AbstractCode> code,
+                                             int offset, int flags) {
+  const int frame_count = in->FrameCount();
+  const int new_length = LengthFor(frame_count + 1);
+  Handle<FrameArray> array = EnsureSpace(in, new_length);
+  array->SetReceiver(frame_count, *receiver);
+  array->SetFunction(frame_count, *function);
+  array->SetCode(frame_count, *code);
+  array->SetOffset(frame_count, Smi::FromInt(offset));
+  array->SetFlags(frame_count, Smi::FromInt(flags));
+  array->set(kFrameCountIndex, Smi::FromInt(frame_count + 1));
+  return array;
+}
+
+// static
+Handle<FrameArray> FrameArray::AppendWasmFrame(Handle<FrameArray> in,
+                                               Handle<Object> wasm_object,
+                                               int wasm_function_index,
+                                               Handle<AbstractCode> code,
+                                               int offset, int flags) {
+  const int frame_count = in->FrameCount();
+  const int new_length = LengthFor(frame_count + 1);
+  Handle<FrameArray> array = EnsureSpace(in, new_length);
+  array->SetWasmObject(frame_count, *wasm_object);
+  array->SetWasmFunctionIndex(frame_count, Smi::FromInt(wasm_function_index));
+  array->SetCode(frame_count, *code);
+  array->SetOffset(frame_count, Smi::FromInt(offset));
+  array->SetFlags(frame_count, Smi::FromInt(flags));
+  array->set(kFrameCountIndex, Smi::FromInt(frame_count + 1));
+  return array;
+}
+
+void FrameArray::ShrinkToFit() { Shrink(LengthFor(FrameCount())); }
+
+// static
+Handle<FrameArray> FrameArray::EnsureSpace(Handle<FrameArray> array,
+                                           int length) {
+  return Handle<FrameArray>::cast(EnsureSpaceInFixedArray(array, length));
 }
 
 Handle<DescriptorArray> DescriptorArray::Allocate(Isolate* isolate,

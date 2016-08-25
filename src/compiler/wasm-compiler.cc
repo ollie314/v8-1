@@ -649,12 +649,14 @@ Node* WasmGraphBuilder::Binop(wasm::WasmOpcode opcode, Node* left, Node* right,
       std::swap(left, right);
       break;
     case wasm::kExprF32Min:
-      return BuildF32Min(left, right);
+      op = m->Float32Min();
+      break;
     case wasm::kExprF64Min:
       op = m->Float64Min();
       break;
     case wasm::kExprF32Max:
-      return BuildF32Max(left, right);
+      op = m->Float32Max();
+      break;
     case wasm::kExprF64Max:
       op = m->Float64Max();
       break;
@@ -1236,46 +1238,6 @@ Node* WasmGraphBuilder::BuildF64CopySign(Node* left, Node* right) {
 
   return graph()->NewNode(m->Float64InsertHighWord32(), left, new_high_word);
 #endif
-}
-
-Node* WasmGraphBuilder::BuildF32Min(Node* left, Node* right) {
-  Diamond left_le_right(graph(), jsgraph()->common(),
-                        Binop(wasm::kExprF32Le, left, right));
-
-  Diamond right_lt_left(graph(), jsgraph()->common(),
-                        Binop(wasm::kExprF32Lt, right, left));
-
-  Diamond left_is_not_nan(graph(), jsgraph()->common(),
-                          Binop(wasm::kExprF32Eq, left, left));
-
-  return left_le_right.Phi(
-      wasm::kAstF32, left,
-      right_lt_left.Phi(
-          wasm::kAstF32, right,
-          left_is_not_nan.Phi(
-              wasm::kAstF32,
-              Binop(wasm::kExprF32Mul, right, Float32Constant(1.0)),
-              Binop(wasm::kExprF32Mul, left, Float32Constant(1.0)))));
-}
-
-Node* WasmGraphBuilder::BuildF32Max(Node* left, Node* right) {
-  Diamond left_ge_right(graph(), jsgraph()->common(),
-                        Binop(wasm::kExprF32Ge, left, right));
-
-  Diamond right_gt_left(graph(), jsgraph()->common(),
-                        Binop(wasm::kExprF32Gt, right, left));
-
-  Diamond left_is_not_nan(graph(), jsgraph()->common(),
-                          Binop(wasm::kExprF32Eq, left, left));
-
-  return left_ge_right.Phi(
-      wasm::kAstF32, left,
-      right_gt_left.Phi(
-          wasm::kAstF32, right,
-          left_is_not_nan.Phi(
-              wasm::kAstF32,
-              Binop(wasm::kExprF32Mul, right, Float32Constant(1.0)),
-              Binop(wasm::kExprF32Mul, left, Float32Constant(1.0)))));
 }
 
 Node* WasmGraphBuilder::BuildI32SConvertF32(Node* input,
@@ -2904,6 +2866,14 @@ void WasmGraphBuilder::SetSourcePosition(Node* node,
     source_position_table_->SetSourcePosition(node, pos);
 }
 
+Node* WasmGraphBuilder::DefaultS128Value() {
+  // TODO(gdeepti): Introduce Simd128Constant to common-operator.h and use
+  // instead of creating a SIMD Value.
+  return graph()->NewNode(jsgraph()->machine()->CreateInt32x4(),
+                          Int32Constant(0), Int32Constant(0), Int32Constant(0),
+                          Int32Constant(0));
+}
+
 Node* WasmGraphBuilder::SimdOp(wasm::WasmOpcode opcode,
                                const NodeVector& inputs) {
   switch (opcode) {
@@ -2911,8 +2881,8 @@ Node* WasmGraphBuilder::SimdOp(wasm::WasmOpcode opcode,
       return graph()->NewNode(jsgraph()->machine()->Int32x4ExtractLane(),
                               inputs[0], inputs[1]);
     case wasm::kExprI32x4Splat:
-      return graph()->NewNode(jsgraph()->machine()->Int32x4ExtractLane(),
-                              inputs[0], inputs[0], inputs[0], inputs[0]);
+      return graph()->NewNode(jsgraph()->machine()->CreateInt32x4(), inputs[0],
+                              inputs[0], inputs[0], inputs[0]);
     default:
       return graph()->NewNode(UnsupportedOpcode(opcode), nullptr);
   }
@@ -3208,11 +3178,7 @@ void WasmCompilationUnit::ExecuteCompilation() {
   }
   job_.reset(Pipeline::NewWasmCompilationJob(&info_, jsgraph_->graph(),
                                              descriptor, source_positions));
-
-  // The function name {OptimizeGraph()} is misleading but necessary because we
-  // want to use the CompilationJob interface. A better name would be
-  // ScheduleGraphAndSelectInstructions.
-  ok_ = job_->OptimizeGraph() == CompilationJob::SUCCEEDED;
+  ok_ = job_->ExecuteJob() == CompilationJob::SUCCEEDED;
   // TODO(bradnelson): Improve histogram handling of size_t.
   // TODO(ahaas): The counters are not thread-safe at the moment.
   //    isolate_->counters()->wasm_compile_function_peak_memory_bytes()
@@ -3244,7 +3210,7 @@ Handle<Code> WasmCompilationUnit::FinishCompilation() {
 
     return Handle<Code>::null();
   }
-  if (job_->GenerateCode() != CompilationJob::SUCCEEDED) {
+  if (job_->FinalizeJob() != CompilationJob::SUCCEEDED) {
     return Handle<Code>::null();
   }
   base::ElapsedTimer compile_timer;

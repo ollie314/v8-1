@@ -12,20 +12,18 @@
 namespace v8 {
 namespace internal {
 
-
-#define ERROR_CODES(T)                          \
-  T(ExpressionProduction, 0)                    \
-  T(FormalParameterInitializerProduction, 1)    \
-  T(BindingPatternProduction, 2)                \
-  T(AssignmentPatternProduction, 3)             \
-  T(DistinctFormalParametersProduction, 4)      \
-  T(StrictModeFormalParametersProduction, 5)    \
-  T(ArrowFormalParametersProduction, 6)         \
-  T(LetPatternProduction, 7)                    \
-  T(ObjectLiteralProduction, 8)                 \
-  T(TailCallExpressionProduction, 9)            \
-  T(AsyncArrowFormalParametersProduction, 10)   \
-  T(AsyncBindingPatternProduction, 11)
+#define ERROR_CODES(T)                       \
+  T(ExpressionProduction, 0)                 \
+  T(FormalParameterInitializerProduction, 1) \
+  T(BindingPatternProduction, 2)             \
+  T(AssignmentPatternProduction, 3)          \
+  T(DistinctFormalParametersProduction, 4)   \
+  T(StrictModeFormalParametersProduction, 5) \
+  T(ArrowFormalParametersProduction, 6)      \
+  T(LetPatternProduction, 7)                 \
+  T(ObjectLiteralProduction, 8)              \
+  T(TailCallExpressionProduction, 9)         \
+  T(AsyncArrowFormalParametersProduction, 10)
 
 template <typename Traits>
 class ExpressionClassifier {
@@ -62,12 +60,11 @@ class ExpressionClassifier {
     ERROR_CODES(DEFINE_PRODUCTION)
 #undef DEFINE_PRODUCTION
 
-    ExpressionProductions =
-        (ExpressionProduction | FormalParameterInitializerProduction |
-         TailCallExpressionProduction),
-    PatternProductions =
-        (BindingPatternProduction | AssignmentPatternProduction |
-         LetPatternProduction | AsyncBindingPatternProduction),
+        ExpressionProductions =
+            (ExpressionProduction | FormalParameterInitializerProduction |
+             TailCallExpressionProduction),
+    PatternProductions = (BindingPatternProduction |
+                          AssignmentPatternProduction | LetPatternProduction),
     FormalParametersProductions = (DistinctFormalParametersProduction |
                                    StrictModeFormalParametersProduction),
     AllProductions =
@@ -150,10 +147,6 @@ class ExpressionClassifier {
     return is_valid(AsyncArrowFormalParametersProduction);
   }
 
-  bool is_valid_async_binding_pattern() const {
-    return is_valid(AsyncBindingPatternProduction);
-  }
-
   V8_INLINE const Error& expression_error() const {
     return reported_error(kExpressionProduction);
   }
@@ -203,10 +196,6 @@ class ExpressionClassifier {
 
   V8_INLINE const Error& async_arrow_formal_parameters_error() const {
     return reported_error(kAsyncArrowFormalParametersProduction);
-  }
-
-  V8_INLINE const Error& async_binding_pattern_error() const {
-    return reported_error(kAsyncBindingPatternProduction);
   }
 
   V8_INLINE bool is_simple_parameter_list() const {
@@ -280,14 +269,6 @@ class ExpressionClassifier {
     Add(Error(loc, message, kAsyncArrowFormalParametersProduction, arg));
   }
 
-  void RecordAsyncBindingPatternError(const Scanner::Location& loc,
-                                      MessageTemplate::Template message,
-                                      const char* arg = nullptr) {
-    if (!is_valid_async_binding_pattern()) return;
-    invalid_productions_ |= AsyncBindingPatternProduction;
-    Add(Error(loc, message, kAsyncBindingPatternProduction, arg));
-  }
-
   void RecordDuplicateFormalParameterError(const Scanner::Location& loc) {
     if (!is_valid_formal_parameter_list_without_duplicates()) return;
     invalid_productions_ |= DistinctFormalParametersProduction;
@@ -328,20 +309,6 @@ class ExpressionClassifier {
     if (has_tail_call_expression()) return;
     invalid_productions_ |= TailCallExpressionProduction;
     Add(Error(loc, message, kTailCallExpressionProduction, arg));
-  }
-
-  void ForgiveObjectLiteralError() {
-    if (!(invalid_productions_ & ObjectLiteralProduction)) return;
-    Error& e = reported_error(kObjectLiteralProduction);
-    e.kind = kUnusedError;
-    invalid_productions_ &= ~ObjectLiteralProduction;
-  }
-
-  void ForgiveAssignmentPatternError() {
-    if (!(invalid_productions_ & AssignmentPatternProduction)) return;
-    Error& e = reported_error(kAssignmentPatternProduction);
-    e.kind = kUnusedError;
-    invalid_productions_ &= ~AssignmentPatternProduction;
   }
 
   void Accumulate(ExpressionClassifier* inner, unsigned productions,
@@ -432,7 +399,7 @@ class ExpressionClassifier {
   }
 
  private:
-  V8_INLINE Error& reported_error(ErrorKind kind) const {
+  V8_INLINE const Error& reported_error(ErrorKind kind) const {
     if (invalid_productions_ & (1 << kind)) {
       for (int i = reported_errors_begin_; i < reported_errors_end_; i++) {
         if (reported_errors_->at(i).kind == kind)

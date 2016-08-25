@@ -401,15 +401,6 @@
         'outputs': ['<(INTERMEDIATE_DIR)/bytecode-peephole-table.cc'],
         'action': ['<(mkpeephole_exec)', '<(INTERMEDIATE_DIR)/bytecode-peephole-table.cc' ],
         'process_outputs_as_sources': 1,
-        'conditions': [
-          ['want_separate_host_toolset_mkpeephole==1', {
-            'dependencies': ['mkpeephole#host'],
-            'toolsets': ['host'],
-          }, {
-            'dependencies': ['mkpeephole'],
-            'toolsets': ['target'],
-          }],
-        ],
       }],
       'sources': [  ### gcmole(all) ###
         '../include/v8-debug.h',
@@ -471,7 +462,6 @@
         'ast/prettyprinter.cc',
         'ast/prettyprinter.h',
         'ast/scopeinfo.cc',
-        'ast/scopeinfo.h',
         'ast/scopes.cc',
         'ast/scopes.h',
         'ast/variables.cc',
@@ -1054,6 +1044,8 @@
         'parsing/func-name-inferrer.h',
         'parsing/parameter-initializer-rewriter.cc',
         'parsing/parameter-initializer-rewriter.h',
+        'parsing/parse-info.cc',
+        'parsing/parse-info.h',
         'parsing/parser-base.h',
         'parsing/parser.cc',
         'parsing/parser.h',
@@ -1276,6 +1268,13 @@
           'toolsets': ['host', 'target'],
         }, {
           'toolsets': ['target'],
+        }],
+        ['want_separate_host_toolset_mkpeephole==1', {
+          'toolsets': ['host', 'target'],
+          'dependencies': ['mkpeephole#host'],
+        }, {
+          'toolsets': ['target'],
+          'dependencies': ['mkpeephole'],
         }],
         ['v8_target_arch=="arm"', {
           'sources': [  ### gcmole(arch:arm) ###
@@ -2193,7 +2192,6 @@
           'js/harmony-atomics.js',
           'js/harmony-simd.js',
           'js/harmony-string-padding.js',
-          'js/promise-extra.js',
           'js/harmony-async-await.js'
         ],
         'libraries_bin_file': '<(SHARED_INTERMEDIATE_DIR)/libraries.bin',

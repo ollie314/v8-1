@@ -2,9 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --expose-wasm
+// Flags: --validate-asm --allow-natives-syntax
 
 var stdlib = this;
+
+function assertValidAsm(func) {
+  assertTrue(%IsAsmWasmCode(func));
+}
 
 (function TestStdlibConstants() {
   function Module(stdlib) {
@@ -41,35 +45,100 @@ var stdlib = this;
     return {caller:caller, nanCheck:nanCheck};
   }
 
-  var m = Wasm.instantiateModuleFromAsm(Module.toString(), stdlib);
+  var m = Module(stdlib);
+  assertValidAsm(Module);
   assertEquals(1, m.caller());
   assertTrue(isNaN(m.nanCheck()));
 })();
 
 
-(function TestBadNaNStdlib() {
+var stdlib = this;
+var stdlib_root_members = [
+  'Infinity',
+  'NaN',
+];
+var stdlib_math_members = [
+  'E',
+  'LN10',
+  'LN2',
+  'LOG2E',
+  'LOG10E',
+  'PI',
+  'SQRT1_2',
+  'SQRT2',
+  'ceil',
+  'clz32',
+  'floor',
+  'sqrt',
+  'abs',
+  'min',
+  'max',
+  'acos',
+  'asin',
+  'atan',
+  'cos',
+  'sin',
+  'tan',
+  'exp',
+  'log',
+  'atan2',
+  'pow',
+  'imul',
+  'fround',
+];
+
+
+(function TestBadStdlib() {
   function Module(stdlib) {
     "use asm";
-    var StdlibNaN = stdlib.NaN;
-    function foo() { return +StdlibNaN; }
+    var foo = stdlib.NaN;
     return {};
   }
-  assertThrows(function() {
-    Wasm.instantiateModuleFromAsm(Module.toString(), { NaN: 0 });
-  });
+  for (var i = 0; i < stdlib_root_members.length; ++i) {
+    var member = stdlib_root_members[i];
+    var stdlib = {};
+    stdlib[member] = 0;
+    print(member);
+    var code = Module.toString().replace('NaN', member);
+    var decl = eval('(' + code + ')');
+    decl(stdlib);
+    assertTrue(%IsNotAsmWasmCode(decl));
+  }
+  for (var i = 0; i < stdlib_math_members.length; ++i) {
+    var member = stdlib_math_members[i];
+    var stdlib = {Math:{}};
+    stdlib['Math'][member] = 0;
+    print(member);
+    var code = Module.toString().replace('NaN', 'Math.' + member);
+    var decl = eval('(' + code + ')');
+    decl(stdlib);
+    assertTrue(%IsNotAsmWasmCode(decl));
+  }
 })();
 
 
 (function TestMissingNaNStdlib() {
   function Module(stdlib) {
     "use asm";
-    var StdlibNaN = stdlib.NaN;
-    function foo() { return +StdlibNaN; }
+    var foo = stdlib.NaN;
     return {};
   }
-  assertThrows(function() {
-    Wasm.instantiateModuleFromAsm(Module.toString(), {});
-  });
+  for (var i = 0; i < stdlib_root_members.length; ++i) {
+    var member = stdlib_root_members[i];
+    var code = Module.toString().replace('NaN', member);
+    var decl = eval('(' + code + ')');
+    decl({});
+    assertTrue(%IsNotAsmWasmCode(decl));
+  }
+  for (var i = 0; i < stdlib_math_members.length; ++i) {
+    var member = stdlib_math_members[i];
+    var code = Module.toString().replace('NaN', 'Math.' + member);
+    var decl = eval('(' + code + ')');
+    assertThrows(function() {
+      decl({});
+      assertTrue(%IsNotAsmWasmCode(decl));
+    });
+  }
 })();
 
 
@@ -148,7 +217,8 @@ var stdlib = this;
     return {caller:caller};
   }
 
-  var m = Wasm.instantiateModuleFromAsm(Module.toString(), stdlib);
+  var m = Module(stdlib);
+  assertValidAsm(Module);
   assertEquals(1, m.caller());
 })();
 
@@ -292,7 +362,8 @@ var stdlib = this;
       max_f64: max_f64,
     };
   }
-  var m = Wasm.instantiateModuleFromAsm(Module.toString(), stdlib);
+  var m = Module(stdlib);
+  assertValidAsm(Module);
   var values = {
     i32: [
       0, 1, -1, 123, 456, -123, -456,

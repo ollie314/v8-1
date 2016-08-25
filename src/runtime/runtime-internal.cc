@@ -14,6 +14,7 @@
 #include "src/frames-inl.h"
 #include "src/isolate-inl.h"
 #include "src/messages.h"
+#include "src/parsing/parse-info.h"
 #include "src/parsing/parser.h"
 #include "src/wasm/wasm-module.h"
 
@@ -119,18 +120,17 @@ RUNTIME_FUNCTION(Runtime_ThrowWasmError) {
       error, isolate->factory()->stack_trace_symbol());
   // Patch the stack trace (array of <receiver, function, code, position>).
   if (stack_trace_obj->IsJSArray()) {
-    Handle<FixedArray> stack_elements(
-        FixedArray::cast(JSArray::cast(*stack_trace_obj)->elements()));
-    DCHECK_EQ(1, stack_elements->length() % 4);
-    DCHECK(Code::cast(stack_elements->get(3))->kind() == Code::WASM_FUNCTION);
-    DCHECK(stack_elements->get(4)->IsSmi() &&
-           Smi::cast(stack_elements->get(4))->value() >= 0);
-    stack_elements->set(4, Smi::FromInt(-1 - byte_offset));
+    Handle<FrameArray> stack_elements(
+        FrameArray::cast(JSArray::cast(*stack_trace_obj)->elements()));
+    DCHECK(stack_elements->Code(0)->kind() == AbstractCode::WASM_FUNCTION);
+    DCHECK(stack_elements->Offset(0)->value() >= 0);
+    stack_elements->SetOffset(0, Smi::FromInt(-1 - byte_offset));
   }
-  Handle<Object> detailed_stack_trace_obj = JSReceiver::GetDataProperty(
-      error, isolate->factory()->detailed_stack_trace_symbol());
+
   // Patch the detailed stack trace (array of JSObjects with various
   // properties).
+  Handle<Object> detailed_stack_trace_obj = JSReceiver::GetDataProperty(
+      error, isolate->factory()->detailed_stack_trace_symbol());
   if (detailed_stack_trace_obj->IsJSArray()) {
     Handle<FixedArray> stack_elements(
         FixedArray::cast(JSArray::cast(*detailed_stack_trace_obj)->elements()));
@@ -271,6 +271,23 @@ RUNTIME_FUNCTION(Runtime_ThrowApplyNonFunction) {
       isolate, NewTypeError(MessageTemplate::kApplyNonFunction, object, type));
 }
 
+namespace {
+
+void PromiseRejectEvent(Isolate* isolate, Handle<JSObject> promise,
+                        Handle<JSObject> rejected_promise, Handle<Object> value,
+                        bool debug_event) {
+  if (isolate->debug()->is_active() && debug_event) {
+    isolate->debug()->OnPromiseReject(rejected_promise, value);
+  }
+  Handle<Symbol> key = isolate->factory()->promise_has_handler_symbol();
+  // Do not report if we actually have a handler.
+  if (JSReceiver::GetDataProperty(promise, key)->IsUndefined(isolate)) {
+    isolate->ReportPromiseReject(promise, value,
+                                 v8::kPromiseRejectWithNoHandler);
+  }
+}
+
+}  // namespace
 
 RUNTIME_FUNCTION(Runtime_PromiseRejectEvent) {
   DCHECK(args.length() == 3);
@@ -278,16 +295,27 @@ RUNTIME_FUNCTION(Runtime_PromiseRejectEvent) {
   CONVERT_ARG_HANDLE_CHECKED(JSObject, promise, 0);
   CONVERT_ARG_HANDLE_CHECKED(Object, value, 1);
   CONVERT_BOOLEAN_ARG_CHECKED(debug_event, 2);
-  if (debug_event) isolate->debug()->OnPromiseReject(promise, value);
-  Handle<Symbol> key = isolate->factory()->promise_has_handler_symbol();
-  // Do not report if we actually have a handler.
-  if (JSReceiver::GetDataProperty(promise, key)->IsUndefined(isolate)) {
-    isolate->ReportPromiseReject(promise, value,
-                                 v8::kPromiseRejectWithNoHandler);
-  }
+
+  PromiseRejectEvent(isolate, promise, promise, value, debug_event);
   return isolate->heap()->undefined_value();
 }
 
+RUNTIME_FUNCTION(Runtime_PromiseRejectEventFromStack) {
+  DCHECK(args.length() == 2);
+  HandleScope scope(isolate);
+  CONVERT_ARG_HANDLE_CHECKED(JSObject, promise, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Object, value, 1);
+
+  Handle<JSObject> rejected_promise = promise;
+  if (isolate->debug()->is_active()) {
+    Handle<Object> promise_on_stack = isolate->GetPromiseOnStackOnThrow();
+    if (promise_on_stack->IsJSObject()) {
+      rejected_promise = Handle<JSObject>::cast(promise_on_stack);
+    }
+  }
+  PromiseRejectEvent(isolate, promise, rejected_promise, value, true);
+  return isolate->heap()->undefined_value();
+}
 
 RUNTIME_FUNCTION(Runtime_PromiseRevokeReject) {
   DCHECK(args.length() == 1);
@@ -410,10 +438,8 @@ Handle<String> RenderCallSite(Isolate* isolate, Handle<Object> object) {
             : new ParseInfo(&zone, location.script()));
     if (Parser::ParseStatic(info.get())) {
       CallPrinter printer(isolate, location.function()->shared()->IsBuiltin());
-      const char* string = printer.Print(info->literal(), location.start_pos());
-      if (strlen(string) > 0) {
-        return isolate->factory()->NewStringFromAsciiChecked(string);
-      }
+      Handle<String> str = printer.Print(info->literal(), location.start_pos());
+      if (str->length() > 0) return str;
     } else {
       isolate->clear_pending_exception();
     }

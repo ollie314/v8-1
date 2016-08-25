@@ -241,11 +241,11 @@ bool CompilationInfo::ExpectsJSReceiverAsReceiver() {
 // ----------------------------------------------------------------------------
 // Implementation of CompilationJob
 
-CompilationJob::Status CompilationJob::CreateGraph() {
+CompilationJob::Status CompilationJob::PrepareJob() {
+  DCHECK(ThreadId::Current().Equals(info()->isolate()->thread_id()));
   DisallowJavascriptExecution no_js(isolate());
-  DCHECK(info()->IsOptimizing());
 
-  if (FLAG_trace_opt) {
+  if (FLAG_trace_opt && info()->IsOptimizing()) {
     OFStream os(stdout);
     os << "[compiling method " << Brief(*info()->closure()) << " using "
        << compiler_name_;
@@ -254,34 +254,34 @@ CompilationJob::Status CompilationJob::CreateGraph() {
   }
 
   // Delegate to the underlying implementation.
-  DCHECK_EQ(SUCCEEDED, last_status());
-  ScopedTimer t(&time_taken_to_create_graph_);
-  return SetLastStatus(CreateGraphImpl());
+  DCHECK(state() == State::kReadyToPrepare);
+  ScopedTimer t(&time_taken_to_prepare_);
+  return UpdateState(PrepareJobImpl(), State::kReadyToExecute);
 }
 
-CompilationJob::Status CompilationJob::OptimizeGraph() {
+CompilationJob::Status CompilationJob::ExecuteJob() {
   DisallowHeapAllocation no_allocation;
   DisallowHandleAllocation no_handles;
   DisallowHandleDereference no_deref;
   DisallowCodeDependencyChange no_dependency_change;
 
   // Delegate to the underlying implementation.
-  DCHECK_EQ(SUCCEEDED, last_status());
-  ScopedTimer t(&time_taken_to_optimize_);
-  return SetLastStatus(OptimizeGraphImpl());
+  DCHECK(state() == State::kReadyToExecute);
+  ScopedTimer t(&time_taken_to_execute_);
+  return UpdateState(ExecuteJobImpl(), State::kReadyToFinalize);
 }
 
-CompilationJob::Status CompilationJob::GenerateCode() {
+CompilationJob::Status CompilationJob::FinalizeJob() {
+  DCHECK(ThreadId::Current().Equals(info()->isolate()->thread_id()));
   DisallowCodeDependencyChange no_dependency_change;
   DisallowJavascriptExecution no_js(isolate());
   DCHECK(!info()->dependencies()->HasAborted());
 
   // Delegate to the underlying implementation.
-  DCHECK_EQ(SUCCEEDED, last_status());
-  ScopedTimer t(&time_taken_to_codegen_);
-  return SetLastStatus(GenerateCodeImpl());
+  DCHECK(state() == State::kReadyToFinalize);
+  ScopedTimer t(&time_taken_to_finalize_);
+  return UpdateState(FinalizeJobImpl(), State::kSucceeded);
 }
-
 
 namespace {
 
@@ -342,15 +342,16 @@ void CompilationJob::RegisterWeakObjectsInOptimizedCode(Handle<Code> code) {
 }
 
 void CompilationJob::RecordOptimizationStats() {
+  DCHECK(info()->IsOptimizing());
   Handle<JSFunction> function = info()->closure();
   if (!function->IsOptimized()) {
     // Concurrent recompilation and OSR may race.  Increment only once.
     int opt_count = function->shared()->opt_count();
     function->shared()->set_opt_count(opt_count + 1);
   }
-  double ms_creategraph = time_taken_to_create_graph_.InMillisecondsF();
-  double ms_optimize = time_taken_to_optimize_.InMillisecondsF();
-  double ms_codegen = time_taken_to_codegen_.InMillisecondsF();
+  double ms_creategraph = time_taken_to_prepare_.InMillisecondsF();
+  double ms_optimize = time_taken_to_execute_.InMillisecondsF();
+  double ms_codegen = time_taken_to_finalize_.InMillisecondsF();
   if (FLAG_trace_opt) {
     PrintF("[optimizing ");
     function->ShortPrint();
@@ -366,14 +367,12 @@ void CompilationJob::RecordOptimizationStats() {
     compiled_functions++;
     code_size += function->shared()->SourceSize();
     PrintF("Compiled: %d functions with %d byte source size in %fms.\n",
-           compiled_functions,
-           code_size,
-           compilation_time);
+           compiled_functions, code_size, compilation_time);
   }
   if (FLAG_hydrogen_stats) {
-    isolate()->GetHStatistics()->IncrementSubtotals(time_taken_to_create_graph_,
-                                                    time_taken_to_optimize_,
-                                                    time_taken_to_codegen_);
+    isolate()->GetHStatistics()->IncrementSubtotals(time_taken_to_prepare_,
+                                                    time_taken_to_execute_,
+                                                    time_taken_to_finalize_);
   }
 }
 
@@ -659,6 +658,9 @@ bool GetOptimizedCodeNow(CompilationJob* job) {
   CompilationInfo* info = job->info();
   Isolate* isolate = info->isolate();
 
+  // All handles below this point will be canonicalized.
+  CanonicalHandleScope canonical(isolate);
+
   // Parsing is not required when optimizing from existing bytecode.
   if (!info->is_optimizing_from_bytecode()) {
     if (!Compiler::ParseAndAnalyze(info->parse_info())) return false;
@@ -667,15 +669,19 @@ bool GetOptimizedCodeNow(CompilationJob* job) {
 
   JSFunction::EnsureLiterals(info->closure());
 
+  // Reopen handles in the new CompilationHandleScope.
+  info->ReopenHandlesInNewHandleScope();
+  info->parse_info()->ReopenHandlesInNewHandleScope();
+
   TimerEventScope<TimerEventRecompileSynchronous> timer(isolate);
   RuntimeCallTimerScope runtimeTimer(isolate,
                                      &RuntimeCallStats::RecompileSynchronous);
   TRACE_EVENT_RUNTIME_CALL_STATS_TRACING_SCOPED(
       isolate, &tracing::TraceEventStatsTable::RecompileSynchronous);
 
-  if (job->CreateGraph() != CompilationJob::SUCCEEDED ||
-      job->OptimizeGraph() != CompilationJob::SUCCEEDED ||
-      job->GenerateCode() != CompilationJob::SUCCEEDED) {
+  if (job->PrepareJob() != CompilationJob::SUCCEEDED ||
+      job->ExecuteJob() != CompilationJob::SUCCEEDED ||
+      job->FinalizeJob() != CompilationJob::SUCCEEDED) {
     if (FLAG_trace_opt) {
       PrintF("[aborted optimizing ");
       info->closure()->ShortPrint();
@@ -714,9 +720,11 @@ bool GetOptimizedCodeLater(CompilationJob* job) {
     return false;
   }
 
-  // All handles below this point will be allocated in a deferred handle scope
-  // that is detached and handed off to the background thread when we return.
+  // All handles below this point will be canonicalized and allocated in a
+  // deferred handle scope that is detached and handed off to the background
+  // thread when we return.
   CompilationHandleScope handle_scope(info);
+  CanonicalHandleScope canonical(isolate);
 
   // Parsing is not required when optimizing from existing bytecode.
   if (!info->is_optimizing_from_bytecode()) {
@@ -736,7 +744,7 @@ bool GetOptimizedCodeLater(CompilationJob* job) {
   TRACE_EVENT_RUNTIME_CALL_STATS_TRACING_SCOPED(
       isolate, &tracing::TraceEventStatsTable::RecompileSynchronous);
 
-  if (job->CreateGraph() != CompilationJob::SUCCEEDED) return false;
+  if (job->PrepareJob() != CompilationJob::SUCCEEDED) return false;
   isolate->optimizing_compile_dispatcher()->QueueForOptimization(job);
 
   if (FLAG_trace_concurrent_recompilation) {
@@ -809,7 +817,6 @@ MaybeHandle<Code> GetOptimizedCode(Handle<JSFunction> function,
     return MaybeHandle<Code>();
   }
 
-  CanonicalHandleScope canonical(isolate);
   TimerEventScope<TimerEventOptimizeCode> optimize_code_timer(isolate);
   RuntimeCallTimerScope runtimeTimer(isolate, &RuntimeCallStats::OptimizeCode);
   TRACE_EVENT_RUNTIME_CALL_STATS_TRACING_SCOPED(
@@ -948,26 +955,28 @@ MaybeHandle<Code> GetBaselineCode(Handle<JSFunction> function) {
   }
 
   // TODO(4280): For now we disable switching to baseline code in the presence
-  // of interpreter activations of the given function. The reasons are:
-  //  1) The debugger assumes each function is either full-code or bytecode.
-  //  2) The underlying bytecode is cleared below, breaking stack unwinding.
-  InterpreterActivationsFinder activations_finder(function->shared());
-  if (HasInterpreterActivations(isolate, &activations_finder)) {
-    if (FLAG_trace_opt) {
-      OFStream os(stdout);
-      os << "[unable to switch " << Brief(*function) << " due to activations]"
-         << std::endl;
-    }
-
-    if (activations_finder.MarkActivationsForBaselineOnReturn(isolate)) {
+  // of interpreter activations of the given function. The reasons is that the
+  // underlying bytecode is cleared below. Note that this only applies in case
+  // the --ignition-preserve-bytecode flag is not passed.
+  if (!FLAG_ignition_preserve_bytecode) {
+    InterpreterActivationsFinder activations_finder(function->shared());
+    if (HasInterpreterActivations(isolate, &activations_finder)) {
       if (FLAG_trace_opt) {
         OFStream os(stdout);
-        os << "[marking " << Brief(function->shared())
-           << " for baseline recompilation on return]" << std::endl;
+        os << "[unable to switch " << Brief(*function) << " due to activations]"
+           << std::endl;
       }
-    }
 
-    return MaybeHandle<Code>();
+      if (activations_finder.MarkActivationsForBaselineOnReturn(isolate)) {
+        if (FLAG_trace_opt) {
+          OFStream os(stdout);
+          os << "[marking " << Brief(function->shared())
+             << " for baseline recompilation on return]" << std::endl;
+        }
+      }
+
+      return MaybeHandle<Code>();
+    }
   }
 
   if (FLAG_trace_opt) {
@@ -990,7 +999,8 @@ MaybeHandle<Code> GetBaselineCode(Handle<JSFunction> function) {
 
   // TODO(4280): For now we play it safe and remove the bytecode array when we
   // switch to baseline code. We might consider keeping around the bytecode so
-  // that it can be used as the "source of truth" eventually.
+  // that it can be used as the "source of truth" eventually. Note that this
+  // only applies in case the --ignition-preserve-bytecode flag is not passed.
   if (!FLAG_ignition_preserve_bytecode) shared->ClearBytecodeArray();
 
   // Update the shared function info with the scope info.
@@ -1277,6 +1287,9 @@ bool Compiler::CompileOptimized(Handle<JSFunction> function,
     DCHECK(!isolate->has_pending_exception());
     if (function->shared()->is_compiled()) {
       code = handle(function->shared()->code(), isolate);
+    } else if (function->shared()->HasBytecodeArray()) {
+      code = isolate->builtins()->InterpreterEntryTrampoline();
+      function->shared()->ReplaceCode(*code);
     } else {
       Zone zone(isolate->allocator());
       ParseInfo parse_info(&zone, function);
@@ -1387,8 +1400,15 @@ MaybeHandle<JSArray> Compiler::CompileForLiveEdit(Handle<Script> script) {
 bool Compiler::EnsureBytecode(CompilationInfo* info) {
   DCHECK(ShouldUseIgnition(info));
   if (!info->shared_info()->HasBytecodeArray()) {
-    DCHECK(!info->shared_info()->is_compiled());
+    Handle<Code> original_code(info->shared_info()->code());
     if (GetUnoptimizedCode(info).is_null()) return false;
+    DCHECK(info->shared_info()->is_compiled());
+    if (original_code->kind() == Code::FUNCTION) {
+      // Generating bytecode will install the {InterpreterEntryTrampoline} as
+      // shared code on the function. To avoid an implicit tier down we restore
+      // original baseline code in case it existed beforehand.
+      info->shared_info()->ReplaceCode(*original_code);
+    }
   }
   DCHECK(info->shared_info()->HasBytecodeArray());
   return true;
@@ -1412,12 +1432,12 @@ bool Compiler::EnsureDeoptimizationSupport(CompilationInfo* info) {
     if (shared->is_resumable()) return false;
 
     // TODO(4280): For now we disable switching to baseline code in the presence
-    // of interpreter activations of the given function. The reasons are:
-    //  1) The debugger assumes each function is either full-code or bytecode.
-    //  2) The underlying bytecode is cleared below, breaking stack unwinding.
-    // The expensive check for activations only needs to be done when the given
-    // function has bytecode, otherwise we can be sure there are no activations.
-    if (shared->HasBytecodeArray()) {
+    // of interpreter activations of the given function. The reasons is that the
+    // underlying bytecode is cleared below. The expensive check for activations
+    // only needs to be done when the given function has bytecode, otherwise we
+    // can be sure there are no activations. Note that this only applies in case
+    // the --ignition-preserve-bytecode flag is not passed.
+    if (!FLAG_ignition_preserve_bytecode && shared->HasBytecodeArray()) {
       InterpreterActivationsFinder activations_finder(*shared);
       if (HasInterpreterActivations(info->isolate(), &activations_finder)) {
         return false;
@@ -1436,9 +1456,10 @@ bool Compiler::EnsureDeoptimizationSupport(CompilationInfo* info) {
 
     // TODO(4280): For now we play it safe and remove the bytecode array when we
     // switch to baseline code. We might consider keeping around the bytecode so
-    // that it can be used as the "source of truth" eventually.
-    if (shared->HasBytecodeArray()) {
-      if (!FLAG_ignition_preserve_bytecode) shared->ClearBytecodeArray();
+    // that it can be used as the "source of truth" eventually. Note that this
+    // only applies in case the --ignition-preserve-bytecode flag is not passed.
+    if (!FLAG_ignition_preserve_bytecode && shared->HasBytecodeArray()) {
+      shared->ClearBytecodeArray();
     }
 
     // The scope info might not have been set if a lazily compiled
@@ -1912,12 +1933,12 @@ void Compiler::FinalizeCompilationJob(CompilationJob* raw_job) {
   //    Except when OSR already disabled optimization for some reason.
   // 3) The code may have already been invalidated due to dependency change.
   // 4) Code generation may have failed.
-  if (job->last_status() == CompilationJob::SUCCEEDED) {
+  if (job->state() == CompilationJob::State::kReadyToFinalize) {
     if (shared->optimization_disabled()) {
       job->RetryOptimization(kOptimizationDisabled);
     } else if (info->dependencies()->HasAborted()) {
       job->RetryOptimization(kBailedOutDueToDependencyChange);
-    } else if (job->GenerateCode() == CompilationJob::SUCCEEDED) {
+    } else if (job->FinalizeJob() == CompilationJob::SUCCEEDED) {
       job->RecordOptimizationStats();
       RecordFunctionCompilation(CodeEventListener::LAZY_COMPILE_TAG, info);
       if (shared->SearchOptimizedCodeMap(info->context()->native_context(),
@@ -1934,7 +1955,7 @@ void Compiler::FinalizeCompilationJob(CompilationJob* raw_job) {
     }
   }
 
-  DCHECK(job->last_status() != CompilationJob::SUCCEEDED);
+  DCHECK(job->state() == CompilationJob::State::kFailed);
   if (FLAG_trace_opt) {
     PrintF("[aborted optimizing ");
     info->closure()->ShortPrint();

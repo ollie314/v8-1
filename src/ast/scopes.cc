@@ -41,13 +41,27 @@ Variable* VariableMap::Declare(Zone* zone, Scope* scope,
   if (added) *added = p->value == nullptr;
   if (p->value == nullptr) {
     // The variable has not been declared yet -> insert it.
-    DCHECK(p->key == name);
+    DCHECK_EQ(name, p->key);
     p->value = new (zone) Variable(scope, name, mode, kind, initialization_flag,
                                    maybe_assigned_flag);
   }
   return reinterpret_cast<Variable*>(p->value);
 }
 
+void VariableMap::Remove(Variable* var) {
+  const AstRawString* name = var->raw_name();
+  ZoneHashMap::Remove(const_cast<AstRawString*>(name), name->hash());
+}
+
+void VariableMap::Add(Zone* zone, Variable* var) {
+  const AstRawString* name = var->raw_name();
+  Entry* p =
+      ZoneHashMap::LookupOrInsert(const_cast<AstRawString*>(name), name->hash(),
+                                  ZoneAllocationPolicy(zone));
+  DCHECK_NULL(p->value);
+  DCHECK_EQ(name, p->key);
+  p->value = var;
+}
 
 Variable* VariableMap::Lookup(const AstRawString* name) {
   Entry* p = ZoneHashMap::Lookup(const_cast<AstRawString*>(name), name->hash());
@@ -81,7 +95,7 @@ Scope::Scope(Zone* zone, ScopeType scope_type)
     : zone_(zone),
       outer_scope_(nullptr),
       variables_(zone),
-      ordered_variables_(4, zone),
+      locals_(4, zone),
       decls_(4, zone),
       scope_type_(scope_type) {
   DCHECK(scope_type == SCRIPT_SCOPE || scope_type == WITH_SCOPE);
@@ -97,7 +111,7 @@ Scope::Scope(Zone* zone, Scope* outer_scope, ScopeType scope_type)
     : zone_(zone),
       outer_scope_(outer_scope),
       variables_(zone),
-      ordered_variables_(4, zone),
+      locals_(4, zone),
       decls_(4, zone),
       scope_type_(scope_type) {
   DCHECK_NE(SCRIPT_SCOPE, scope_type);
@@ -112,12 +126,12 @@ Scope::Snapshot::Snapshot(Scope* scope)
     : outer_scope_(scope),
       top_inner_scope_(scope->inner_scope_),
       top_unresolved_(scope->unresolved_),
-      top_temp_(scope->GetClosureScope()->temps()->length()) {}
+      top_local_(scope->GetClosureScope()->locals_.length()),
+      top_decl_(scope->GetClosureScope()->decls_.length()) {}
 
 DeclarationScope::DeclarationScope(Zone* zone)
     : Scope(zone),
       function_kind_(kNormalFunction),
-      temps_(4, zone),
       params_(4, zone),
       sloppy_block_function_map_(zone) {
   SetDefaults();
@@ -128,16 +142,16 @@ DeclarationScope::DeclarationScope(Zone* zone, Scope* outer_scope,
                                    FunctionKind function_kind)
     : Scope(zone, outer_scope, scope_type),
       function_kind_(function_kind),
-      temps_(4, zone),
       params_(4, zone),
       sloppy_block_function_map_(zone) {
   SetDefaults();
   asm_function_ = outer_scope_->IsAsmModule();
 }
 
-ModuleScope::ModuleScope(Zone* zone, DeclarationScope* script_scope,
+ModuleScope::ModuleScope(DeclarationScope* script_scope,
                          AstValueFactory* ast_value_factory)
-    : DeclarationScope(zone, script_scope, MODULE_SCOPE) {
+    : DeclarationScope(ast_value_factory->zone(), script_scope, MODULE_SCOPE) {
+  Zone* zone = ast_value_factory->zone();
   module_descriptor_ = new (zone) ModuleDescriptor(zone);
   set_language_mode(STRICT);
   DeclareThis(ast_value_factory);
@@ -147,7 +161,7 @@ Scope::Scope(Zone* zone, ScopeType scope_type, Handle<ScopeInfo> scope_info)
     : zone_(zone),
       outer_scope_(nullptr),
       variables_(zone),
-      ordered_variables_(0, zone),
+      locals_(0, zone),
       decls_(0, zone),
       scope_info_(scope_info),
       scope_type_(scope_type) {
@@ -166,7 +180,6 @@ DeclarationScope::DeclarationScope(Zone* zone, ScopeType scope_type,
                                    Handle<ScopeInfo> scope_info)
     : Scope(zone, scope_type, scope_info),
       function_kind_(scope_info->function_kind()),
-      temps_(0, zone),
       params_(0, zone),
       sloppy_block_function_map_(zone) {
   SetDefaults();
@@ -176,16 +189,15 @@ Scope::Scope(Zone* zone, const AstRawString* catch_variable_name)
     : zone_(zone),
       outer_scope_(nullptr),
       variables_(zone),
-      ordered_variables_(0, zone),
+      locals_(0, zone),
       decls_(0, zone),
       scope_type_(CATCH_SCOPE) {
   SetDefaults();
 #ifdef DEBUG
   already_resolved_ = true;
 #endif
-  Variable* variable =
-      variables_.Declare(zone, this, catch_variable_name, VAR, Variable::NORMAL,
-                         kCreatedInitialized);
+  Variable* variable = Declare(zone, this, catch_variable_name, VAR,
+                               Variable::NORMAL, kCreatedInitialized);
   AllocateHeapSlot(variable);
 }
 
@@ -328,14 +340,12 @@ void Scope::DeserializeScopeInfo(Isolate* isolate,
 
   DCHECK(ThreadId::Current().Equals(isolate->thread_id()));
 
-  std::set<const AstRawString*> names_seen;
   // Internalize context local & globals variables.
   for (int var = 0; var < scope_info_->ContextLocalCount() +
                               scope_info_->ContextGlobalCount();
        ++var) {
     Handle<String> name_handle(scope_info_->ContextLocalName(var), isolate);
     const AstRawString* name = ast_value_factory->GetString(name_handle);
-    if (!names_seen.insert(name).second) continue;
     int index = Context::MIN_CONTEXT_SLOTS + var;
     VariableMode mode = scope_info_->ContextLocalMode(var);
     InitializationFlag init_flag = scope_info_->ContextLocalInitFlag(var);
@@ -348,26 +358,6 @@ void Scope::DeserializeScopeInfo(Isolate* isolate,
     if (index == scope_info_->ReceiverContextSlotIndex()) {
       kind = Variable::THIS;
     }
-
-    Variable* result = variables_.Declare(zone(), this, name, mode, kind,
-                                          init_flag, maybe_assigned_flag);
-    result->AllocateTo(location, index);
-  }
-
-  // We must read parameters from the end since for multiply declared
-  // parameters the value of the last declaration of that parameter is used
-  // inside a function (and thus we need to look at the last index). Was bug#
-  // 1110337.
-  for (int index = scope_info_->ParameterCount() - 1; index >= 0; --index) {
-    Handle<String> name_handle(scope_info_->ParameterName(index), isolate);
-    const AstRawString* name = ast_value_factory->GetString(name_handle);
-    if (!names_seen.insert(name).second) continue;
-
-    VariableMode mode = DYNAMIC;
-    InitializationFlag init_flag = kCreatedInitialized;
-    MaybeAssignedFlag maybe_assigned_flag = kMaybeAssigned;
-    VariableLocation location = VariableLocation::LOOKUP;
-    Variable::Kind kind = Variable::NORMAL;
 
     Variable* result = variables_.Declare(zone(), this, name, mode, kind,
                                           init_flag, maybe_assigned_flag);
@@ -530,7 +520,7 @@ void Scope::Snapshot::Reparent(DeclarationScope* new_parent) const {
   DCHECK_EQ(new_parent, new_parent->GetClosureScope());
   DCHECK_NULL(new_parent->inner_scope_);
   DCHECK_NULL(new_parent->unresolved_);
-  DCHECK_EQ(0, new_parent->temps()->length());
+  DCHECK_EQ(0, new_parent->locals_.length());
   Scope* inner_scope = new_parent->sibling_;
   if (inner_scope != top_inner_scope_) {
     for (; inner_scope->sibling() != top_inner_scope_;
@@ -557,17 +547,25 @@ void Scope::Snapshot::Reparent(DeclarationScope* new_parent) const {
     outer_scope_->unresolved_ = top_unresolved_;
   }
 
-  if (outer_scope_->GetClosureScope()->temps()->length() != top_temp_) {
-    ZoneList<Variable*>* temps = outer_scope_->GetClosureScope()->temps();
-    for (int i = top_temp_; i < temps->length(); i++) {
-      Variable* temp = temps->at(i);
-      DCHECK_EQ(temp->scope(), temp->scope()->GetClosureScope());
-      DCHECK_NE(temp->scope(), new_parent);
-      temp->set_scope(new_parent);
-      new_parent->AddTemporary(temp);
+  // TODO(verwaest): This currently only moves do-expression declared variables
+  // in default arguments that weren't already previously declared with the same
+  // name in the closure-scope. See
+  // test/mjsunit/harmony/default-parameter-do-expression.js.
+  DeclarationScope* outer_closure = outer_scope_->GetClosureScope();
+  for (int i = top_local_; i < outer_closure->locals_.length(); i++) {
+    Variable* local = outer_closure->locals_.at(i);
+    DCHECK(local->mode() == TEMPORARY || local->mode() == VAR);
+    DCHECK_EQ(local->scope(), local->scope()->GetClosureScope());
+    DCHECK_NE(local->scope(), new_parent);
+    local->set_scope(new_parent);
+    new_parent->AddLocal(local);
+    if (local->mode() == VAR) {
+      outer_closure->variables_.Remove(local);
+      new_parent->variables_.Add(new_parent->zone(), local);
     }
-    temps->Rewind(top_temp_);
   }
+  outer_closure->locals_.Rewind(top_local_);
+  outer_closure->decls_.Rewind(top_decl_);
 }
 
 void Scope::ReplaceOuterScope(Scope* outer) {
@@ -596,37 +594,26 @@ Variable* Scope::LookupInScopeInfo(const AstRawString* name) {
   // it's ok to get the Handle<String> here.
   // If we have a serialized scope info, we might find the variable there.
   // There should be no local slot with the given name.
-  DCHECK(scope_info_->StackSlotIndex(*name_handle) < 0);
+  DCHECK_LT(scope_info_->StackSlotIndex(*name_handle), 0);
 
-  // Check context slot lookup.
   VariableMode mode;
-  VariableLocation location = VariableLocation::CONTEXT;
   InitializationFlag init_flag;
   MaybeAssignedFlag maybe_assigned_flag;
+
+  VariableLocation location = VariableLocation::CONTEXT;
   int index = ScopeInfo::ContextSlotIndex(scope_info_, name_handle, &mode,
                                           &init_flag, &maybe_assigned_flag);
   if (index < 0) {
     location = VariableLocation::GLOBAL;
     index = ScopeInfo::ContextGlobalSlotIndex(scope_info_, name_handle, &mode,
                                               &init_flag, &maybe_assigned_flag);
+    DCHECK(index < 0 || (is_script_scope() && mode == VAR));
   }
-  if (index < 0) {
-    // Check parameters.
-    index = scope_info_->ParameterIndex(*name_handle);
-    if (index < 0) return NULL;
-
-    mode = DYNAMIC;
-    location = VariableLocation::LOOKUP;
-    init_flag = kCreatedInitialized;
-    // Be conservative and flag parameters as maybe assigned. Better information
-    // would require ScopeInfo to serialize the maybe_assigned bit also for
-    // parameters.
-    maybe_assigned_flag = kMaybeAssigned;
-  } else {
-    DCHECK(location != VariableLocation::GLOBAL ||
-           (is_script_scope() && IsDeclaredVariableMode(mode) &&
-            !IsLexicalVariableMode(mode)));
+  if (index < 0 && scope_type() == MODULE_SCOPE) {
+    location = VariableLocation::MODULE;
+    index = -1;  // TODO(neis): Find module variables in scope info.
   }
+  if (index < 0) return nullptr;  // Nowhere found.
 
   Variable::Kind kind = Variable::NORMAL;
   if (location == VariableLocation::CONTEXT &&
@@ -712,7 +699,8 @@ Variable* Scope::DeclareLocal(const AstRawString* name, VariableMode mode,
 Variable* DeclarationScope::DeclareDynamicGlobal(const AstRawString* name,
                                                  Variable::Kind kind) {
   DCHECK(is_script_scope());
-  return Declare(zone(), this, name, DYNAMIC_GLOBAL, kind, kCreatedInitialized);
+  return variables_.Declare(zone(), this, name, DYNAMIC_GLOBAL, kind,
+                            kCreatedInitialized);
 }
 
 
@@ -743,7 +731,7 @@ Variable* Scope::NewTemporary(const AstRawString* name) {
                                        TEMPORARY,
                                        Variable::NORMAL,
                                        kCreatedInitialized);
-  scope->AddTemporary(var);
+  scope->AddLocal(var);
   return var;
 }
 
@@ -802,34 +790,16 @@ Declaration* Scope::CheckLexDeclarationsConflictingWith(
   return nullptr;
 }
 
-void Scope::CollectStackAndContextLocals(ZoneList<Variable*>* stack_locals,
-                                         ZoneList<Variable*>* context_locals,
-                                         ZoneList<Variable*>* context_globals) {
-  DCHECK(stack_locals != NULL);
-  DCHECK(context_locals != NULL);
-  DCHECK(context_globals != NULL);
+void Scope::CollectVariables(ZoneList<Variable*>* stack_locals,
+                             ZoneList<Variable*>* context_locals,
+                             ZoneList<Variable*>* context_globals) {
+  // TODO(verwaest): Just pass out locals_ directly and walk it?
+  DCHECK_NOT_NULL(stack_locals);
+  DCHECK_NOT_NULL(context_locals);
+  DCHECK_NOT_NULL(context_globals);
 
-  // Collect temporaries which are always allocated on the stack, unless the
-  // context as a whole has forced context allocation.
-  if (is_declaration_scope()) {
-    ZoneList<Variable*>* temps = AsDeclarationScope()->temps();
-    for (int i = 0; i < temps->length(); i++) {
-      Variable* var = (*temps)[i];
-      if (var->is_used()) {
-        if (var->IsContextSlot()) {
-          DCHECK(has_forced_context_allocation());
-          context_locals->Add(var, zone());
-        } else if (var->IsStackLocal()) {
-          stack_locals->Add(var, zone());
-        } else {
-          DCHECK(var->IsParameter());
-        }
-      }
-    }
-  }
-
-  for (int i = 0; i < ordered_variables_.length(); i++) {
-    Variable* var = ordered_variables_[i];
+  for (int i = 0; i < locals_.length(); i++) {
+    Variable* var = locals_[i];
     if (var->IsStackLocal()) {
       stack_locals->Add(var, zone());
     } else if (var->IsContextSlot()) {
@@ -1154,18 +1124,6 @@ void Scope::Print(int n) {
   if (function != nullptr) {
     Indent(n1, "// function var:\n");
     PrintVar(n1, function);
-  }
-
-  if (is_declaration_scope()) {
-    bool printed_header = false;
-    ZoneList<Variable*>* temps = AsDeclarationScope()->temps();
-    for (int i = 0; i < temps->length(); i++) {
-      if (!printed_header) {
-        printed_header = true;
-        Indent(n1, "// temporary vars:\n");
-      }
-      PrintVar(n1, (*temps)[i]);
-    }
   }
 
   if (variables_.Start() != NULL) {
@@ -1549,21 +1507,13 @@ void Scope::AllocateDeclaredGlobal(Variable* var) {
 }
 
 void Scope::AllocateNonParameterLocalsAndDeclaredGlobals() {
-  // All variables that have no rewrite yet are non-parameter locals.
-  if (is_declaration_scope()) {
-    ZoneList<Variable*>* temps = AsDeclarationScope()->temps();
-    for (int i = 0; i < temps->length(); i++) {
-      AllocateNonParameterLocal((*temps)[i]);
-    }
-  }
-
-  for (int i = 0; i < ordered_variables_.length(); i++) {
-    AllocateNonParameterLocal(ordered_variables_[i]);
+  for (int i = 0; i < locals_.length(); i++) {
+    AllocateNonParameterLocal(locals_[i]);
   }
 
   if (FLAG_global_var_shortcuts) {
-    for (int i = 0; i < ordered_variables_.length(); i++) {
-      AllocateDeclaredGlobal(ordered_variables_[i]);
+    for (int i = 0; i < locals_.length(); i++) {
+      AllocateDeclaredGlobal(locals_[i]);
     }
   }
 
@@ -1594,17 +1544,15 @@ void DeclarationScope::AllocateLocals() {
 }
 
 void ModuleScope::AllocateModuleVariables() {
-  for (auto it = module()->regular_imports().begin();
-       it != module()->regular_imports().end(); ++it) {
-    Variable* var = LookupLocal(it->second->local_name);
+  for (const auto& it : module()->regular_imports()) {
+    Variable* var = LookupLocal(it.first);
     // TODO(neis): Use a meaningful index.
     var->AllocateTo(VariableLocation::MODULE, 42);
   }
 
-  for (auto entry : module()->exports()) {
-    if (entry->local_name == nullptr) continue;
-    Variable* var = LookupLocal(entry->local_name);
-    var->AllocateTo(VariableLocation::MODULE, 42);
+  for (const auto& it : module()->regular_exports()) {
+    Variable* var = LookupLocal(it.first);
+    var->AllocateTo(VariableLocation::MODULE, 0);
   }
 }
 

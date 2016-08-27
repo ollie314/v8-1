@@ -683,16 +683,12 @@ BytecodeGenerator::BytecodeGenerator(CompilationInfo* info)
       loop_depth_(0),
       home_object_symbol_(info->isolate()->factory()->home_object_symbol()),
       prototype_string_(info->isolate()->factory()->prototype_string()) {
-  InitializeAstVisitor(info->isolate()->stack_guard()->real_climit());
 }
 
 Handle<BytecodeArray> BytecodeGenerator::FinalizeBytecode(Isolate* isolate) {
-  // Create an inner HandleScope to avoid unnecessarily canonicalizing handles
-  // created as part of bytecode finalization.
-  HandleScope scope(isolate);
   AllocateDeferredConstants();
   if (HasStackOverflow()) return Handle<BytecodeArray>();
-  return scope.CloseAndEscape(builder()->ToBytecodeArray(isolate));
+  return builder()->ToBytecodeArray(isolate);
 }
 
 void BytecodeGenerator::AllocateDeferredConstants() {
@@ -726,10 +722,12 @@ void BytecodeGenerator::AllocateDeferredConstants() {
   }
 }
 
-void BytecodeGenerator::GenerateBytecode() {
+void BytecodeGenerator::GenerateBytecode(uintptr_t stack_limit) {
   DisallowHeapAllocation no_allocation;
   DisallowHandleAllocation no_handles;
   DisallowHandleDereference no_deref;
+
+  InitializeAstVisitor(stack_limit);
 
   // Initialize the incoming context.
   ContextScope incoming_context(this, scope(), false);

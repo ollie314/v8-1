@@ -1850,6 +1850,8 @@ enum class KeyCollectionMode {
       static_cast<int>(v8::KeyCollectionMode::kIncludePrototypes)
 };
 
+enum class AllocationSiteUpdateMode { kUpdate, kCheckOnly };
+
 // JSReceiver includes types on which properties can be defined, i.e.,
 // JSObject and JSProxy.
 class JSReceiver: public HeapObject {
@@ -2300,7 +2302,9 @@ class JSObject: public JSReceiver {
   }
 
   // These methods do not perform access checks!
-  static void UpdateAllocationSite(Handle<JSObject> object,
+  template <AllocationSiteUpdateMode update_or_check =
+                AllocationSiteUpdateMode::kUpdate>
+  static bool UpdateAllocationSite(Handle<JSObject> object,
                                    ElementsKind to_kind);
 
   // Lookup interceptors are used for handling properties controlled by host
@@ -4503,12 +4507,10 @@ class ScopeInfo : public FixedArray {
   class FunctionKindField
       : public BitField<FunctionKind, HasSimpleParametersField::kNext, 9> {};
 
-  // BitFields representing the encoded information for context locals in the
-  // ContextLocalInfoEntries part.
-  class ContextLocalMode:      public BitField<VariableMode,         0, 3> {};
-  class ContextLocalInitFlag:  public BitField<InitializationFlag,   3, 1> {};
-  class ContextLocalMaybeAssignedFlag
-      : public BitField<MaybeAssignedFlag, 4, 1> {};
+  // Properties of variables.
+  class VariableModeField : public BitField<VariableMode, 0, 3> {};
+  class InitFlagField : public BitField<InitializationFlag, 3, 1> {};
+  class MaybeAssignedFlagField : public BitField<MaybeAssignedFlag, 4, 1> {};
 
   friend class ScopeIterator;
 };
@@ -4798,6 +4800,7 @@ class FreeSpace: public HeapObject {
   // Size is smi tagged when it is stored.
   static const int kSizeOffset = HeapObject::kHeaderSize;
   static const int kNextOffset = POINTER_SIZE_ALIGN(kSizeOffset + kPointerSize);
+  static const int kSize = kNextOffset + kPointerSize;
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(FreeSpace);
@@ -8662,7 +8665,9 @@ class AllocationSite: public Struct {
 
   inline bool SitePointsToLiteral();
 
-  static void DigestTransitionFeedback(Handle<AllocationSite> site,
+  template <AllocationSiteUpdateMode update_or_check =
+                AllocationSiteUpdateMode::kUpdate>
+  static bool DigestTransitionFeedback(Handle<AllocationSite> site,
                                        ElementsKind to_kind);
 
   DECLARE_PRINTER(AllocationSite)
@@ -10557,12 +10562,12 @@ class JSArray: public JSObject {
   static const int kLengthOffset = JSObject::kHeaderSize;
   static const int kSize = kLengthOffset + kPointerSize;
 
-  // 600 * KB is the Page::kMaxRegularHeapObjectSize defined in spaces.h which
+  // 400 * KB is the Page::kMaxRegularHeapObjectSize defined in spaces.h which
   // we do not want to include in objects.h
   // Note that Page::kMaxRegularHeapObjectSize has to be in sync with
   // kInitialMaxFastElementArray which is checked in a DCHECK in heap.cc.
   static const int kInitialMaxFastElementArray =
-      (600 * KB - FixedArray::kHeaderSize - kSize - AllocationMemento::kSize) /
+      (400 * KB - FixedArray::kHeaderSize - kSize - AllocationMemento::kSize) /
       kPointerSize;
 
  private:

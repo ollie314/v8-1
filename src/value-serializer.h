@@ -20,6 +20,7 @@ namespace internal {
 
 class HeapNumber;
 class Isolate;
+class JSArrayBuffer;
 class JSDate;
 class JSMap;
 class JSRegExp;
@@ -58,6 +59,14 @@ class ValueSerializer {
    */
   std::vector<uint8_t> ReleaseBuffer() { return std::move(buffer_); }
 
+  /*
+   * Marks an ArrayBuffer as havings its contents transferred out of band.
+   * Pass the corresponding JSArrayBuffer in the deserializing context to
+   * ValueDeserializer::TransferArrayBuffer.
+   */
+  void TransferArrayBuffer(uint32_t transfer_id,
+                           Handle<JSArrayBuffer> array_buffer);
+
  private:
   // Writing the wire format.
   void WriteTag(SerializationTag tag);
@@ -68,6 +77,7 @@ class ValueSerializer {
   void WriteDouble(double value);
   void WriteOneByteString(Vector<const uint8_t> chars);
   void WriteTwoByteString(Vector<const uc16> chars);
+  void WriteRawBytes(const void* source, size_t length);
   uint8_t* ReserveRawBytes(size_t bytes);
 
   // Writing V8 objects of various kinds.
@@ -83,6 +93,7 @@ class ValueSerializer {
   void WriteJSRegExp(JSRegExp* regexp);
   Maybe<bool> WriteJSMap(Handle<JSMap> map) WARN_UNUSED_RESULT;
   Maybe<bool> WriteJSSet(Handle<JSSet> map) WARN_UNUSED_RESULT;
+  Maybe<bool> WriteJSArrayBuffer(JSArrayBuffer* array_buffer);
 
   /*
    * Reads the specified keys from the object and writes key-value pairs to the
@@ -102,6 +113,9 @@ class ValueSerializer {
   IdentityMap<uint32_t> id_map_;
   uint32_t next_id_ = 0;
 
+  // A similar map, for transferred array buffers.
+  IdentityMap<uint32_t> array_buffer_transfer_map_;
+
   DISALLOW_COPY_AND_ASSIGN(ValueSerializer);
 };
 
@@ -120,6 +134,13 @@ class ValueDeserializer {
   Maybe<bool> ReadHeader() WARN_UNUSED_RESULT;
 
   /*
+   * Reads the underlying wire format version. Likely mostly to be useful to
+   * legacy code reading old wire format versions. Must be called after
+   * ReadHeader.
+   */
+  uint32_t GetWireFormatVersion() const { return version_; }
+
+  /*
    * Deserializes a V8 object from the buffer.
    */
   MaybeHandle<Object> ReadObject() WARN_UNUSED_RESULT;
@@ -133,6 +154,13 @@ class ValueDeserializer {
    */
   MaybeHandle<Object> ReadObjectUsingEntireBufferForLegacyFormat()
       WARN_UNUSED_RESULT;
+
+  /*
+   * Accepts the array buffer corresponding to the one passed previously to
+   * ValueSerializer::TransferArrayBuffer.
+   */
+  void TransferArrayBuffer(uint32_t transfer_id,
+                           Handle<JSArrayBuffer> array_buffer);
 
  private:
   // Reading the wire format.
@@ -158,6 +186,8 @@ class ValueDeserializer {
   MaybeHandle<JSRegExp> ReadJSRegExp() WARN_UNUSED_RESULT;
   MaybeHandle<JSMap> ReadJSMap() WARN_UNUSED_RESULT;
   MaybeHandle<JSSet> ReadJSSet() WARN_UNUSED_RESULT;
+  MaybeHandle<JSArrayBuffer> ReadJSArrayBuffer() WARN_UNUSED_RESULT;
+  MaybeHandle<JSArrayBuffer> ReadTransferredJSArrayBuffer() WARN_UNUSED_RESULT;
 
   /*
    * Reads key-value pairs into the object until the specified end tag is
@@ -175,8 +205,11 @@ class ValueDeserializer {
   const uint8_t* position_;
   const uint8_t* const end_;
   uint32_t version_ = 0;
-  Handle<SeededNumberDictionary> id_map_;  // Always a global handle.
   uint32_t next_id_ = 0;
+
+  // Always global handles.
+  Handle<SeededNumberDictionary> id_map_;
+  MaybeHandle<SeededNumberDictionary> array_buffer_transfer_map_;
 
   DISALLOW_COPY_AND_ASSIGN(ValueDeserializer);
 };

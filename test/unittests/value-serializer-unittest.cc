@@ -29,6 +29,10 @@ class ValueSerializerTest : public TestWithIsolate {
     return deserialization_context_;
   }
 
+  // Overridden in more specific fixtures.
+  virtual void BeforeEncode(ValueSerializer*) {}
+  virtual void BeforeDecode(ValueDeserializer*) {}
+
   template <typename InputFunctor, typename OutputFunctor>
   void RoundTripTest(const InputFunctor& input_functor,
                      const OutputFunctor& output_functor) {
@@ -47,19 +51,14 @@ class ValueSerializerTest : public TestWithIsolate {
   }
 
   Maybe<std::vector<uint8_t>> DoEncode(Local<Value> value) {
-    // This approximates what the API implementation would do.
-    // TODO(jbroman): Use the public API once it exists.
-    i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate());
-    i::HandleScope handle_scope(internal_isolate);
-    i::ValueSerializer serializer(internal_isolate);
+    Local<Context> context = serialization_context();
+    ValueSerializer serializer(isolate());
+    BeforeEncode(&serializer);
     serializer.WriteHeader();
-    if (serializer.WriteObject(Utils::OpenHandle(*value)).FromMaybe(false)) {
-      return Just(serializer.ReleaseBuffer());
+    if (!serializer.WriteValue(context, value).FromMaybe(false)) {
+      return Nothing<std::vector<uint8_t>>();
     }
-    if (internal_isolate->has_pending_exception()) {
-      internal_isolate->OptionalRescheduleException(true);
-    }
-    return Nothing<std::vector<uint8_t>>();
+    return Just(serializer.ReleaseBuffer());
   }
 
   template <typename InputFunctor, typename EncodedDataFunctor>
@@ -90,24 +89,22 @@ class ValueSerializerTest : public TestWithIsolate {
   template <typename OutputFunctor>
   void DecodeTest(const std::vector<uint8_t>& data,
                   const OutputFunctor& output_functor) {
-    Context::Scope scope(deserialization_context());
+    Local<Context> context = deserialization_context();
+    Context::Scope scope(context);
     TryCatch try_catch(isolate());
-    // TODO(jbroman): Use the public API once it exists.
-    i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate());
-    i::HandleScope handle_scope(internal_isolate);
-    i::ValueDeserializer deserializer(
-        internal_isolate,
-        i::Vector<const uint8_t>(&data[0], static_cast<int>(data.size())));
+    ValueDeserializer deserializer(isolate(), &data[0],
+                                   static_cast<int>(data.size()));
+    deserializer.SetSupportsLegacyWireFormat(true);
+    BeforeDecode(&deserializer);
     ASSERT_TRUE(deserializer.ReadHeader().FromMaybe(false));
     Local<Value> result;
-    ASSERT_TRUE(ToLocal<Value>(deserializer.ReadObject(), &result));
+    ASSERT_TRUE(deserializer.ReadValue(context).ToLocal(&result));
     ASSERT_FALSE(result.IsEmpty());
     ASSERT_FALSE(try_catch.HasCaught());
-    ASSERT_TRUE(deserialization_context()
-                    ->Global()
-                    ->CreateDataProperty(deserialization_context_,
-                                         StringFromUtf8("result"), result)
-                    .FromMaybe(false));
+    ASSERT_TRUE(
+        context->Global()
+            ->CreateDataProperty(context, StringFromUtf8("result"), result)
+            .FromMaybe(false));
     output_functor(result);
     ASSERT_FALSE(try_catch.HasCaught());
   }
@@ -115,43 +112,39 @@ class ValueSerializerTest : public TestWithIsolate {
   template <typename OutputFunctor>
   void DecodeTestForVersion0(const std::vector<uint8_t>& data,
                              const OutputFunctor& output_functor) {
-    Context::Scope scope(deserialization_context());
+    Local<Context> context = deserialization_context();
+    Context::Scope scope(context);
     TryCatch try_catch(isolate());
-    // TODO(jbroman): Use the public API once it exists.
-    i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate());
-    i::HandleScope handle_scope(internal_isolate);
-    i::ValueDeserializer deserializer(
-        internal_isolate,
-        i::Vector<const uint8_t>(&data[0], static_cast<int>(data.size())));
-    // TODO(jbroman): Enable legacy support.
+    ValueDeserializer deserializer(isolate(), &data[0],
+                                   static_cast<int>(data.size()));
+    deserializer.SetSupportsLegacyWireFormat(true);
+    BeforeDecode(&deserializer);
     ASSERT_TRUE(deserializer.ReadHeader().FromMaybe(false));
-    // TODO(jbroman): Check version 0.
+    ASSERT_EQ(0, deserializer.GetWireFormatVersion());
     Local<Value> result;
-    ASSERT_TRUE(ToLocal<Value>(
-        deserializer.ReadObjectUsingEntireBufferForLegacyFormat(), &result));
+    ASSERT_TRUE(deserializer.ReadValue(context).ToLocal(&result));
     ASSERT_FALSE(result.IsEmpty());
     ASSERT_FALSE(try_catch.HasCaught());
-    ASSERT_TRUE(deserialization_context()
-                    ->Global()
-                    ->CreateDataProperty(deserialization_context_,
-                                         StringFromUtf8("result"), result)
-                    .FromMaybe(false));
+    ASSERT_TRUE(
+        context->Global()
+            ->CreateDataProperty(context, StringFromUtf8("result"), result)
+            .FromMaybe(false));
     output_functor(result);
     ASSERT_FALSE(try_catch.HasCaught());
   }
 
   void InvalidDecodeTest(const std::vector<uint8_t>& data) {
-    Context::Scope scope(deserialization_context());
+    Local<Context> context = deserialization_context();
+    Context::Scope scope(context);
     TryCatch try_catch(isolate());
-    i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate());
-    i::HandleScope handle_scope(internal_isolate);
-    i::ValueDeserializer deserializer(
-        internal_isolate,
-        i::Vector<const uint8_t>(&data[0], static_cast<int>(data.size())));
+    ValueDeserializer deserializer(isolate(), &data[0],
+                                   static_cast<int>(data.size()));
+    deserializer.SetSupportsLegacyWireFormat(true);
+    BeforeDecode(&deserializer);
     Maybe<bool> header_result = deserializer.ReadHeader();
     if (header_result.IsNothing()) return;
     ASSERT_TRUE(header_result.ToChecked());
-    ASSERT_TRUE(deserializer.ReadObject().is_null());
+    ASSERT_TRUE(deserializer.ReadValue(context).IsEmpty());
   }
 
   Local<Value> EvaluateScriptForInput(const char* utf8_source) {
@@ -1100,6 +1093,7 @@ TEST_F(ValueSerializerTest, RoundTripDate) {
 }
 
 TEST_F(ValueSerializerTest, DecodeDate) {
+#if defined(V8_TARGET_LITTLE_ENDIAN)
   DecodeTest({0xff, 0x09, 0x3f, 0x00, 0x44, 0x00, 0x00, 0x00, 0x00, 0x80, 0x84,
               0x2e, 0x41, 0x00},
              [this](Local<Value> value) {
@@ -1120,6 +1114,28 @@ TEST_F(ValueSerializerTest, DecodeDate) {
                ASSERT_TRUE(value->IsDate());
                EXPECT_TRUE(std::isnan(Date::Cast(*value)->ValueOf()));
              });
+#else
+  DecodeTest({0xff, 0x09, 0x3f, 0x00, 0x44, 0x41, 0x2e, 0x84, 0x80, 0x00, 0x00,
+              0x00, 0x00, 0x00},
+             [this](Local<Value> value) {
+               ASSERT_TRUE(value->IsDate());
+               EXPECT_EQ(1e6, Date::Cast(*value)->ValueOf());
+               EXPECT_TRUE("Object.getPrototypeOf(result) === Date.prototype");
+             });
+  DecodeTest(
+      {0xff, 0x09, 0x3f, 0x00, 0x44, 0xc2, 0x87, 0x89, 0x27, 0x45, 0x20, 0x00,
+       0x00, 0x00},
+      [this](Local<Value> value) {
+        ASSERT_TRUE(value->IsDate());
+        EXPECT_TRUE("result.toISOString() === '1867-07-01T00:00:00.000Z'");
+      });
+  DecodeTest({0xff, 0x09, 0x3f, 0x00, 0x44, 0x7f, 0xf8, 0x00, 0x00, 0x00, 0x00,
+              0x00, 0x00, 0x00},
+             [this](Local<Value> value) {
+               ASSERT_TRUE(value->IsDate());
+               EXPECT_TRUE(std::isnan(Date::Cast(*value)->ValueOf()));
+             });
+#endif
   DecodeTest(
       {0xff, 0x09, 0x3f, 0x00, 0x6f, 0x3f, 0x01, 0x53, 0x01, 0x61, 0x3f,
        0x01, 0x44, 0x00, 0x20, 0x39, 0x50, 0x37, 0x6a, 0x75, 0x42, 0x3f,
@@ -1212,6 +1228,7 @@ TEST_F(ValueSerializerTest, DecodeValueObjects) {
         EXPECT_TRUE(EvaluateScriptForResultBool("result.a instanceof Boolean"));
         EXPECT_TRUE(EvaluateScriptForResultBool("result.a === result.b"));
       });
+#if defined(V8_TARGET_LITTLE_ENDIAN)
   DecodeTest(
       {0xff, 0x09, 0x3f, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x45,
        0xc0, 0x00},
@@ -1228,6 +1245,24 @@ TEST_F(ValueSerializerTest, DecodeValueObjects) {
                EXPECT_TRUE(EvaluateScriptForResultBool(
                    "Number.isNaN(result.valueOf())"));
              });
+#else
+  DecodeTest(
+      {0xff, 0x09, 0x3f, 0x00, 0x6e, 0xc0, 0x45, 0x00, 0x00, 0x00, 0x00, 0x00,
+       0x00, 0x00},
+      [this](Local<Value> value) {
+        EXPECT_TRUE(EvaluateScriptForResultBool(
+            "Object.getPrototypeOf(result) === Number.prototype"));
+        EXPECT_TRUE(EvaluateScriptForResultBool("result.valueOf() === -42"));
+      });
+  DecodeTest({0xff, 0x09, 0x3f, 0x00, 0x6e, 0x7f, 0xf8, 0x00, 0x00, 0x00, 0x00,
+              0x00, 0x00, 0x00},
+             [this](Local<Value> value) {
+               EXPECT_TRUE(EvaluateScriptForResultBool(
+                   "Object.getPrototypeOf(result) === Number.prototype"));
+               EXPECT_TRUE(EvaluateScriptForResultBool(
+                   "Number.isNaN(result.valueOf())"));
+             });
+#endif
   DecodeTest(
       {0xff, 0x09, 0x3f, 0x00, 0x6f, 0x3f, 0x01, 0x53, 0x01, 0x61, 0x3f,
        0x01, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x40, 0x3f,
@@ -1514,6 +1549,128 @@ TEST_F(ValueSerializerTest, RoundTripSetWithTrickyGetters) {
             "!('baz' in Array.from(result.keys())[0])"));
         EXPECT_TRUE(EvaluateScriptForResultBool(
             "Array.from(result.keys())[1].foo === 'bar'"));
+      });
+}
+
+TEST_F(ValueSerializerTest, RoundTripArrayBuffer) {
+  RoundTripTest("new ArrayBuffer()", [this](Local<Value> value) {
+    ASSERT_TRUE(value->IsArrayBuffer());
+    EXPECT_EQ(0u, ArrayBuffer::Cast(*value)->ByteLength());
+    EXPECT_TRUE(EvaluateScriptForResultBool(
+        "Object.getPrototypeOf(result) === ArrayBuffer.prototype"));
+  });
+  RoundTripTest("new Uint8Array([0, 128, 255]).buffer",
+                [this](Local<Value> value) {
+                  ASSERT_TRUE(value->IsArrayBuffer());
+                  EXPECT_EQ(3u, ArrayBuffer::Cast(*value)->ByteLength());
+                  EXPECT_TRUE(EvaluateScriptForResultBool(
+                      "new Uint8Array(result).toString() === '0,128,255'"));
+                });
+  RoundTripTest(
+      "({ a: new ArrayBuffer(), get b() { return this.a; }})",
+      [this](Local<Value> value) {
+        EXPECT_TRUE(
+            EvaluateScriptForResultBool("result.a instanceof ArrayBuffer"));
+        EXPECT_TRUE(EvaluateScriptForResultBool("result.a === result.b"));
+      });
+}
+
+TEST_F(ValueSerializerTest, DecodeArrayBuffer) {
+  DecodeTest({0xff, 0x09, 0x3f, 0x00, 0x42, 0x00},
+             [this](Local<Value> value) {
+               ASSERT_TRUE(value->IsArrayBuffer());
+               EXPECT_EQ(0u, ArrayBuffer::Cast(*value)->ByteLength());
+               EXPECT_TRUE(EvaluateScriptForResultBool(
+                   "Object.getPrototypeOf(result) === ArrayBuffer.prototype"));
+             });
+  DecodeTest({0xff, 0x09, 0x3f, 0x00, 0x42, 0x03, 0x00, 0x80, 0xff, 0x00},
+             [this](Local<Value> value) {
+               ASSERT_TRUE(value->IsArrayBuffer());
+               EXPECT_EQ(3u, ArrayBuffer::Cast(*value)->ByteLength());
+               EXPECT_TRUE(EvaluateScriptForResultBool(
+                   "new Uint8Array(result).toString() === '0,128,255'"));
+             });
+  DecodeTest(
+      {0xff, 0x09, 0x3f, 0x00, 0x6f, 0x3f, 0x01, 0x53, 0x01,
+       0x61, 0x3f, 0x01, 0x42, 0x00, 0x3f, 0x02, 0x53, 0x01,
+       0x62, 0x3f, 0x02, 0x5e, 0x01, 0x7b, 0x02, 0x00},
+      [this](Local<Value> value) {
+        EXPECT_TRUE(
+            EvaluateScriptForResultBool("result.a instanceof ArrayBuffer"));
+        EXPECT_TRUE(EvaluateScriptForResultBool("result.a === result.b"));
+      });
+}
+
+TEST_F(ValueSerializerTest, DecodeInvalidArrayBuffer) {
+  InvalidDecodeTest({0xff, 0x09, 0x42, 0xff, 0xff, 0x00});
+}
+
+// Includes an ArrayBuffer wrapper marked for transfer from the serialization
+// context to the deserialization context.
+class ValueSerializerTestWithArrayBufferTransfer : public ValueSerializerTest {
+ protected:
+  static const size_t kTestByteLength = 4;
+
+  ValueSerializerTestWithArrayBufferTransfer() {
+    {
+      Context::Scope scope(serialization_context());
+      input_buffer_ = ArrayBuffer::New(isolate(), nullptr, 0);
+      input_buffer_->Neuter();
+    }
+    {
+      Context::Scope scope(deserialization_context());
+      output_buffer_ = ArrayBuffer::New(isolate(), kTestByteLength);
+      const uint8_t data[kTestByteLength] = {0x00, 0x01, 0x80, 0xff};
+      memcpy(output_buffer_->GetContents().Data(), data, kTestByteLength);
+    }
+  }
+
+  const Local<ArrayBuffer>& input_buffer() { return input_buffer_; }
+  const Local<ArrayBuffer>& output_buffer() { return output_buffer_; }
+
+  void BeforeEncode(ValueSerializer* serializer) override {
+    serializer->TransferArrayBuffer(0, input_buffer_);
+  }
+
+  void BeforeDecode(ValueDeserializer* deserializer) override {
+    deserializer->TransferArrayBuffer(0, output_buffer_);
+  }
+
+ private:
+  Local<ArrayBuffer> input_buffer_;
+  Local<ArrayBuffer> output_buffer_;
+};
+
+TEST_F(ValueSerializerTestWithArrayBufferTransfer,
+       RoundTripArrayBufferTransfer) {
+  RoundTripTest([this]() { return input_buffer(); },
+                [this](Local<Value> value) {
+                  ASSERT_TRUE(value->IsArrayBuffer());
+                  EXPECT_EQ(output_buffer(), value);
+                  EXPECT_TRUE(EvaluateScriptForResultBool(
+                      "new Uint8Array(result).toString() === '0,1,128,255'"));
+                });
+  RoundTripTest(
+      [this]() {
+        Local<Object> object = Object::New(isolate());
+        EXPECT_TRUE(object
+                        ->CreateDataProperty(serialization_context(),
+                                             StringFromUtf8("a"),
+                                             input_buffer())
+                        .FromMaybe(false));
+        EXPECT_TRUE(object
+                        ->CreateDataProperty(serialization_context(),
+                                             StringFromUtf8("b"),
+                                             input_buffer())
+                        .FromMaybe(false));
+        return object;
+      },
+      [this](Local<Value> value) {
+        EXPECT_TRUE(
+            EvaluateScriptForResultBool("result.a instanceof ArrayBuffer"));
+        EXPECT_TRUE(EvaluateScriptForResultBool("result.a === result.b"));
+        EXPECT_TRUE(EvaluateScriptForResultBool(
+            "new Uint8Array(result.a).toString() === '0,1,128,255'"));
       });
 }
 

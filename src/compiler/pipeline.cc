@@ -63,6 +63,7 @@
 #include "src/compiler/store-store-elimination.h"
 #include "src/compiler/tail-call-optimization.h"
 #include "src/compiler/type-hint-analyzer.h"
+#include "src/compiler/typed-optimization.h"
 #include "src/compiler/typer.h"
 #include "src/compiler/value-numbering-reducer.h"
 #include "src/compiler/verifier.h"
@@ -562,7 +563,7 @@ class PipelineCompilationJob final : public CompilationJob {
   PipelineCompilationJob(Isolate* isolate, Handle<JSFunction> function)
       // Note that the CompilationInfo is not initialized at the time we pass it
       // to the CompilationJob constructor, but it is not dereferenced there.
-      : CompilationJob(&info_, "TurboFan"),
+      : CompilationJob(isolate, &info_, "TurboFan"),
         zone_(isolate->allocator()),
         zone_pool_(isolate->allocator()),
         parse_info_(&zone_, function),
@@ -660,7 +661,8 @@ class PipelineWasmCompilationJob final : public CompilationJob {
   explicit PipelineWasmCompilationJob(CompilationInfo* info, Graph* graph,
                                       CallDescriptor* descriptor,
                                       SourcePositionTable* source_positions)
-      : CompilationJob(info, "TurboFan", State::kReadyToExecute),
+      : CompilationJob(info->isolate(), info, "TurboFan",
+                       State::kReadyToExecute),
         zone_pool_(info->isolate()->allocator()),
         data_(&zone_pool_, info, graph, source_positions),
         pipeline_(&data_),
@@ -921,6 +923,12 @@ struct TypedLoweringPhase {
     JSTypedLowering typed_lowering(&graph_reducer, data->info()->dependencies(),
                                    typed_lowering_flags, data->jsgraph(),
                                    temp_zone);
+    TypedOptimization typed_optimization(
+        &graph_reducer, data->info()->dependencies(),
+        data->info()->is_deoptimization_enabled()
+            ? TypedOptimization::kDeoptimizationEnabled
+            : TypedOptimization::kNoFlags,
+        data->jsgraph());
     SimplifiedOperatorReducer simple_reducer(&graph_reducer, data->jsgraph());
     CheckpointElimination checkpoint_elimination(&graph_reducer);
     CommonOperatorReducer common_reducer(&graph_reducer, data->graph(),
@@ -930,6 +938,7 @@ struct TypedLoweringPhase {
     if (data->info()->is_deoptimization_enabled()) {
       AddReducer(data, &graph_reducer, &create_lowering);
     }
+    AddReducer(data, &graph_reducer, &typed_optimization);
     AddReducer(data, &graph_reducer, &typed_lowering);
     AddReducer(data, &graph_reducer, &simple_reducer);
     AddReducer(data, &graph_reducer, &checkpoint_elimination);
@@ -1534,7 +1543,7 @@ bool PipelineImpl::CreateGraph() {
       RunPrintAndVerify("Escape Analysed");
     }
 
-    if (FLAG_turbo_load_elimination) {
+    if (!info()->shared_info()->asm_function() && FLAG_turbo_load_elimination) {
       Run<LoadEliminationPhase>();
       RunPrintAndVerify("Load eliminated");
     }
@@ -1717,7 +1726,7 @@ bool Pipeline::AllocateRegistersForTesting(const RegisterConfiguration* config,
                                            InstructionSequence* sequence,
                                            bool run_verifier) {
   CompilationInfo info(ArrayVector("testing"), sequence->isolate(),
-                       sequence->zone());
+                       sequence->zone(), Code::ComputeFlags(Code::STUB));
   ZonePool zone_pool(sequence->isolate()->allocator());
   PipelineData data(&zone_pool, &info, sequence);
   PipelineImpl pipeline(&data);

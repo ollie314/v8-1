@@ -430,8 +430,6 @@ JSTypedLowering::JSTypedLowering(Editor* editor,
       dependencies_(dependencies),
       flags_(flags),
       jsgraph_(jsgraph),
-      true_type_(Type::Constant(factory()->true_value(), graph()->zone())),
-      false_type_(Type::Constant(factory()->false_value(), graph()->zone())),
       the_hole_type_(
           Type::Constant(factory()->the_hole_value(), graph()->zone())),
       type_cache_(TypeCache::Get()) {
@@ -1542,16 +1540,18 @@ void ReduceBuiltin(Isolate* isolate, JSGraph* jsgraph, Node* node,
   const int argc = arity + BuiltinArguments::kNumExtraArgsWithReceiver;
   Node* argc_node = jsgraph->Int32Constant(argc);
 
-  node->InsertInput(zone, arity + 2, argc_node);
-  node->InsertInput(zone, arity + 3, target);
-  node->InsertInput(zone, arity + 4, new_target);
+  static const int kStubAndReceiver = 2;
+  int cursor = arity + kStubAndReceiver;
+  node->InsertInput(zone, cursor++, argc_node);
+  node->InsertInput(zone, cursor++, target);
+  node->InsertInput(zone, cursor++, new_target);
 
   Address entry = Builtins::CppEntryOf(builtin_index);
   ExternalReference entry_ref(ExternalReference(entry, isolate));
   Node* entry_node = jsgraph->ExternalConstant(entry_ref);
 
-  node->InsertInput(zone, arity + 5, entry_node);
-  node->InsertInput(zone, arity + 6, argc_node);
+  node->InsertInput(zone, cursor++, entry_node);
+  node->InsertInput(zone, cursor++, argc_node);
 
   static const int kReturnCount = 1;
   const char* debug_name = Builtins::name(builtin_index);
@@ -1560,6 +1560,12 @@ void ReduceBuiltin(Isolate* isolate, JSGraph* jsgraph, Node* node,
       zone, kReturnCount, argc, debug_name, properties, flags);
 
   NodeProperties::ChangeOp(node, jsgraph->common()->Call(desc));
+}
+
+bool NeedsArgumentAdaptorFrame(Handle<SharedFunctionInfo> shared, int arity) {
+  static const int sentinel = SharedFunctionInfo::kDontAdaptArgumentsSentinel;
+  const int num_decl_parms = shared->internal_formal_parameter_count();
+  return (num_decl_parms != arity && num_decl_parms != sentinel);
 }
 
 }  // namespace
@@ -1587,9 +1593,7 @@ Reduction JSTypedLowering::ReduceJSCallConstruct(Node* node) {
     CallDescriptor::Flags flags = CallDescriptor::kNeedsFrameState;
 
     if (is_builtin && Builtins::HasCppImplementation(builtin_index) &&
-        (shared->internal_formal_parameter_count() == arity ||
-         shared->internal_formal_parameter_count() ==
-             SharedFunctionInfo::kDontAdaptArgumentsSentinel)) {
+        !NeedsArgumentAdaptorFrame(shared, arity)) {
       // Patch {node} to a direct CEntryStub call.
 
       // Load the context from the {target}.
@@ -1701,22 +1705,7 @@ Reduction JSTypedLowering::ReduceJSCallFunction(Node* node) {
 
     Node* new_target = jsgraph()->UndefinedConstant();
     Node* argument_count = jsgraph()->Int32Constant(arity);
-    if (is_builtin && Builtins::HasCppImplementation(builtin_index) &&
-        (shared->internal_formal_parameter_count() == arity ||
-         shared->internal_formal_parameter_count() ==
-             SharedFunctionInfo::kDontAdaptArgumentsSentinel)) {
-      // Patch {node} to a direct CEntryStub call.
-      ReduceBuiltin(isolate(), jsgraph(), node, builtin_index, arity, flags);
-    } else if (shared->internal_formal_parameter_count() == arity ||
-               shared->internal_formal_parameter_count() ==
-                   SharedFunctionInfo::kDontAdaptArgumentsSentinel) {
-      // Patch {node} to a direct call.
-      node->InsertInput(graph()->zone(), arity + 2, new_target);
-      node->InsertInput(graph()->zone(), arity + 3, argument_count);
-      NodeProperties::ChangeOp(node,
-                               common()->Call(Linkage::GetJSCallDescriptor(
-                                   graph()->zone(), false, 1 + arity, flags)));
-    } else {
+    if (NeedsArgumentAdaptorFrame(shared, arity)) {
       // Patch {node} to an indirect call via the ArgumentsAdaptorTrampoline.
       Callable callable = CodeFactory::ArgumentAdaptor(isolate());
       node->InsertInput(graph()->zone(), 0,
@@ -1730,6 +1719,16 @@ Reduction JSTypedLowering::ReduceJSCallFunction(Node* node) {
           node, common()->Call(Linkage::GetStubCallDescriptor(
                     isolate(), graph()->zone(), callable.descriptor(),
                     1 + arity, flags)));
+    } else if (is_builtin && Builtins::HasCppImplementation(builtin_index)) {
+      // Patch {node} to a direct CEntryStub call.
+      ReduceBuiltin(isolate(), jsgraph(), node, builtin_index, arity, flags);
+    } else {
+      // Patch {node} to a direct call.
+      node->InsertInput(graph()->zone(), arity + 2, new_target);
+      node->InsertInput(graph()->zone(), arity + 3, argument_count);
+      NodeProperties::ChangeOp(node,
+                               common()->Call(Linkage::GetJSCallDescriptor(
+                                   graph()->zone(), false, 1 + arity, flags)));
     }
     return Changed(node);
   }
@@ -1926,174 +1925,7 @@ Reduction JSTypedLowering::ReduceJSGeneratorRestoreRegister(Node* node) {
   return Changed(element);
 }
 
-Reduction JSTypedLowering::ReduceSelect(Node* node) {
-  DCHECK_EQ(IrOpcode::kSelect, node->opcode());
-  Node* const condition = NodeProperties::GetValueInput(node, 0);
-  Type* const condition_type = NodeProperties::GetType(condition);
-  Node* const vtrue = NodeProperties::GetValueInput(node, 1);
-  Type* const vtrue_type = NodeProperties::GetType(vtrue);
-  Node* const vfalse = NodeProperties::GetValueInput(node, 2);
-  Type* const vfalse_type = NodeProperties::GetType(vfalse);
-  if (condition_type->Is(true_type_)) {
-    // Select(condition:true, vtrue, vfalse) => vtrue
-    return Replace(vtrue);
-  }
-  if (condition_type->Is(false_type_)) {
-    // Select(condition:false, vtrue, vfalse) => vfalse
-    return Replace(vfalse);
-  }
-  if (vtrue_type->Is(true_type_) && vfalse_type->Is(false_type_)) {
-    // Select(condition, vtrue:true, vfalse:false) => condition
-    return Replace(condition);
-  }
-  if (vtrue_type->Is(false_type_) && vfalse_type->Is(true_type_)) {
-    // Select(condition, vtrue:false, vfalse:true) => BooleanNot(condition)
-    node->TrimInputCount(1);
-    NodeProperties::ChangeOp(node, simplified()->BooleanNot());
-    return Changed(node);
-  }
-  return NoChange();
-}
-
-namespace {
-
-MaybeHandle<Map> GetStableMapFromObjectType(Type* object_type) {
-  if (object_type->IsConstant() &&
-      object_type->AsConstant()->Value()->IsHeapObject()) {
-    Handle<Map> object_map(
-        Handle<HeapObject>::cast(object_type->AsConstant()->Value())->map());
-    if (object_map->is_stable()) return object_map;
-  } else if (object_type->IsClass()) {
-    Handle<Map> object_map = object_type->AsClass()->Map();
-    if (object_map->is_stable()) return object_map;
-  }
-  return MaybeHandle<Map>();
-}
-
-}  // namespace
-
-Reduction JSTypedLowering::ReduceCheckMaps(Node* node) {
-  // TODO(bmeurer): Find a better home for this thing!
-  // The CheckMaps(o, ...map...) can be eliminated if map is stable and
-  // either
-  //  (a) o has type Constant(object) and map == object->map, or
-  //  (b) o has type Class(map),
-  // and either
-  //  (1) map cannot transition further, or
-  //  (2) we can add a code dependency on the stability of map
-  //      (to guard the Constant type information).
-  Node* const object = NodeProperties::GetValueInput(node, 0);
-  Type* const object_type = NodeProperties::GetType(object);
-  Node* const effect = NodeProperties::GetEffectInput(node);
-  Handle<Map> object_map;
-  if (GetStableMapFromObjectType(object_type).ToHandle(&object_map)) {
-    for (int i = 1; i < node->op()->ValueInputCount(); ++i) {
-      Node* const map = NodeProperties::GetValueInput(node, i);
-      Type* const map_type = NodeProperties::GetType(map);
-      if (map_type->IsConstant() &&
-          map_type->AsConstant()->Value().is_identical_to(object_map)) {
-        if (object_map->CanTransition()) {
-          DCHECK(flags() & kDeoptimizationEnabled);
-          dependencies()->AssumeMapStable(object_map);
-        }
-        return Replace(effect);
-      }
-    }
-  }
-  return NoChange();
-}
-
-Reduction JSTypedLowering::ReduceCheckString(Node* node) {
-  // TODO(bmeurer): Find a better home for this thing!
-  Node* const input = NodeProperties::GetValueInput(node, 0);
-  Type* const input_type = NodeProperties::GetType(input);
-  if (input_type->Is(Type::String())) {
-    ReplaceWithValue(node, input);
-    return Replace(input);
-  }
-  return NoChange();
-}
-
-Reduction JSTypedLowering::ReduceLoadField(Node* node) {
-  // TODO(bmeurer): Find a better home for this thing!
-  Node* const object = NodeProperties::GetValueInput(node, 0);
-  Type* const object_type = NodeProperties::GetType(object);
-  FieldAccess const& access = FieldAccessOf(node->op());
-  if (access.base_is_tagged == kTaggedBase &&
-      access.offset == HeapObject::kMapOffset) {
-    // We can replace LoadField[Map](o) with map if is stable and either
-    //  (a) o has type Constant(object) and map == object->map, or
-    //  (b) o has type Class(map),
-    // and either
-    //  (1) map cannot transition further, or
-    //  (2) deoptimization is enabled and we can add a code dependency on the
-    //      stability of map (to guard the Constant type information).
-    Handle<Map> object_map;
-    if (GetStableMapFromObjectType(object_type).ToHandle(&object_map)) {
-      if (object_map->CanTransition()) {
-        if (flags() & kDeoptimizationEnabled) {
-          dependencies()->AssumeMapStable(object_map);
-        } else {
-          return NoChange();
-        }
-      }
-      Node* const value = jsgraph()->HeapConstant(object_map);
-      ReplaceWithValue(node, value);
-      return Replace(value);
-    }
-  }
-  return NoChange();
-}
-
-Reduction JSTypedLowering::ReduceNumberRoundop(Node* node) {
-  // TODO(bmeurer): Find a better home for this thing!
-  Node* const input = NodeProperties::GetValueInput(node, 0);
-  Type* const input_type = NodeProperties::GetType(input);
-  if (input_type->Is(type_cache_.kIntegerOrMinusZeroOrNaN)) {
-    return Replace(input);
-  }
-  return NoChange();
-}
-
 Reduction JSTypedLowering::Reduce(Node* node) {
-  // Check if the output type is a singleton.  In that case we already know the
-  // result value and can simply replace the node if it's eliminable.
-  if (!NodeProperties::IsConstant(node) && NodeProperties::IsTyped(node) &&
-      node->op()->HasProperty(Operator::kEliminatable)) {
-    // We can only constant-fold nodes here, that are known to not cause any
-    // side-effect, may it be a JavaScript observable side-effect or a possible
-    // eager deoptimization exit (i.e. {node} has an operator that doesn't have
-    // the Operator::kNoDeopt property).
-    Type* upper = NodeProperties::GetType(node);
-    if (upper->IsInhabited()) {
-      if (upper->IsConstant()) {
-        Node* replacement = jsgraph()->Constant(upper->AsConstant()->Value());
-        ReplaceWithValue(node, replacement);
-        return Changed(replacement);
-      } else if (upper->Is(Type::MinusZero())) {
-        Node* replacement = jsgraph()->Constant(factory()->minus_zero_value());
-        ReplaceWithValue(node, replacement);
-        return Changed(replacement);
-      } else if (upper->Is(Type::NaN())) {
-        Node* replacement = jsgraph()->NaNConstant();
-        ReplaceWithValue(node, replacement);
-        return Changed(replacement);
-      } else if (upper->Is(Type::Null())) {
-        Node* replacement = jsgraph()->NullConstant();
-        ReplaceWithValue(node, replacement);
-        return Changed(replacement);
-      } else if (upper->Is(Type::PlainNumber()) &&
-                 upper->Min() == upper->Max()) {
-        Node* replacement = jsgraph()->Constant(upper->Min());
-        ReplaceWithValue(node, replacement);
-        return Changed(replacement);
-      } else if (upper->Is(Type::Undefined())) {
-        Node* replacement = jsgraph()->UndefinedConstant();
-        ReplaceWithValue(node, replacement);
-        return Changed(replacement);
-      }
-    }
-  }
   switch (node->opcode()) {
     case IrOpcode::kJSEqual:
       return ReduceJSEqual(node, false);
@@ -2166,19 +1998,6 @@ Reduction JSTypedLowering::Reduce(Node* node) {
       return ReduceJSGeneratorRestoreContinuation(node);
     case IrOpcode::kJSGeneratorRestoreRegister:
       return ReduceJSGeneratorRestoreRegister(node);
-    case IrOpcode::kSelect:
-      return ReduceSelect(node);
-    case IrOpcode::kCheckMaps:
-      return ReduceCheckMaps(node);
-    case IrOpcode::kCheckString:
-      return ReduceCheckString(node);
-    case IrOpcode::kNumberCeil:
-    case IrOpcode::kNumberFloor:
-    case IrOpcode::kNumberRound:
-    case IrOpcode::kNumberTrunc:
-      return ReduceNumberRoundop(node);
-    case IrOpcode::kLoadField:
-      return ReduceLoadField(node);
     default:
       break;
   }

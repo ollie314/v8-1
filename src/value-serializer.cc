@@ -90,12 +90,17 @@ enum class SerializationTag : uint8_t {
   kBeginJSSet = '\'',
   // End of a JS set. length:uint32_t.
   kEndJSSet = ',',
+  // Array buffer. byteLength:uint32_t, then raw data.
+  kArrayBuffer = 'B',
+  // Array buffer (transferred). transferID:uint32_t
+  kArrayBufferTransfer = 't',
 };
 
 ValueSerializer::ValueSerializer(Isolate* isolate)
     : isolate_(isolate),
       zone_(isolate->allocator()),
-      id_map_(isolate->heap(), &zone_) {}
+      id_map_(isolate->heap(), &zone_),
+      array_buffer_transfer_map_(isolate->heap(), &zone_) {}
 
 ValueSerializer::~ValueSerializer() {}
 
@@ -158,11 +163,22 @@ void ValueSerializer::WriteTwoByteString(Vector<const uc16> chars) {
                  reinterpret_cast<const uint8_t*>(chars.end()));
 }
 
+void ValueSerializer::WriteRawBytes(const void* source, size_t length) {
+  const uint8_t* begin = reinterpret_cast<const uint8_t*>(source);
+  buffer_.insert(buffer_.end(), begin, begin + length);
+}
+
 uint8_t* ValueSerializer::ReserveRawBytes(size_t bytes) {
   if (!bytes) return nullptr;
   auto old_size = buffer_.size();
   buffer_.resize(buffer_.size() + bytes);
   return &buffer_[old_size];
+}
+
+void ValueSerializer::TransferArrayBuffer(uint32_t transfer_id,
+                                          Handle<JSArrayBuffer> array_buffer) {
+  DCHECK(!array_buffer_transfer_map_.Find(array_buffer));
+  array_buffer_transfer_map_.Set(array_buffer, transfer_id);
 }
 
 Maybe<bool> ValueSerializer::WriteObject(Handle<Object> object) {
@@ -301,6 +317,8 @@ Maybe<bool> ValueSerializer::WriteJSReceiver(Handle<JSReceiver> receiver) {
       return WriteJSMap(Handle<JSMap>::cast(receiver));
     case JS_SET_TYPE:
       return WriteJSSet(Handle<JSSet>::cast(receiver));
+    case JS_ARRAY_BUFFER_TYPE:
+      return WriteJSArrayBuffer(JSArrayBuffer::cast(*receiver));
     default:
       UNIMPLEMENTED();
       break;
@@ -490,6 +508,26 @@ Maybe<bool> ValueSerializer::WriteJSSet(Handle<JSSet> set) {
   return Just(true);
 }
 
+Maybe<bool> ValueSerializer::WriteJSArrayBuffer(JSArrayBuffer* array_buffer) {
+  uint32_t* transfer_entry = array_buffer_transfer_map_.Find(array_buffer);
+  if (transfer_entry) {
+    DCHECK(array_buffer->was_neutered());
+    WriteTag(SerializationTag::kArrayBufferTransfer);
+    WriteVarint(*transfer_entry);
+    return Just(true);
+  }
+
+  if (array_buffer->was_neutered()) return Nothing<bool>();
+  double byte_length = array_buffer->byte_length()->Number();
+  if (byte_length > std::numeric_limits<uint32_t>::max()) {
+    return Nothing<bool>();
+  }
+  WriteTag(SerializationTag::kArrayBuffer);
+  WriteVarint<uint32_t>(byte_length);
+  WriteRawBytes(array_buffer->backing_store(), byte_length);
+  return Just(true);
+}
+
 Maybe<uint32_t> ValueSerializer::WriteJSObjectProperties(
     Handle<JSObject> object, Handle<FixedArray> keys) {
   uint32_t properties_written = 0;
@@ -529,6 +567,11 @@ ValueDeserializer::ValueDeserializer(Isolate* isolate,
 
 ValueDeserializer::~ValueDeserializer() {
   GlobalHandles::Destroy(Handle<Object>::cast(id_map_).location());
+
+  Handle<Object> transfer_map_handle;
+  if (array_buffer_transfer_map_.ToHandle(&transfer_map_handle)) {
+    GlobalHandles::Destroy(transfer_map_handle.location());
+  }
 }
 
 Maybe<bool> ValueDeserializer::ReadHeader() {
@@ -624,6 +667,26 @@ Maybe<Vector<const uint8_t>> ValueDeserializer::ReadRawBytes(int size) {
   return Just(Vector<const uint8_t>(start, size));
 }
 
+void ValueDeserializer::TransferArrayBuffer(
+    uint32_t transfer_id, Handle<JSArrayBuffer> array_buffer) {
+  if (array_buffer_transfer_map_.is_null()) {
+    array_buffer_transfer_map_ =
+        Handle<SeededNumberDictionary>::cast(isolate_->global_handles()->Create(
+            *SeededNumberDictionary::New(isolate_, 0)));
+  }
+  Handle<SeededNumberDictionary> dictionary =
+      array_buffer_transfer_map_.ToHandleChecked();
+  const bool used_as_prototype = false;
+  Handle<SeededNumberDictionary> new_dictionary =
+      SeededNumberDictionary::AtNumberPut(dictionary, transfer_id, array_buffer,
+                                          used_as_prototype);
+  if (!new_dictionary.is_identical_to(dictionary)) {
+    GlobalHandles::Destroy(Handle<Object>::cast(dictionary).location());
+    array_buffer_transfer_map_ = Handle<SeededNumberDictionary>::cast(
+        isolate_->global_handles()->Create(*new_dictionary));
+  }
+}
+
 MaybeHandle<Object> ValueDeserializer::ReadObject() {
   SerializationTag tag;
   if (!ReadTag().To(&tag)) return MaybeHandle<Object>();
@@ -683,6 +746,10 @@ MaybeHandle<Object> ValueDeserializer::ReadObject() {
       return ReadJSMap();
     case SerializationTag::kBeginJSSet:
       return ReadJSSet();
+    case SerializationTag::kArrayBuffer:
+      return ReadJSArrayBuffer();
+    case SerializationTag::kArrayBufferTransfer:
+      return ReadTransferredJSArrayBuffer();
     default:
       return MaybeHandle<Object>();
   }
@@ -949,6 +1016,42 @@ MaybeHandle<JSSet> ValueDeserializer::ReadJSSet() {
   }
   DCHECK(HasObjectWithID(id));
   return scope.CloseAndEscape(set);
+}
+
+MaybeHandle<JSArrayBuffer> ValueDeserializer::ReadJSArrayBuffer() {
+  uint32_t id = next_id_++;
+  uint32_t byte_length;
+  Vector<const uint8_t> bytes;
+  if (!ReadVarint<uint32_t>().To(&byte_length) ||
+      byte_length > static_cast<size_t>(end_ - position_)) {
+    return MaybeHandle<JSArrayBuffer>();
+  }
+  const bool should_initialize = false;
+  Handle<JSArrayBuffer> array_buffer = isolate_->factory()->NewJSArrayBuffer();
+  JSArrayBuffer::SetupAllocatingData(array_buffer, isolate_, byte_length,
+                                     should_initialize);
+  memcpy(array_buffer->backing_store(), position_, byte_length);
+  position_ += byte_length;
+  AddObjectWithID(id, array_buffer);
+  return array_buffer;
+}
+
+MaybeHandle<JSArrayBuffer> ValueDeserializer::ReadTransferredJSArrayBuffer() {
+  uint32_t id = next_id_++;
+  uint32_t transfer_id;
+  Handle<SeededNumberDictionary> transfer_map;
+  if (!ReadVarint<uint32_t>().To(&transfer_id) ||
+      !array_buffer_transfer_map_.ToHandle(&transfer_map)) {
+    return MaybeHandle<JSArrayBuffer>();
+  }
+  int index = transfer_map->FindEntry(isolate_, transfer_id);
+  if (index == SeededNumberDictionary::kNotFound) {
+    return MaybeHandle<JSArrayBuffer>();
+  }
+  Handle<JSArrayBuffer> array_buffer(
+      JSArrayBuffer::cast(transfer_map->ValueAt(index)), isolate_);
+  AddObjectWithID(id, array_buffer);
+  return array_buffer;
 }
 
 Maybe<uint32_t> ValueDeserializer::ReadJSObjectProperties(

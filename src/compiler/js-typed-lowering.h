@@ -15,8 +15,6 @@ namespace internal {
 // Forward declarations.
 class CompilationDependencies;
 class Factory;
-class TypeCache;
-
 
 namespace compiler {
 
@@ -24,9 +22,8 @@ namespace compiler {
 class CommonOperatorBuilder;
 class JSGraph;
 class JSOperatorBuilder;
-class MachineOperatorBuilder;
 class SimplifiedOperatorBuilder;
-
+class TypeCache;
 
 // Lowers JS-level operators to simplified operators based on types.
 class JSTypedLowering final : public AdvancedReducer {
@@ -69,9 +66,7 @@ class JSTypedLowering final : public AdvancedReducer {
   Reduction ReduceJSConvertReceiver(Node* node);
   Reduction ReduceJSCallConstruct(Node* node);
   Reduction ReduceJSCallFunction(Node* node);
-  Reduction ReduceJSForInDone(Node* node);
   Reduction ReduceJSForInNext(Node* node);
-  Reduction ReduceJSForInStep(Node* node);
   Reduction ReduceJSGeneratorStore(Node* node);
   Reduction ReduceJSGeneratorRestoreContinuation(Node* node);
   Reduction ReduceJSGeneratorRestoreRegister(Node* node);
@@ -86,7 +81,6 @@ class JSTypedLowering final : public AdvancedReducer {
   JSOperatorBuilder* javascript() const;
   CommonOperatorBuilder* common() const;
   SimplifiedOperatorBuilder* simplified() const;
-  MachineOperatorBuilder* machine() const;
   CompilationDependencies* dependencies() const;
   Flags flags() const { return flags_; }
 

@@ -672,6 +672,15 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   __ cmpp(rcx, FieldOperand(rax, SharedFunctionInfo::kCodeOffset));
   __ j(not_equal, &switch_to_different_code_kind);
 
+  // Increment invocation count for the function.
+  __ movp(rcx, FieldOperand(rdi, JSFunction::kLiteralsOffset));
+  __ movp(rcx, FieldOperand(rcx, LiteralsArray::kFeedbackVectorOffset));
+  __ SmiAddConstant(
+      FieldOperand(rcx,
+                   TypeFeedbackVector::kInvocationCountIndex * kPointerSize +
+                       TypeFeedbackVector::kHeaderSize),
+      Smi::FromInt(1));
+
   // Check function data field is actually a BytecodeArray object.
   if (FLAG_debug_code) {
     __ AssertNotSmi(kInterpreterBytecodeArrayRegister);
@@ -783,32 +792,24 @@ void Builtins::Generate_InterpreterMarkBaselineOnReturn(MacroAssembler* masm) {
 }
 
 static void Generate_InterpreterPushArgs(MacroAssembler* masm,
-                                         bool push_receiver) {
-  // ----------- S t a t e -------------
-  //  -- rax : the number of arguments (not including the receiver)
-  //  -- rbx : the address of the first argument to be pushed. Subsequent
-  //           arguments should be consecutive above this, in the same order as
-  //           they are to be pushed onto the stack.
-  // -----------------------------------
-
+                                         Register num_args,
+                                         Register start_address,
+                                         Register scratch) {
   // Find the address of the last argument.
-  __ movp(rcx, rax);
-  if (push_receiver) {
-    __ addp(rcx, Immediate(1));  // Add one for receiver.
-  }
+  __ Move(scratch, num_args);
+  __ shlp(scratch, Immediate(kPointerSizeLog2));
+  __ negp(scratch);
+  __ addp(scratch, start_address);
 
-  __ shlp(rcx, Immediate(kPointerSizeLog2));
-  __ negp(rcx);
-  __ addp(rcx, rbx);
-
+  // TODO(mythria): Add a stack check before pushing arguments.
   // Push the arguments.
   Label loop_header, loop_check;
   __ j(always, &loop_check);
   __ bind(&loop_header);
-  __ Push(Operand(rbx, 0));
-  __ subp(rbx, Immediate(kPointerSize));
+  __ Push(Operand(start_address, 0));
+  __ subp(start_address, Immediate(kPointerSize));
   __ bind(&loop_check);
-  __ cmpp(rbx, rcx);
+  __ cmpp(start_address, scratch);
   __ j(greater, &loop_header, Label::kNear);
 }
 
@@ -827,7 +828,12 @@ void Builtins::Generate_InterpreterPushArgsAndCallImpl(
   // Pop return address to allow tail-call after pushing arguments.
   __ PopReturnAddressTo(kScratchRegister);
 
-  Generate_InterpreterPushArgs(masm, true);
+  // Number of values to be pushed.
+  __ Move(rcx, rax);
+  __ addp(rcx, Immediate(1));  // Add one for receiver.
+
+  // rbx and rdx will be modified.
+  Generate_InterpreterPushArgs(masm, rcx, rbx, rdx);
 
   // Call the target.
   __ PushReturnAddressFrom(kScratchRegister);  // Re-push return address.
@@ -845,13 +851,15 @@ void Builtins::Generate_InterpreterPushArgsAndCallImpl(
 }
 
 // static
-void Builtins::Generate_InterpreterPushArgsAndConstruct(MacroAssembler* masm) {
+void Builtins::Generate_InterpreterPushArgsAndConstructImpl(
+    MacroAssembler* masm, CallableType construct_type) {
   // ----------- S t a t e -------------
   //  -- rax : the number of arguments (not including the receiver)
   //  -- rdx : the new target (either the same as the constructor or
   //           the JSFunction on which new was invoked initially)
   //  -- rdi : the constructor to call (can be any Object)
-  //  -- rbx : the address of the first argument to be pushed. Subsequent
+  //  -- rbx : the allocation site feedback if available, undefined otherwise
+  //  -- rcx : the address of the first argument to be pushed. Subsequent
   //           arguments should be consecutive above this, in the same order as
   //           they are to be pushed onto the stack.
   // -----------------------------------
@@ -862,13 +870,60 @@ void Builtins::Generate_InterpreterPushArgsAndConstruct(MacroAssembler* masm) {
   // Push slot for the receiver to be constructed.
   __ Push(Immediate(0));
 
-  Generate_InterpreterPushArgs(masm, false);
+  // rcx and r8 will be modified.
+  Generate_InterpreterPushArgs(masm, rax, rcx, r8);
 
   // Push return address in preparation for the tail-call.
   __ PushReturnAddressFrom(kScratchRegister);
 
-  // Call the constructor (rax, rdx, rdi passed on).
-  __ Jump(masm->isolate()->builtins()->Construct(), RelocInfo::CODE_TARGET);
+  __ AssertUndefinedOrAllocationSite(rbx);
+  if (construct_type == CallableType::kJSFunction) {
+    // Tail call to the function-specific construct stub (still in the caller
+    // context at this point).
+    __ AssertFunction(rdi);
+
+    __ movp(rcx, FieldOperand(rdi, JSFunction::kSharedFunctionInfoOffset));
+    __ movp(rcx, FieldOperand(rcx, SharedFunctionInfo::kConstructStubOffset));
+    __ leap(rcx, FieldOperand(rcx, Code::kHeaderSize));
+    // Jump to the constructor function (rax, rbx, rdx passed on).
+    __ jmp(rcx);
+  } else {
+    DCHECK_EQ(construct_type, CallableType::kAny);
+    // Call the constructor (rax, rdx, rdi passed on).
+    __ Jump(masm->isolate()->builtins()->Construct(), RelocInfo::CODE_TARGET);
+  }
+}
+
+// static
+void Builtins::Generate_InterpreterPushArgsAndConstructArray(
+    MacroAssembler* masm) {
+  // ----------- S t a t e -------------
+  //  -- rax : the number of arguments (not including the receiver)
+  //  -- rdx : the target to call checked to be Array function.
+  //  -- rbx : the allocation site feedback
+  //  -- rcx : the address of the first argument to be pushed. Subsequent
+  //           arguments should be consecutive above this, in the same order as
+  //           they are to be pushed onto the stack.
+  // -----------------------------------
+
+  // Pop return address to allow tail-call after pushing arguments.
+  __ PopReturnAddressTo(kScratchRegister);
+
+  // Number of values to be pushed.
+  __ Move(r8, rax);
+  __ addp(r8, Immediate(1));  // Add one for receiver.
+
+  // rcx and rdi will be modified.
+  Generate_InterpreterPushArgs(masm, r8, rcx, rdi);
+
+  // Push return address in preparation for the tail-call.
+  __ PushReturnAddressFrom(kScratchRegister);
+
+  // Array constructor expects constructor in rdi. It is same as rdx here.
+  __ Move(rdi, rdx);
+
+  ArrayConstructorStub stub(masm->isolate());
+  __ TailCallStub(&stub);
 }
 
 void Builtins::Generate_InterpreterEnterBytecodeDispatch(MacroAssembler* masm) {
@@ -1325,6 +1380,16 @@ void Builtins::Generate_DatePrototype_GetField(MacroAssembler* masm,
     __ Move(rbx, Smi::FromInt(0));
     __ EnterBuiltinFrame(rsi, rdi, rbx);
     __ CallRuntime(Runtime::kThrowNotDateError);
+
+    // It's far from obvious, but this final trailing instruction after the call
+    // is required for StackFrame::LookupCode to work correctly. To illustrate
+    // why: if call were the final instruction in the code object, then the pc
+    // (== return address) would point beyond the code object when the stack is
+    // traversed. When we then try to look up the code object through
+    // StackFrame::LookupCode, we actually return the next code object that
+    // happens to be on the same page in memory.
+    // TODO(jgruber): A proper fix for this would be nice.
+    __ int3();
   }
 }
 
@@ -2159,25 +2224,6 @@ void Builtins::Generate_Abort(MacroAssembler* masm) {
   __ PushReturnAddressFrom(rcx);
   __ Move(rsi, Smi::FromInt(0));
   __ TailCallRuntime(Runtime::kAbort);
-}
-
-// static
-void Builtins::Generate_ToNumber(MacroAssembler* masm) {
-  // The ToNumber stub takes one argument in rax.
-  Label not_smi;
-  __ JumpIfNotSmi(rax, &not_smi, Label::kNear);
-  __ Ret();
-  __ bind(&not_smi);
-
-  Label not_heap_number;
-  __ CompareRoot(FieldOperand(rax, HeapObject::kMapOffset),
-                 Heap::kHeapNumberMapRootIndex);
-  __ j(not_equal, &not_heap_number, Label::kNear);
-  __ Ret();
-  __ bind(&not_heap_number);
-
-  __ Jump(masm->isolate()->builtins()->NonNumberToNumber(),
-          RelocInfo::CODE_TARGET);
 }
 
 void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {

@@ -84,6 +84,11 @@ class Interpreter {
   template <class Generator>
   void DoBinaryOpWithFeedback(InterpreterAssembler* assembler);
 
+  // Generates code to perform the comparison via |Generator| while gathering
+  // type feedback.
+  template <class Generator>
+  void DoCompareOpWithFeedback(InterpreterAssembler* assembler);
+
   // Generates code to perform the bitwise binary operation corresponding to
   // |bitwise_op| while gathering type feedback.
   void DoBitwiseBinaryOp(Token::Value bitwise_op,
@@ -119,18 +124,6 @@ class Interpreter {
   // Generates code to perform a JS call that collects type feedback.
   void DoJSCall(InterpreterAssembler* assembler, TailCallMode tail_call_mode);
 
-  // Generates code to perform a runtime call.
-  void DoCallRuntimeCommon(InterpreterAssembler* assembler);
-
-  // Generates code to perform a runtime call returning a pair.
-  void DoCallRuntimeForPairCommon(InterpreterAssembler* assembler);
-
-  // Generates code to perform a JS runtime call.
-  void DoCallJSRuntimeCommon(InterpreterAssembler* assembler);
-
-  // Generates code to perform a constructor call.
-  void DoCallConstruct(InterpreterAssembler* assembler);
-
   // Generates code to perform delete via function_id.
   void DoDelete(Runtime::FunctionId function_id,
                 InterpreterAssembler* assembler);
@@ -142,9 +135,6 @@ class Interpreter {
   // Generates code to perform a lookup slot store depending on |language_mode|.
   void DoStaLookupSlot(LanguageMode language_mode,
                        InterpreterAssembler* assembler);
-
-  // Generates a node with the undefined constant.
-  compiler::Node* BuildLoadUndefined(InterpreterAssembler* assembler);
 
   // Generates code to load a context slot.
   compiler::Node* BuildLoadContextSlot(InterpreterAssembler* assembler);

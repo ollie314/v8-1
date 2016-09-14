@@ -51,6 +51,8 @@ namespace internal {
   ASM(Abort)                                                                  \
   /* Handlers */                                                              \
   ASH(KeyedLoadIC_Megamorphic, KEYED_LOAD_IC, kNoExtraICState)                \
+  TFS(KeyedLoadIC_Megamorphic_TF, KEYED_LOAD_IC, kNoExtraICState,             \
+      LoadWithVector)                                                         \
   ASM(KeyedLoadIC_Miss)                                                       \
   ASH(KeyedLoadIC_Slow, HANDLER, Code::KEYED_LOAD_IC)                         \
   ASH(KeyedStoreIC_Megamorphic, KEYED_STORE_IC, kNoExtraICState)              \
@@ -123,9 +125,11 @@ namespace internal {
   ASM(InterpreterMarkBaselineOnReturn)                                        \
   ASM(InterpreterPushArgsAndCall)                                             \
   ASM(InterpreterPushArgsAndCallFunction)                                     \
-  ASM(InterpreterPushArgsAndConstruct)                                        \
   ASM(InterpreterPushArgsAndTailCall)                                         \
   ASM(InterpreterPushArgsAndTailCallFunction)                                 \
+  ASM(InterpreterPushArgsAndConstruct)                                        \
+  ASM(InterpreterPushArgsAndConstructFunction)                                \
+  ASM(InterpreterPushArgsAndConstructArray)                                   \
   ASM(InterpreterEnterBytecodeDispatch)                                       \
   ASM(InterpreterOnStackReplacement)                                          \
                                                                               \
@@ -179,8 +183,9 @@ namespace internal {
   TFS(NonPrimitiveToPrimitive_String, BUILTIN, kNoExtraICState,               \
       TypeConversion)                                                         \
   TFS(StringToNumber, BUILTIN, kNoExtraICState, TypeConversion)               \
+  TFS(ToName, BUILTIN, kNoExtraICState, TypeConversion)                       \
   TFS(NonNumberToNumber, BUILTIN, kNoExtraICState, TypeConversion)            \
-  ASM(ToNumber)                                                               \
+  TFS(ToNumber, BUILTIN, kNoExtraICState, TypeConversion)                     \
                                                                               \
   /* Built-in functions for Javascript */                                     \
   /* Special internal builtins */                                             \
@@ -244,6 +249,22 @@ namespace internal {
   CPP(DataViewPrototypeGetBuffer)                                             \
   CPP(DataViewPrototypeGetByteLength)                                         \
   CPP(DataViewPrototypeGetByteOffset)                                         \
+  CPP(DataViewPrototypeGetInt8)                                               \
+  CPP(DataViewPrototypeSetInt8)                                               \
+  CPP(DataViewPrototypeGetUint8)                                              \
+  CPP(DataViewPrototypeSetUint8)                                              \
+  CPP(DataViewPrototypeGetInt16)                                              \
+  CPP(DataViewPrototypeSetInt16)                                              \
+  CPP(DataViewPrototypeGetUint16)                                             \
+  CPP(DataViewPrototypeSetUint16)                                             \
+  CPP(DataViewPrototypeGetInt32)                                              \
+  CPP(DataViewPrototypeSetInt32)                                              \
+  CPP(DataViewPrototypeGetUint32)                                             \
+  CPP(DataViewPrototypeSetUint32)                                             \
+  CPP(DataViewPrototypeGetFloat32)                                            \
+  CPP(DataViewPrototypeSetFloat32)                                            \
+  CPP(DataViewPrototypeGetFloat64)                                            \
+  CPP(DataViewPrototypeSetFloat64)                                            \
                                                                               \
   /* Date */                                                                  \
   CPP(DateConstructor)                                                        \
@@ -342,16 +363,18 @@ namespace internal {
   TFJ(GeneratorPrototypeThrow, 2)                                             \
   CPP(AsyncFunctionConstructor)                                               \
                                                                               \
-  /* Encode and decode */                                                     \
+  /* Global object */                                                         \
   CPP(GlobalDecodeURI)                                                        \
   CPP(GlobalDecodeURIComponent)                                               \
   CPP(GlobalEncodeURI)                                                        \
   CPP(GlobalEncodeURIComponent)                                               \
   CPP(GlobalEscape)                                                           \
   CPP(GlobalUnescape)                                                         \
-                                                                              \
-  /* Eval */                                                                  \
   CPP(GlobalEval)                                                             \
+  /* ES6 section 18.2.2 isFinite ( number ) */                                \
+  TFJ(GlobalIsFinite, 2)                                                      \
+  /* ES6 section 18.2.3 isNaN ( number ) */                                   \
+  TFJ(GlobalIsNaN, 2)                                                         \
                                                                               \
   /* JSON */                                                                  \
   CPP(JsonParse)                                                              \
@@ -432,6 +455,14 @@ namespace internal {
   ASM(NumberConstructor)                                                      \
   /* ES6 section 20.1.1.1 Number ( [ value ] ) for the [[Construct]] case */  \
   ASM(NumberConstructor_ConstructStub)                                        \
+  /* ES6 section 20.1.2.2 Number.isFinite ( number ) */                       \
+  TFJ(NumberIsFinite, 2)                                                      \
+  /* ES6 section 20.1.2.3 Number.isInteger ( number ) */                      \
+  TFJ(NumberIsInteger, 2)                                                     \
+  /* ES6 section 20.1.2.4 Number.isNaN ( number ) */                          \
+  TFJ(NumberIsNaN, 2)                                                         \
+  /* ES6 section 20.1.2.5 Number.isSafeInteger ( number ) */                  \
+  TFJ(NumberIsSafeInteger, 2)                                                 \
   CPP(NumberPrototypeToExponential)                                           \
   CPP(NumberPrototypeToFixed)                                                 \
   CPP(NumberPrototypeToLocaleString)                                          \
@@ -504,6 +535,10 @@ namespace internal {
   TFJ(StringPrototypeCharAt, 2)                                               \
   /* ES6 section 21.1.3.2 String.prototype.charCodeAt ( pos ) */              \
   TFJ(StringPrototypeCharCodeAt, 2)                                           \
+  /* ES6 section 21.1.3.10 String.prototype.localeCompare ( that ) */         \
+  CPP(StringPrototypeLocaleCompare)                                           \
+  /* ES6 section 21.1.3.12 String.prototype.normalize ( [form] ) */           \
+  CPP(StringPrototypeNormalize)                                               \
   /* ES6 section 21.1.3.25 String.prototype.toString () */                    \
   TFJ(StringPrototypeToString, 1)                                             \
   CPP(StringPrototypeTrim)                                                    \
@@ -590,6 +625,7 @@ class Builtins {
   Handle<Code> InterpreterPushArgsAndCall(
       TailCallMode tail_call_mode,
       CallableType function_type = CallableType::kAny);
+  Handle<Code> InterpreterPushArgsAndConstruct(CallableType function_type);
 
   Code* builtin(Name name) {
     // Code::cast cannot be used here since we access builtins
@@ -642,6 +678,9 @@ class Builtins {
   static void Generate_InterpreterPushArgsAndCallImpl(
       MacroAssembler* masm, TailCallMode tail_call_mode,
       CallableType function_type);
+
+  static void Generate_InterpreterPushArgsAndConstructImpl(
+      MacroAssembler* masm, CallableType function_type);
 
   static void Generate_DatePrototype_GetField(MacroAssembler* masm,
                                               int field_index);

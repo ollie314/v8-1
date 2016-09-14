@@ -294,9 +294,8 @@ Object* DeclareEvalHelper(Isolate* isolate, Handle<String> name,
       DCHECK(context->IsBlockContext());
       object = isolate->factory()->NewJSObject(
           isolate->context_extension_function());
-      Handle<HeapObject> extension =
-          isolate->factory()->NewSloppyBlockWithEvalContextExtension(
-              handle(context->scope_info()), object);
+      Handle<HeapObject> extension = isolate->factory()->NewContextExtension(
+          handle(context->scope_info()), object);
       context->set_extension(*extension);
     } else {
       object = handle(context->extension_object(), isolate);
@@ -665,8 +664,6 @@ RUNTIME_FUNCTION(Runtime_NewScriptContext) {
   Handle<Context> result =
       isolate->factory()->NewScriptContext(closure, scope_info);
 
-  result->InitializeGlobalSlots();
-
   DCHECK(function->context() == isolate->context());
   DCHECK(*global_object == result->global_object());
 
@@ -691,26 +688,41 @@ RUNTIME_FUNCTION(Runtime_NewFunctionContext) {
 
 RUNTIME_FUNCTION(Runtime_PushWithContext) {
   HandleScope scope(isolate);
-  DCHECK_EQ(2, args.length());
+  DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSReceiver, extension_object, 0);
-  CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 1);
+  CONVERT_ARG_HANDLE_CHECKED(ScopeInfo, scope_info, 1);
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 2);
   Handle<Context> current(isolate->context());
-  Handle<Context> context =
-      isolate->factory()->NewWithContext(function, current, extension_object);
+  Handle<Context> context = isolate->factory()->NewWithContext(
+      function, current, scope_info, extension_object);
   isolate->set_context(*context);
   return *context;
 }
 
+RUNTIME_FUNCTION(Runtime_PushModuleContext) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(3, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(JSModule, module, 0);
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 1);
+  CONVERT_ARG_HANDLE_CHECKED(ScopeInfo, scope_info, 2);
+  DCHECK(function->context() == isolate->context());
+
+  Handle<Context> context =
+      isolate->factory()->NewModuleContext(module, function, scope_info);
+  isolate->set_context(*context);
+  return *context;
+}
 
 RUNTIME_FUNCTION(Runtime_PushCatchContext) {
   HandleScope scope(isolate);
-  DCHECK_EQ(3, args.length());
+  DCHECK_EQ(4, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, name, 0);
   CONVERT_ARG_HANDLE_CHECKED(Object, thrown_object, 1);
-  CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 2);
+  CONVERT_ARG_HANDLE_CHECKED(ScopeInfo, scope_info, 2);
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 3);
   Handle<Context> current(isolate->context());
   Handle<Context> context = isolate->factory()->NewCatchContext(
-      function, current, name, thrown_object);
+      function, current, scope_info, name, thrown_object);
   isolate->set_context(*context);
   return *context;
 }

@@ -13,8 +13,8 @@
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/node-properties.h"
 #include "src/compiler/operator-properties.h"
-#include "src/type-cache.h"
-#include "src/types.h"
+#include "src/compiler/type-cache.h"
+#include "src/compiler/types.h"
 
 namespace v8 {
 namespace internal {
@@ -777,12 +777,10 @@ Reduction JSTypedLowering::ReduceJSToBoolean(Node* node) {
     NodeProperties::ChangeOp(node, simplified()->BooleanNot());
     return Changed(node);
   } else if (input_type->Is(Type::Number())) {
-    // JSToBoolean(x:number) => NumberLessThan(#0,NumberAbs(x))
+    // JSToBoolean(x:number) => NumberToBoolean(x)
     RelaxEffectsAndControls(node);
-    node->ReplaceInput(0, jsgraph()->ZeroConstant());
-    node->ReplaceInput(1, graph()->NewNode(simplified()->NumberAbs(), input));
-    node->TrimInputCount(2);
-    NodeProperties::ChangeOp(node, simplified()->NumberLessThan());
+    node->TrimInputCount(1);
+    NodeProperties::ChangeOp(node, simplified()->NumberToBoolean());
     return Changed(node);
   } else if (input_type->Is(Type::String())) {
     // JSToBoolean(x:string) => NumberLessThan(#0,x.length)
@@ -1756,20 +1754,12 @@ Reduction JSTypedLowering::ReduceJSCallFunction(Node* node) {
   // Maybe we did at least learn something about the {receiver}.
   if (p.convert_mode() != convert_mode) {
     NodeProperties::ChangeOp(
-        node, javascript()->CallFunction(p.arity(), p.feedback(), convert_mode,
-                                         p.tail_call_mode()));
+        node, javascript()->CallFunction(p.arity(), p.frequency(), p.feedback(),
+                                         convert_mode, p.tail_call_mode()));
     return Changed(node);
   }
 
   return NoChange();
-}
-
-
-Reduction JSTypedLowering::ReduceJSForInDone(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSForInDone, node->opcode());
-  node->TrimInputCount(2);
-  NodeProperties::ChangeOp(node, machine()->Word32Equal());
-  return Changed(node);
 }
 
 
@@ -1835,14 +1825,6 @@ Reduction JSTypedLowering::ReduceJSForInNext(Node* node) {
   node->TrimInputCount(3);
   NodeProperties::ChangeOp(node,
                            common()->Phi(MachineRepresentation::kTagged, 2));
-  return Changed(node);
-}
-
-
-Reduction JSTypedLowering::ReduceJSForInStep(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSForInStep, node->opcode());
-  node->ReplaceInput(1, jsgraph()->Int32Constant(1));
-  NodeProperties::ChangeOp(node, machine()->Int32Add());
   return Changed(node);
 }
 
@@ -1986,12 +1968,8 @@ Reduction JSTypedLowering::Reduce(Node* node) {
       return ReduceJSCallConstruct(node);
     case IrOpcode::kJSCallFunction:
       return ReduceJSCallFunction(node);
-    case IrOpcode::kJSForInDone:
-      return ReduceJSForInDone(node);
     case IrOpcode::kJSForInNext:
       return ReduceJSForInNext(node);
-    case IrOpcode::kJSForInStep:
-      return ReduceJSForInStep(node);
     case IrOpcode::kJSGeneratorStore:
       return ReduceJSGeneratorStore(node);
     case IrOpcode::kJSGeneratorRestoreContinuation:
@@ -2021,10 +1999,6 @@ JSOperatorBuilder* JSTypedLowering::javascript() const {
 
 CommonOperatorBuilder* JSTypedLowering::common() const {
   return jsgraph()->common();
-}
-
-MachineOperatorBuilder* JSTypedLowering::machine() const {
-  return jsgraph()->machine();
 }
 
 SimplifiedOperatorBuilder* JSTypedLowering::simplified() const {

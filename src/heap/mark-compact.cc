@@ -611,7 +611,7 @@ void MarkCompactCollector::ComputeEvacuationHeuristics(
   const int kMaxEvacuatedBytes = 4 * MB;
   // Time to take for a single area (=payload of page). Used as soon as there
   // exist enough compaction speed samples.
-  const float kTargetMsPerArea = 0.5;
+  const float kTargetMsPerArea = .5;
 
   if (heap()->ShouldReduceMemory()) {
     *target_fragmentation_percent = kTargetFragmentationPercentForReduceMemory;
@@ -801,6 +801,7 @@ void MarkCompactCollector::Prepare() {
   // Clear marking bits if incremental marking is aborted.
   if (was_marked_incrementally_ && heap_->ShouldAbortIncrementalMarking()) {
     heap()->incremental_marking()->Stop();
+    heap()->incremental_marking()->AbortBlackAllocation();
     ClearMarkbits();
     AbortWeakCollections();
     AbortWeakCells();
@@ -2204,6 +2205,11 @@ void MarkCompactCollector::SetEmbedderHeapTracer(EmbedderHeapTracer* tracer) {
   DCHECK_NOT_NULL(tracer);
   CHECK_NULL(embedder_heap_tracer_);
   embedder_heap_tracer_ = tracer;
+}
+
+bool MarkCompactCollector::RequiresImmediateWrapperProcessing() {
+  const size_t kTooManyWrappers = 16000;
+  return wrappers_to_trace_.size() > kTooManyWrappers;
 }
 
 void MarkCompactCollector::RegisterWrappersWithEmbedderHeapTracer() {

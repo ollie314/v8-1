@@ -28,6 +28,10 @@
 #include <stdlib.h>
 
 #include "src/base/platform/platform.h"
+#include "src/heap/spaces-inl.h"
+// FIXME(mstarzinger, marja): This is weird, but required because of the missing
+// (disallowed) include: src/heap/incremental-marking.h -> src/objects-inl.h
+#include "src/objects-inl.h"
 #include "src/snapshot/snapshot.h"
 #include "src/v8.h"
 #include "test/cctest/cctest.h"
@@ -363,10 +367,9 @@ TEST(NewSpace) {
                         CcTest::heap()->InitialSemiSpaceSize()));
   CHECK(new_space.HasBeenSetUp());
 
-  while (new_space.Available() >= Page::kMaxRegularHeapObjectSize) {
-    Object* obj =
-        new_space.AllocateRawUnaligned(Page::kMaxRegularHeapObjectSize)
-            .ToObjectChecked();
+  while (new_space.Available() >= kMaxRegularHeapObjectSize) {
+    Object* obj = new_space.AllocateRawUnaligned(kMaxRegularHeapObjectSize)
+                      .ToObjectChecked();
     CHECK(new_space.Contains(HeapObject::cast(obj)));
   }
 
@@ -390,7 +393,7 @@ TEST(OldSpace) {
   CHECK(s->SetUp());
 
   while (s->Available() > 0) {
-    s->AllocateRawUnaligned(Page::kMaxRegularHeapObjectSize).ToObjectChecked();
+    s->AllocateRawUnaligned(kMaxRegularHeapObjectSize).ToObjectChecked();
   }
 
   delete s;
@@ -421,11 +424,11 @@ TEST(CompactionSpace) {
   // and would thus neither grow, nor be able to allocate an object.
   const int kNumObjects = 100;
   const int kNumObjectsPerPage =
-      compaction_space->AreaSize() / Page::kMaxRegularHeapObjectSize;
+      compaction_space->AreaSize() / kMaxRegularHeapObjectSize;
   const int kExpectedPages =
       (kNumObjects + kNumObjectsPerPage - 1) / kNumObjectsPerPage;
   for (int i = 0; i < kNumObjects; i++) {
-    compaction_space->AllocateRawUnaligned(Page::kMaxRegularHeapObjectSize)
+    compaction_space->AllocateRawUnaligned(kMaxRegularHeapObjectSize)
         .ToObjectChecked();
   }
   int pages_in_old_space = old_space->CountTotalPages();
@@ -446,6 +449,9 @@ TEST(CompactionSpace) {
 
 
 TEST(LargeObjectSpace) {
+  // This test does not initialize allocated objects, which confuses the
+  // incremental marker.
+  FLAG_incremental_marking = false;
   v8::V8::Initialize();
 
   LargeObjectSpace* lo = CcTest::heap()->lo_space();
@@ -497,7 +503,7 @@ TEST(SizeOfInitialHeap) {
 
   // The limit for each space for an empty isolate containing just the
   // snapshot.
-  const size_t kMaxInitialSizePerSpace = 1536 * KB;  // 1.5MB
+  const size_t kMaxInitialSizePerSpace = 2 * MB;
 
   // Freshly initialized VM gets by with the snapshot size (which is below
   // kMaxInitialSizePerSpace per space).
@@ -720,7 +726,6 @@ TEST(ShrinkPageToHighWaterMarkNoFiller) {
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
-
   heap::SealCurrentObjects(CcTest::heap());
 
   const int kFillerSize = 0;

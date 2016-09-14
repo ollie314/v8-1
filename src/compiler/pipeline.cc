@@ -10,6 +10,8 @@
 
 #include "src/base/adapters.h"
 #include "src/base/platform/elapsed-timer.h"
+#include "src/compilation-info.h"
+#include "src/compiler.h"
 #include "src/compiler/ast-graph-builder.h"
 #include "src/compiler/ast-loop-assignment-analyzer.h"
 #include "src/compiler/basic-block-instrumentor.h"
@@ -427,7 +429,8 @@ void TraceSchedule(CompilationInfo* info, Schedule* schedule) {
   }
   if (FLAG_trace_turbo_graph || FLAG_trace_turbo_scheduler) {
     AllowHandleDereference allow_deref;
-    OFStream os(stdout);
+    CodeTracer::Scope tracing_scope(info->isolate()->GetCodeTracer());
+    OFStream os(tracing_scope.file());
     os << "-- Schedule --------------------------------------\n" << *schedule;
   }
 }
@@ -440,14 +443,14 @@ class AstGraphBuilderWithPositions final : public AstGraphBuilder {
                                LoopAssignmentAnalysis* loop_assignment,
                                TypeHintAnalysis* type_hint_analysis,
                                SourcePositionTable* source_positions)
-      : AstGraphBuilder(local_zone, info, jsgraph, loop_assignment,
+      : AstGraphBuilder(local_zone, info, jsgraph, 1.0f, loop_assignment,
                         type_hint_analysis),
         source_positions_(source_positions),
         start_position_(info->shared_info()->start_position()) {}
 
-  bool CreateGraph(bool stack_check) {
+  bool CreateGraph() {
     SourcePositionTable::Scope pos_scope(source_positions_, start_position_);
-    return AstGraphBuilder::CreateGraph(stack_check);
+    return AstGraphBuilder::CreateGraph();
   }
 
 #define DEF_VISIT(type)                                               \
@@ -601,6 +604,9 @@ PipelineCompilationJob::Status PipelineCompilationJob::PrepareJobImpl() {
     }
     if (FLAG_native_context_specialization) {
       info()->MarkAsNativeContextSpecializing();
+    }
+    if (FLAG_turbo_inlining) {
+      info()->MarkAsInliningEnabled();
     }
   }
   if (!info()->shared_info()->asm_function() || FLAG_turbo_asm_deoptimization) {
@@ -758,18 +764,17 @@ struct GraphBuilderPhase {
   static const char* phase_name() { return "graph builder"; }
 
   void Run(PipelineData* data, Zone* temp_zone) {
-    bool stack_check = !data->info()->IsStub();
     bool succeeded = false;
 
     if (data->info()->is_optimizing_from_bytecode()) {
       BytecodeGraphBuilder graph_builder(temp_zone, data->info(),
-                                         data->jsgraph());
+                                         data->jsgraph(), 1.0f);
       succeeded = graph_builder.CreateGraph();
     } else {
       AstGraphBuilderWithPositions graph_builder(
           temp_zone, data->info(), data->jsgraph(), data->loop_assignment(),
           data->type_hint_analysis(), data->source_positions());
-      succeeded = graph_builder.CreateGraph(stack_check);
+      succeeded = graph_builder.CreateGraph();
     }
 
     if (!succeeded) {
@@ -796,7 +801,7 @@ struct InliningPhase {
     JSContextSpecialization context_specialization(
         &graph_reducer, data->jsgraph(),
         data->info()->is_function_context_specializing()
-            ? data->info()->context()
+            ? handle(data->info()->context())
             : MaybeHandle<Context>());
     JSFrameSpecialization frame_specialization(data->info()->osr_frame(),
                                                data->jsgraph());
@@ -1074,14 +1079,13 @@ struct EffectControlLinearizationPhase {
 };
 
 // The store-store elimination greatly benefits from doing a common operator
-// reducer just before it, to eliminate conditional deopts with a constant
-// condition.
+// reducer and dead code elimination just before it, to eliminate conditional
+// deopts with a constant condition.
 
 struct DeadCodeEliminationPhase {
-  static const char* phase_name() { return "common operator reducer"; }
+  static const char* phase_name() { return "dead code elimination"; }
 
   void Run(PipelineData* data, Zone* temp_zone) {
-    // Run the common operator reducer.
     JSGraphReducer graph_reducer(data->jsgraph(), temp_zone);
     DeadCodeElimination dead_code_elimination(&graph_reducer, data->graph(),
                                               data->common());
@@ -1435,7 +1439,8 @@ struct PrintGraphPhase {
 
     if (FLAG_trace_turbo_graph) {  // Simple textual RPO.
       AllowHandleDereference allow_deref;
-      OFStream os(stdout);
+      CodeTracer::Scope tracing_scope(info->isolate()->GetCodeTracer());
+      OFStream os(tracing_scope.file());
       os << "-- Graph after " << phase << " -- " << std::endl;
       os << AsRPO(*graph);
     }
@@ -1468,7 +1473,8 @@ bool PipelineImpl::CreateGraph() {
   data->BeginPhaseKind("graph creation");
 
   if (FLAG_trace_turbo) {
-    OFStream os(stdout);
+    CodeTracer::Scope tracing_scope(isolate()->GetCodeTracer());
+    OFStream os(tracing_scope.file());
     os << "---------------------------------------------------\n"
        << "Begin compiling method " << info()->GetDebugName().get()
        << " using Turbofan" << std::endl;
@@ -1594,7 +1600,7 @@ bool PipelineImpl::OptimizeGraph(Linkage* linkage) {
   RunPrintAndVerify("Effect and control linearized", true);
 
   Run<DeadCodeEliminationPhase>();
-  RunPrintAndVerify("Common operator reducer", true);
+  RunPrintAndVerify("Dead code elimination", true);
 
   if (FLAG_turbo_store_elimination) {
     Run<StoreStoreEliminationPhase>();
@@ -1834,7 +1840,8 @@ Handle<Code> PipelineImpl::GenerateCode(Linkage* linkage) {
     json_of << data->source_position_output();
     json_of << "}";
 
-    OFStream os(stdout);
+    CodeTracer::Scope tracing_scope(isolate()->GetCodeTracer());
+    OFStream os(tracing_scope.file());
     os << "---------------------------------------------------\n"
        << "Finished compiling method " << info()->GetDebugName().get()
        << " using Turbofan" << std::endl;
@@ -1885,7 +1892,8 @@ void PipelineImpl::AllocateRegisters(const RegisterConfiguration* config,
   Run<BuildLiveRangesPhase>();
   if (FLAG_trace_turbo_graph) {
     AllowHandleDereference allow_deref;
-    OFStream os(stdout);
+    CodeTracer::Scope tracing_scope(isolate()->GetCodeTracer());
+    OFStream os(tracing_scope.file());
     os << "----- Instruction sequence before register allocation -----\n"
        << PrintableInstructionSequence({config, data->sequence()});
   }
@@ -1920,7 +1928,8 @@ void PipelineImpl::AllocateRegisters(const RegisterConfiguration* config,
 
   if (FLAG_trace_turbo_graph) {
     AllowHandleDereference allow_deref;
-    OFStream os(stdout);
+    CodeTracer::Scope tracing_scope(isolate()->GetCodeTracer());
+    OFStream os(tracing_scope.file());
     os << "----- Instruction sequence after register allocation -----\n"
        << PrintableInstructionSequence({config, data->sequence()});
   }

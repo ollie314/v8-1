@@ -593,6 +593,10 @@ void InstructionSelector::VisitLoad(Node* node) {
   EmitLoad(this, node, opcode, immediate_mode, rep);
 }
 
+void InstructionSelector::VisitProtectedLoad(Node* node) {
+  // TODO(eholk)
+  UNIMPLEMENTED();
+}
 
 void InstructionSelector::VisitStore(Node* node) {
   Arm64OperandGenerator g(this);
@@ -606,7 +610,7 @@ void InstructionSelector::VisitStore(Node* node) {
 
   // TODO(arm64): I guess this could be done in a better way.
   if (write_barrier_kind != kNoWriteBarrier) {
-    DCHECK_EQ(MachineRepresentation::kTagged, rep);
+    DCHECK(CanBeTaggedPointer(rep));
     AddressingMode addressing_mode;
     InstructionOperand inputs[3];
     size_t input_count = 0;
@@ -2138,8 +2142,11 @@ void VisitWord32Compare(InstructionSelector* selector, Node* node,
       MaybeReplaceCmpZeroWithFlagSettingBinop(selector, &node, binop, &opcode,
                                               cond, cont, &immediate_mode);
     }
-  } else if (m.right().IsInt32Sub()) {
+  } else if (m.right().IsInt32Sub() && (cond == kEqual || cond == kNotEqual)) {
     // Select negated compare for comparisons with negated right input.
+    // Only do this for kEqual and kNotEqual, which do not depend on the
+    // C and V flags, as those flags will be different with CMN when the
+    // right-hand side of the original subtraction is INT_MIN.
     Node* sub = m.right().node();
     Int32BinopMatcher msub(sub);
     if (msub.left().Is(0)) {

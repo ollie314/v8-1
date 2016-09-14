@@ -15,8 +15,10 @@ namespace internal {
 namespace heap {
 
 void SealCurrentObjects(Heap* heap) {
-  heap->CollectAllGarbage();
-  heap->CollectAllGarbage();
+  heap->CollectAllGarbage(Heap::kFinalizeIncrementalMarkingMask,
+                          GarbageCollectionReason::kTesting);
+  heap->CollectAllGarbage(Heap::kFinalizeIncrementalMarkingMask,
+                          GarbageCollectionReason::kTesting);
   heap->mark_compact_collector()->EnsureSweepingCompleted();
   heap->old_space()->EmptyAllocationInfo();
   for (Page* page : *heap->old_space()) {
@@ -141,20 +143,25 @@ void SimulateFullSpace(v8::internal::NewSpace* space,
 }
 
 void SimulateIncrementalMarking(i::Heap* heap, bool force_completion) {
-  i::MarkCompactCollector* collector = heap->mark_compact_collector();
   i::IncrementalMarking* marking = heap->incremental_marking();
+  i::MarkCompactCollector* collector = heap->mark_compact_collector();
   if (collector->sweeping_in_progress()) {
     collector->EnsureSweepingCompleted();
   }
-  CHECK(marking->IsMarking() || marking->IsStopped());
-  if (marking->IsStopped()) {
-    heap->StartIncrementalMarking();
+  if (marking->IsSweeping()) {
+    marking->FinalizeSweeping();
   }
-  CHECK(marking->IsMarking());
+  CHECK(marking->IsMarking() || marking->IsStopped() || marking->IsComplete());
+  if (marking->IsStopped()) {
+    heap->StartIncrementalMarking(i::Heap::kNoGCFlags,
+                                  i::GarbageCollectionReason::kTesting);
+  }
+  CHECK(marking->IsMarking() || marking->IsComplete());
   if (!force_completion) return;
 
   while (!marking->IsComplete()) {
-    marking->Step(i::MB, i::IncrementalMarking::NO_GC_VIA_STACK_GUARD);
+    marking->Step(i::MB, i::IncrementalMarking::NO_GC_VIA_STACK_GUARD,
+                  i::IncrementalMarking::FORCE_COMPLETION, i::StepOrigin::kV8);
     if (marking->IsReadyToOverApproximateWeakClosure()) {
       marking->FinalizeIncrementally();
     }
@@ -176,7 +183,7 @@ void AbandonCurrentlyFreeMemory(PagedSpace* space) {
 }
 
 void GcAndSweep(Heap* heap, AllocationSpace space) {
-  heap->CollectGarbage(space);
+  heap->CollectGarbage(space, GarbageCollectionReason::kTesting);
   if (heap->mark_compact_collector()->sweeping_in_progress()) {
     heap->mark_compact_collector()->EnsureSweepingCompleted();
   }

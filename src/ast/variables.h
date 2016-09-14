@@ -6,6 +6,7 @@
 #define V8_AST_VARIABLES_H_
 
 #include "src/ast/ast-value-factory.h"
+#include "src/globals.h"
 #include "src/zone.h"
 
 namespace v8 {
@@ -17,20 +18,9 @@ namespace internal {
 // after binding and variable allocation.
 class Variable final : public ZoneObject {
  public:
-  enum Kind : uint8_t {
-    NORMAL,
-    FUNCTION,
-    THIS,
-    ARGUMENTS,
-    kLastKind = ARGUMENTS
-  };
-
-  Variable(Scope* scope, const AstRawString* name, VariableMode mode, Kind kind,
-           InitializationFlag initialization_flag,
+  Variable(Scope* scope, const AstRawString* name, VariableMode mode,
+           VariableKind kind, InitializationFlag initialization_flag,
            MaybeAssignedFlag maybe_assigned_flag = kNotAssigned);
-
-  // Printing support
-  static const char* Mode2String(VariableMode mode);
 
   // The source code for an eval() call may refer to a variable that is
   // in an outer scope about which we don't know anything (it may not
@@ -49,6 +39,8 @@ class Variable final : public ZoneObject {
     return ForceContextAllocationField::decode(bit_field_);
   }
   void ForceContextAllocation() {
+    DCHECK(IsUnallocated() || IsContextSlot() ||
+           location() == VariableLocation::MODULE);
     bit_field_ = ForceContextAllocationField::update(bit_field_, true);
   }
   bool is_used() { return IsUsedField::decode(bit_field_); }
@@ -70,25 +62,26 @@ class Variable final : public ZoneObject {
   bool IsStackLocal() const { return location() == VariableLocation::LOCAL; }
   bool IsStackAllocated() const { return IsParameter() || IsStackLocal(); }
   bool IsContextSlot() const { return location() == VariableLocation::CONTEXT; }
-  bool IsGlobalSlot() const { return location() == VariableLocation::GLOBAL; }
-  bool IsUnallocatedOrGlobalSlot() const {
-    return IsUnallocated() || IsGlobalSlot();
-  }
   bool IsLookupSlot() const { return location() == VariableLocation::LOOKUP; }
   bool IsGlobalObjectProperty() const;
   bool IsStaticGlobalObjectProperty() const;
 
   bool is_dynamic() const { return IsDynamicVariableMode(mode()); }
-  bool is_const_mode() const { return IsImmutableVariableMode(mode()); }
   bool binding_needs_init() const {
     DCHECK(initialization_flag() != kNeedsInitialization ||
            IsLexicalVariableMode(mode()));
     return initialization_flag() == kNeedsInitialization;
   }
+  bool throw_on_const_assignment(LanguageMode language_mode) const {
+    return kind() != SLOPPY_FUNCTION_NAME_VARIABLE || is_strict(language_mode);
+  }
 
-  bool is_function() const { return kind() == FUNCTION; }
-  bool is_this() const { return kind() == THIS; }
-  bool is_arguments() const { return kind() == ARGUMENTS; }
+  bool is_function() const { return kind() == FUNCTION_VARIABLE; }
+  bool is_this() const { return kind() == THIS_VARIABLE; }
+  bool is_arguments() const { return kind() == ARGUMENTS_VARIABLE; }
+  bool is_sloppy_function_name() const {
+    return kind() == SLOPPY_FUNCTION_NAME_VARIABLE;
+  }
 
   Variable* local_if_not_shadowed() const {
     DCHECK(mode() == DYNAMIC_LOCAL && local_if_not_shadowed_ != NULL);
@@ -102,12 +95,17 @@ class Variable final : public ZoneObject {
   VariableLocation location() const {
     return LocationField::decode(bit_field_);
   }
-  Kind kind() const { return KindField::decode(bit_field_); }
+  VariableKind kind() const { return VariableKindField::decode(bit_field_); }
   InitializationFlag initialization_flag() const {
     return InitializationFlagField::decode(bit_field_);
   }
 
   int index() const { return index_; }
+
+  bool IsExport() const {
+    DCHECK(location() == VariableLocation::MODULE);
+    return index() == 0;
+  }
 
   void AllocateTo(VariableLocation location, int index) {
     DCHECK(IsUnallocated() ||
@@ -115,6 +113,11 @@ class Variable final : public ZoneObject {
     bit_field_ = LocationField::update(bit_field_, location);
     DCHECK_EQ(location, this->location());
     index_ = index;
+  }
+
+  static InitializationFlag DefaultInitializationFlag(VariableMode mode) {
+    DCHECK(IsDeclaredVariableMode(mode));
+    return mode == VAR ? kCreatedInitialized : kNeedsInitialization;
   }
 
  private:
@@ -131,9 +134,10 @@ class Variable final : public ZoneObject {
   uint16_t bit_field_;
 
   class VariableModeField : public BitField16<VariableMode, 0, 3> {};
-  class KindField : public BitField16<Kind, VariableModeField::kNext, 2> {};
+  class VariableKindField
+      : public BitField16<VariableKind, VariableModeField::kNext, 3> {};
   class LocationField
-      : public BitField16<VariableLocation, KindField::kNext, 3> {};
+      : public BitField16<VariableLocation, VariableKindField::kNext, 3> {};
   class ForceContextAllocationField
       : public BitField16<bool, LocationField::kNext, 1> {};
   class IsUsedField

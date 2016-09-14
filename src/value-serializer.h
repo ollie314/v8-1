@@ -12,6 +12,7 @@
 #include "src/base/compiler-specific.h"
 #include "src/base/macros.h"
 #include "src/identity-map.h"
+#include "src/messages.h"
 #include "src/vector.h"
 #include "src/zone.h"
 
@@ -21,6 +22,7 @@ namespace internal {
 class HeapNumber;
 class Isolate;
 class JSArrayBuffer;
+class JSArrayBufferView;
 class JSDate;
 class JSMap;
 class JSRegExp;
@@ -40,7 +42,7 @@ enum class SerializationTag : uint8_t;
  */
 class ValueSerializer {
  public:
-  explicit ValueSerializer(Isolate* isolate);
+  ValueSerializer(Isolate* isolate, v8::ValueSerializer::Delegate* delegate);
   ~ValueSerializer();
 
   /*
@@ -67,6 +69,14 @@ class ValueSerializer {
   void TransferArrayBuffer(uint32_t transfer_id,
                            Handle<JSArrayBuffer> array_buffer);
 
+  /*
+   * Publicly exposed wire format writing methods.
+   * These are intended for use within the delegate's WriteHostObject method.
+   */
+  void WriteUint32(uint32_t value);
+  void WriteUint64(uint64_t value);
+  void WriteRawBytes(const void* source, size_t length);
+
  private:
   // Writing the wire format.
   void WriteTag(SerializationTag tag);
@@ -77,7 +87,6 @@ class ValueSerializer {
   void WriteDouble(double value);
   void WriteOneByteString(Vector<const uint8_t> chars);
   void WriteTwoByteString(Vector<const uc16> chars);
-  void WriteRawBytes(const void* source, size_t length);
   uint8_t* ReserveRawBytes(size_t bytes);
 
   // Writing V8 objects of various kinds.
@@ -87,6 +96,7 @@ class ValueSerializer {
   void WriteString(Handle<String> string);
   Maybe<bool> WriteJSReceiver(Handle<JSReceiver> receiver) WARN_UNUSED_RESULT;
   Maybe<bool> WriteJSObject(Handle<JSObject> object) WARN_UNUSED_RESULT;
+  Maybe<bool> WriteJSObjectSlow(Handle<JSObject> object) WARN_UNUSED_RESULT;
   Maybe<bool> WriteJSArray(Handle<JSArray> array) WARN_UNUSED_RESULT;
   void WriteJSDate(JSDate* date);
   Maybe<bool> WriteJSValue(Handle<JSValue> value) WARN_UNUSED_RESULT;
@@ -94,16 +104,27 @@ class ValueSerializer {
   Maybe<bool> WriteJSMap(Handle<JSMap> map) WARN_UNUSED_RESULT;
   Maybe<bool> WriteJSSet(Handle<JSSet> map) WARN_UNUSED_RESULT;
   Maybe<bool> WriteJSArrayBuffer(JSArrayBuffer* array_buffer);
+  Maybe<bool> WriteJSArrayBufferView(JSArrayBufferView* array_buffer);
+  Maybe<bool> WriteHostObject(Handle<JSObject> object) WARN_UNUSED_RESULT;
 
   /*
    * Reads the specified keys from the object and writes key-value pairs to the
    * buffer. Returns the number of keys actually written, which may be smaller
    * if some keys are not own properties when accessed.
    */
-  Maybe<uint32_t> WriteJSObjectProperties(
+  Maybe<uint32_t> WriteJSObjectPropertiesSlow(
       Handle<JSObject> object, Handle<FixedArray> keys) WARN_UNUSED_RESULT;
 
+  /*
+   * Asks the delegate to handle an error that occurred during data cloning, by
+   * throwing an exception appropriate for the host.
+   */
+  void ThrowDataCloneError(MessageTemplate::Template template_index);
+  V8_NOINLINE void ThrowDataCloneError(MessageTemplate::Template template_index,
+                                       Handle<Object> arg0);
+
   Isolate* const isolate_;
+  v8::ValueSerializer::Delegate* const delegate_;
   std::vector<uint8_t> buffer_;
   Zone zone_;
 
@@ -125,7 +146,8 @@ class ValueSerializer {
  */
 class ValueDeserializer {
  public:
-  ValueDeserializer(Isolate* isolate, Vector<const uint8_t> data);
+  ValueDeserializer(Isolate* isolate, Vector<const uint8_t> data,
+                    v8::ValueDeserializer::Delegate* delegate);
   ~ValueDeserializer();
 
   /*
@@ -162,6 +184,14 @@ class ValueDeserializer {
   void TransferArrayBuffer(uint32_t transfer_id,
                            Handle<JSArrayBuffer> array_buffer);
 
+  /*
+   * Publicly exposed wire format writing methods.
+   * These are intended for use within the delegate's WriteHostObject method.
+   */
+  bool ReadUint32(uint32_t* value) WARN_UNUSED_RESULT;
+  bool ReadUint64(uint64_t* value) WARN_UNUSED_RESULT;
+  bool ReadRawBytes(size_t length, const void** data) WARN_UNUSED_RESULT;
+
  private:
   // Reading the wire format.
   Maybe<SerializationTag> PeekTag() const WARN_UNUSED_RESULT;
@@ -173,6 +203,10 @@ class ValueDeserializer {
   Maybe<T> ReadZigZag() WARN_UNUSED_RESULT;
   Maybe<double> ReadDouble() WARN_UNUSED_RESULT;
   Maybe<Vector<const uint8_t>> ReadRawBytes(int size) WARN_UNUSED_RESULT;
+
+  // Like ReadObject, but skips logic for special cases in simulating the
+  // "stack machine".
+  MaybeHandle<Object> ReadObjectInternal() WARN_UNUSED_RESULT;
 
   // Reading V8 objects of specific kinds.
   // The tag is assumed to have already been read.
@@ -187,7 +221,11 @@ class ValueDeserializer {
   MaybeHandle<JSMap> ReadJSMap() WARN_UNUSED_RESULT;
   MaybeHandle<JSSet> ReadJSSet() WARN_UNUSED_RESULT;
   MaybeHandle<JSArrayBuffer> ReadJSArrayBuffer() WARN_UNUSED_RESULT;
-  MaybeHandle<JSArrayBuffer> ReadTransferredJSArrayBuffer() WARN_UNUSED_RESULT;
+  MaybeHandle<JSArrayBuffer> ReadTransferredJSArrayBuffer(bool is_shared)
+      WARN_UNUSED_RESULT;
+  MaybeHandle<JSArrayBufferView> ReadJSArrayBufferView(
+      Handle<JSArrayBuffer> buffer) WARN_UNUSED_RESULT;
+  MaybeHandle<JSObject> ReadHostObject() WARN_UNUSED_RESULT;
 
   /*
    * Reads key-value pairs into the object until the specified end tag is
@@ -202,8 +240,10 @@ class ValueDeserializer {
   void AddObjectWithID(uint32_t id, Handle<JSReceiver> object);
 
   Isolate* const isolate_;
+  v8::ValueDeserializer::Delegate* const delegate_;
   const uint8_t* position_;
   const uint8_t* const end_;
+  PretenureFlag pretenure_;
   uint32_t version_ = 0;
   uint32_t next_id_ = 0;
 

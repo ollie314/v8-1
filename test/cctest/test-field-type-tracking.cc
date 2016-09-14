@@ -11,6 +11,7 @@
 
 #include "src/compilation-cache.h"
 #include "src/compilation-dependencies.h"
+#include "src/compilation-info.h"
 #include "src/execution.h"
 #include "src/factory.h"
 #include "src/field-type.h"
@@ -2410,6 +2411,16 @@ TEST(TransitionAccessorConstantToSameAccessorConstant) {
   TestTransitionTo(transition_op, transition_op, checker);
 }
 
+TEST(FieldTypeConvertSimple) {
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
+  Isolate* isolate = CcTest::i_isolate();
+
+  Zone zone(isolate->allocator());
+
+  CHECK_EQ(FieldType::Any()->Convert(&zone), AstType::NonInternal());
+  CHECK_EQ(FieldType::None()->Convert(&zone), AstType::None());
+}
 
 // TODO(ishell): add this test once IS_ACCESSOR_FIELD_SUPPORTED is supported.
 // TEST(TransitionAccessorConstantToAnotherAccessorConstant)

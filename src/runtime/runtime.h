@@ -394,6 +394,7 @@ namespace internal {
   F(IsJSGlobalProxy, 1, 1)                           \
   F(DefineAccessorPropertyUnchecked, 5, 1)           \
   F(DefineDataPropertyInLiteral, 5, 1)               \
+  F(DefineDataProperty, 5, 1)                        \
   F(GetDataProperty, 2, 1)                           \
   F(GetConstructorName, 1, 1)                        \
   F(HasFastPackedElements, 1, 1)                     \
@@ -914,7 +915,8 @@ namespace internal {
 
 #define FOR_EACH_INTRINSIC_WASM(F) \
   F(WasmGrowMemory, 1, 1)          \
-  F(WasmThrowTypeError, 0, 1)
+  F(WasmThrowTypeError, 0, 1)      \
+  F(WasmThrow, 2, 1)
 
 #define FOR_EACH_INTRINSIC_RETURN_PAIR(F) \
   F(LoadLookupSlotForCall, 1, 2)

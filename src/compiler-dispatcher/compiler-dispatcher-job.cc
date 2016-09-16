@@ -84,8 +84,11 @@ void CompilerDispatcherJob::PrepareToParseOnMainThread() {
 
   parser_.reset(new Parser(parse_info_.get()));
   parser_->DeserializeScopeChain(
-      parse_info_.get(), handle(function_->context(), isolate_),
-      Scope::DeserializationMode::kDeserializeOffHeap);
+      parse_info_.get(),
+      function_->context()->IsNativeContext()
+          ? MaybeHandle<ScopeInfo>()
+          : MaybeHandle<ScopeInfo>(function_->context()->scope_info(),
+                                   isolate_));
 
   Handle<String> name(String::cast(shared->name()));
   parse_info_->set_function_name(
@@ -138,21 +141,27 @@ bool CompilerDispatcherJob::FinalizeParsingOnMainThread() {
 
   DeferredHandleScope scope(isolate_);
   {
-    // Create a canonical handle scope before internalizing parsed values if
-    // compiling bytecode. This is required for off-thread bytecode generation.
-    std::unique_ptr<CanonicalHandleScope> canonical;
-    if (FLAG_ignition) canonical.reset(new CanonicalHandleScope(isolate_));
-
     Handle<SharedFunctionInfo> shared(function_->shared(), isolate_);
     Handle<Script> script(Script::cast(shared->script()), isolate_);
 
     parse_info_->set_script(script);
-    parse_info_->set_context(handle(function_->context(), isolate_));
+    if (!function_->context()->IsNativeContext()) {
+      parse_info_->set_outer_scope_info(
+          handle(function_->context()->scope_info(), isolate_));
+    }
     parse_info_->set_shared_info(handle(function_->shared(), isolate_));
 
-    // Do the parsing tasks which need to be done on the main thread. This will
-    // also handle parse errors.
-    parser_->Internalize(isolate_, script, parse_info_->literal() == nullptr);
+    {
+      // Create a canonical handle scope if compiling ignition bytecode. This is
+      // required by the constant array builder to de-duplicate objects without
+      // dereferencing handles.
+      std::unique_ptr<CanonicalHandleScope> canonical;
+      if (FLAG_ignition) canonical.reset(new CanonicalHandleScope(isolate_));
+
+      // Do the parsing tasks which need to be done on the main thread. This
+      // will also handle parse errors.
+      parser_->Internalize(isolate_, script, parse_info_->literal() == nullptr);
+    }
     parser_->HandleSourceURLComments(isolate_, script);
 
     parse_info_->set_character_stream(nullptr);
@@ -173,16 +182,9 @@ bool CompilerDispatcherJob::PrepareToCompileOnMainThread() {
   compile_info_.reset(new CompilationInfo(parse_info_.get(), function_));
 
   DeferredHandleScope scope(isolate_);
-  {
-    // Create a canonical handle scope before ast numbering if compiling
-    // bytecode. This is required for off-thread bytecode generation.
-    std::unique_ptr<CanonicalHandleScope> canonical;
-    if (FLAG_ignition) canonical.reset(new CanonicalHandleScope(isolate_));
-
-    if (Compiler::Analyze(parse_info_.get())) {
-      compile_job_.reset(
-          Compiler::PrepareUnoptimizedCompilationJob(compile_info_.get()));
-    }
+  if (Compiler::Analyze(parse_info_.get())) {
+    compile_job_.reset(
+        Compiler::PrepareUnoptimizedCompilationJob(compile_info_.get()));
   }
   compile_info_->set_deferred_handles(scope.Detach());
 

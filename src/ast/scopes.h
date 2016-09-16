@@ -98,10 +98,10 @@ class Scope: public ZoneObject {
     int top_decl_;
   };
 
-  enum class DeserializationMode { kDeserializeOffHeap, kKeepScopeInfo };
+  enum class DeserializationMode { kIncludingVariables, kScopesOnly };
 
   static Scope* DeserializeScopeChain(Isolate* isolate, Zone* zone,
-                                      Context* context,
+                                      ScopeInfo* scope_info,
                                       DeclarationScope* script_scope,
                                       AstValueFactory* ast_value_factory,
                                       DeserializationMode deserialization_mode);
@@ -576,9 +576,6 @@ class Scope: public ZoneObject {
 
   void SetDefaults();
 
-  void DeserializeScopeInfo(Isolate* isolate,
-                            AstValueFactory* ast_value_factory);
-
   friend class DeclarationScope;
 };
 
@@ -688,7 +685,14 @@ class DeclarationScope : public Scope {
   }
 
   // Returns the default function arity excluding default or rest parameters.
-  int default_function_length() const { return arity_; }
+  // This will be used to set the length of the function, by default.
+  // Class field initializers use this property to indicate the number of
+  // fields being initialized.
+  int arity() const { return arity_; }
+
+  // Normal code should not need to call this. Class field initializers use this
+  // property to indicate the number of fields being initialized.
+  void set_arity(int arity) { arity_ = arity; }
 
   // Returns the number of formal parameters, excluding a possible rest
   // parameter.  Examples:
@@ -748,7 +752,7 @@ class DeclarationScope : public Scope {
 
   // Go through sloppy_block_function_map_ and hoist those (into this scope)
   // which should be hoisted.
-  void HoistSloppyBlockFunctions(AstNodeFactory* factory, bool* ok);
+  void HoistSloppyBlockFunctions(AstNodeFactory* factory);
 
   SloppyBlockFunctionMap* sloppy_block_function_map() {
     return &sloppy_block_function_map_;

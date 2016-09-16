@@ -180,11 +180,6 @@ DEFINE_BOOL(harmony, false, "enable all completed harmony features")
 DEFINE_BOOL(harmony_shipping, true, "enable all shipped harmony features")
 DEFINE_IMPLICATION(es_staging, harmony)
 
-#ifdef V8_I18N_SUPPORT
-DEFINE_BOOL(intl_extra, false, "additional V8 Intl functions")
-// Removing extra Intl functions is shipped
-DEFINE_NEG_VALUE_IMPLICATION(harmony_shipping, intl_extra, true)
-#endif
 
 // Activate on ClusterFuzz.
 DEFINE_IMPLICATION(es_staging, harmony_regexp_lookbehind)
@@ -204,7 +199,8 @@ DEFINE_IMPLICATION(es_staging, move_object_start)
   V(harmony_regexp_property, "harmony unicode regexp property classes") \
   V(harmony_for_in, "harmony for-in syntax")                            \
   V(harmony_trailing_commas,                                            \
-    "harmony trailing commas in function parameter lists")
+    "harmony trailing commas in function parameter lists")              \
+  V(harmony_class_fields, "harmony public fields in class literals")
 
 // Features that are complete (but still behind --harmony/es-staging flag).
 #define HARMONY_STAGED_BASE(V)                                               \

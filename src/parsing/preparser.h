@@ -316,6 +316,8 @@ class PreParserExpression {
   int position() const { return kNoSourcePosition; }
   void set_function_token_position(int position) {}
 
+  void set_is_class_field_initializer(bool is_class_field_initializer) {}
+
  private:
   enum Type {
     kEmpty,
@@ -475,6 +477,9 @@ class PreParserFactory {
   }
   PreParserExpression NewNumberLiteral(double number,
                                        int pos) {
+    return PreParserExpression::Default();
+  }
+  PreParserExpression NewUndefinedLiteral(int pos) {
     return PreParserExpression::Default();
   }
   PreParserExpression NewRegExpLiteral(PreParserIdentifier js_pattern,
@@ -887,6 +892,11 @@ class PreParser : public ParserBase<PreParser> {
   V8_INLINE PreParserExpression SpreadCallNew(PreParserExpression function,
                                               PreParserExpressionList args,
                                               int pos);
+
+  V8_INLINE PreParserExpression
+  RewriteSuperCall(PreParserExpression call_expression) {
+    return call_expression;
+  }
 
   V8_INLINE void RewriteDestructuringAssignments() {}
 

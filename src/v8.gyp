@@ -1756,7 +1756,6 @@
             4996,  # Deprecated function call.
           ],
           'cflags': [
-            '-Wno-zero-length-array',
             '-Wno-shorten-64-to-32',
             '-Wno-deprecated-declarations',
           ],
@@ -2242,7 +2241,6 @@
             'experimental_library_files': [
               'js/datetime-format-to-parts.js',
               'js/icu-case-mapping.js',
-              'js/intl-extra.js',
              ],
           }],
         ],

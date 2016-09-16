@@ -184,8 +184,16 @@ class Parser : public ParserBase<Parser> {
   bool Parse(ParseInfo* info);
   void ParseOnBackground(ParseInfo* info);
 
-  void DeserializeScopeChain(ParseInfo* info, Handle<Context> context,
-                             Scope::DeserializationMode deserialization_mode);
+  // Deserialize the scope chain prior to parsing in which the script is going
+  // to be executed. If the script is a top-level script, or the scope chain
+  // consists of only a native context, maybe_outer_scope_info should be an
+  // empty handle.
+  //
+  // This only deserializes the scope chain, but doesn't connect the scopes to
+  // their corresponding scope infos. Therefore, looking up variables in the
+  // deserialized scopes is not possible.
+  void DeserializeScopeChain(ParseInfo* info,
+                             MaybeHandle<ScopeInfo> maybe_outer_scope_info);
 
   // Handle errors detected during parsing, move statistics to Isolate,
   // internalize strings (move them to the heap).
@@ -409,6 +417,11 @@ class Parser : public ParserBase<Parser> {
       int function_token_position, FunctionLiteral::FunctionType type,
       LanguageMode language_mode, bool* ok);
 
+  Expression* InstallHomeObject(Expression* function_literal,
+                                Expression* home_object);
+  FunctionLiteral* SynthesizeClassFieldInitializer(int count);
+  FunctionLiteral* InsertClassFieldInitializer(FunctionLiteral* constructor);
+
   Expression* ParseClassLiteral(const AstRawString* name,
                                 Scanner::Location class_name_location,
                                 bool name_is_strict_reserved, int pos,
@@ -433,8 +446,7 @@ class Parser : public ParserBase<Parser> {
   void InsertShadowingVarBindingInitializers(Block* block);
 
   // Implement sloppy block-scoped functions, ES2015 Annex B 3.3
-  void InsertSloppyBlockFunctionVarBindings(DeclarationScope* scope,
-                                            bool* ok);
+  void InsertSloppyBlockFunctionVarBindings(DeclarationScope* scope);
 
   VariableProxy* NewUnresolved(const AstRawString* name, int begin_pos,
                                int end_pos = kNoSourcePosition,
@@ -457,8 +469,8 @@ class Parser : public ParserBase<Parser> {
 
   // Factory methods.
   FunctionLiteral* DefaultConstructor(const AstRawString* name, bool call_super,
-                                      int pos, int end_pos,
-                                      LanguageMode language_mode);
+                                      bool requires_class_field_init, int pos,
+                                      int end_pos, LanguageMode language_mode);
 
   // Skip over a lazy function, either using cached data if we have it, or
   // by parsing the function with PreParser. Consumes the ending }.
@@ -535,6 +547,8 @@ class Parser : public ParserBase<Parser> {
                          int pos);
   Expression* SpreadCallNew(Expression* function, ZoneList<Expression*>* args,
                             int pos);
+  Expression* CallClassFieldInitializer(Scope* scope, Expression* this_expr);
+  Expression* RewriteSuperCall(Expression* call_expression);
 
   void SetLanguageMode(Scope* scope, LanguageMode mode);
   void SetAsmModule();

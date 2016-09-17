@@ -1070,6 +1070,26 @@ class V8_EXPORT UnboundScript {
   static const int kNoScriptId = 0;
 };
 
+/**
+ * This is an unfinished experimental feature, and is only exposed
+ * here for internal testing purposes. DO NOT USE.
+ *
+ * A compiled JavaScript module.
+ */
+class V8_EXPORT Module {
+ public:
+  /**
+   * ModuleDeclarationInstantiation
+   *
+   * Returns false if an exception occurred during instantiation.
+   */
+  V8_WARN_UNUSED_RESULT bool Instantiate(Local<Context> context);
+
+  /**
+   * ModuleEvaluation
+   */
+  V8_WARN_UNUSED_RESULT MaybeLocal<Value> Evaluate(Local<Context> context);
+};
 
 /**
  * A compiled JavaScript script, tied to a Context which was active when the
@@ -1373,18 +1393,17 @@ class V8_EXPORT ScriptCompiler {
   static uint32_t CachedDataVersionTag();
 
   /**
-   * Compile an ES6 module.
-   *
    * This is an unfinished experimental feature, and is only exposed
-   * here for internal testing purposes.
-   * Only parsing works at the moment. Do not use.
+   * here for internal testing purposes. DO NOT USE.
    *
-   * TODO(adamk): Script is likely the wrong return value for this;
-   * should return some new Module type.
+   * Compile an ES module, returning a Module that encapsulates
+   * the compiled code.
+   *
+   * Corresponds to the ParseModule abstract operation in the
+   * ECMAScript specification.
    */
-  static V8_WARN_UNUSED_RESULT MaybeLocal<Script> CompileModule(
-      Local<Context> context, Source* source,
-      CompileOptions options = kNoCompileOptions);
+  static V8_WARN_UNUSED_RESULT MaybeLocal<Module> CompileModule(
+      Isolate* isolate, Source* source);
 
   /**
    * Compile a function for a given context. This is equivalent to running
@@ -8165,8 +8184,8 @@ class Internals {
   static const int kNodeIsPartiallyDependentShift = 4;
   static const int kNodeIsActiveShift = 4;
 
-  static const int kJSObjectType = 0xb7;
-  static const int kJSApiObjectType = 0xb6;
+  static const int kJSObjectType = 0xb8;
+  static const int kJSApiObjectType = 0xb7;
   static const int kFirstNonstringType = 0x80;
   static const int kOddballType = 0x83;
   static const int kForeignType = 0x87;

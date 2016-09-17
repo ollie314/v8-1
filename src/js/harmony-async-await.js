@@ -36,6 +36,8 @@ utils.Import(function(from) {
 var promiseAwaitHandlerSymbol = utils.ImportNow("promise_await_handler_symbol");
 var promiseHandledHintSymbol =
     utils.ImportNow("promise_handled_hint_symbol");
+var promiseHasHandlerSymbol =
+    utils.ImportNow("promise_has_handler_symbol");
 
 // -------------------------------------------------------------------
 
@@ -64,10 +66,22 @@ function AsyncFunctionAwait(generator, awaited, mark) {
   // );
   var promise = PromiseCastResolved(awaited);
 
-  var onFulfilled =
-      (sentValue) => %_Call(AsyncFunctionNext, generator, sentValue);
-  var onRejected =
-      (sentError) => %_Call(AsyncFunctionThrow, generator, sentError);
+  var onFulfilled = sentValue => {
+    %_Call(AsyncFunctionNext, generator, sentValue);
+    // The resulting Promise is a throwaway, so it doesn't matter what it
+    // resolves to. What is important is that we don't end up keeping the
+    // whole chain of intermediate Promises alive by returning the value
+    // of AsyncFunctionNext, as that would create a memory leak.
+    return;
+  };
+  var onRejected = sentError => {
+    %_Call(AsyncFunctionThrow, generator, sentError);
+    // Similarly, returning the huge Promise here would cause a long
+    // resolution chain to find what the exception to throw is, and
+    // create a similar memory leak, and it does not matter what
+    // sort of rejection this intermediate Promise becomes.
+    return;
+  }
 
   if (mark && DEBUG_IS_ACTIVE && IsPromise(awaited)) {
     // Mark the reject handler callback such that it does not influence
@@ -77,6 +91,11 @@ function AsyncFunctionAwait(generator, awaited, mark) {
 
   // Just forwarding the exception, so no debugEvent for throwawayCapability
   var throwawayCapability = NewPromiseCapability(GlobalPromise, false);
+
+  // The Promise will be thrown away and not handled, but it shouldn't trigger
+  // unhandled reject events as its work is done
+  SET_PRIVATE(throwawayCapability.promise, promiseHasHandlerSymbol, true);
+
   return PerformPromiseThen(promise, onFulfilled, onRejected,
                             throwawayCapability);
 }

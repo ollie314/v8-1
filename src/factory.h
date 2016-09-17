@@ -257,7 +257,7 @@ class Factory final {
   Handle<ScriptContextTable> NewScriptContextTable();
 
   // Create a module context.
-  Handle<Context> NewModuleContext(Handle<JSModule> module,
+  Handle<Context> NewModuleContext(Handle<Module> module,
                                    Handle<JSFunction> function,
                                    Handle<ScopeInfo> scope_info);
 
@@ -477,7 +477,7 @@ class Factory final {
 
   Handle<JSGeneratorObject> NewJSGeneratorObject(Handle<JSFunction> function);
 
-  Handle<JSModule> NewJSModule();
+  Handle<Module> NewModule(Handle<SharedFunctionInfo> code, int min_size);
 
   Handle<JSArrayBuffer> NewJSArrayBuffer(
       SharedFlag shared = SharedFlag::kNotShared,

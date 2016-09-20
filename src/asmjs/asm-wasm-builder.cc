@@ -90,9 +90,9 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
     current_function_builder_ =
         builder_->FunctionAt(foreign_init_function_index_);
     current_function_builder_->SetExported();
-    std::string raw_name = "__foreign_init__";
-    current_function_builder_->SetName(raw_name.data(),
-                                       static_cast<int>(raw_name.size()));
+    current_function_builder_->SetName(
+        AsmWasmBuilder::foreign_init_name,
+        static_cast<int>(strlen(AsmWasmBuilder::foreign_init_name)));
     current_function_builder_->SetSignature(b.Build());
     for (size_t pos = 0; pos < foreign_variables_.size(); ++pos) {
       current_function_builder_->EmitGetLocal(static_cast<uint32_t>(pos));
@@ -551,6 +551,14 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
         current_function_builder_->EmitGetLocal(
             LookupOrInsertLocal(var, var_type));
       }
+    } else if (scope_ == kExportScope) {
+      Variable* var = expr->var();
+      DCHECK(var->is_function());
+      uint32_t index = LookupOrInsertFunction(var);
+      builder_->FunctionAt(index)->SetExported();
+      builder_->FunctionAt(index)->SetName(
+          AsmWasmBuilder::single_function_name,
+          static_cast<int>(strlen(AsmWasmBuilder::single_function_name)));
     }
   }
 
@@ -656,8 +664,8 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
     FunctionTableIndices* container = new (zone()) FunctionTableIndices();
     container->start_index = start_index;
     container->signature_index = signature_index;
-    ZoneHashMap::Entry* entry = function_tables_.LookupOrInsert(
-        v, ComputePointerHash(v), ZoneAllocationPolicy(zone()));
+    ZoneHashMap::Entry* entry =
+        function_tables_.LookupOrInsert(v, ComputePointerHash(v));
     entry->value = container;
   }
 
@@ -692,8 +700,8 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
     void AddImport(Variable* v, const char* name, int name_length) {
       ImportedFunctionIndices* indices = new (builder_->zone())
           ImportedFunctionIndices(name, name_length, builder_->zone());
-      ZoneHashMap::Entry* entry = table_.LookupOrInsert(
-          v, ComputePointerHash(v), ZoneAllocationPolicy(builder_->zone()));
+      ZoneHashMap::Entry* entry =
+          table_.LookupOrInsert(v, ComputePointerHash(v));
       entry->value = indices;
     }
 
@@ -1686,8 +1694,7 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
       index = current_function_builder_->AddLocal(type);
       IndexContainer* container = new (zone()) IndexContainer();
       container->index = index;
-      entry = local_variables_.LookupOrInsert(v, ComputePointerHash(v),
-                                              ZoneAllocationPolicy(zone()));
+      entry = local_variables_.LookupOrInsert(v, ComputePointerHash(v));
       entry->value = container;
     }
     return (reinterpret_cast<IndexContainer*>(entry->value))->index;
@@ -1701,8 +1708,7 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
     DCHECK_NULL(entry);
     IndexContainer* container = new (zone()) IndexContainer();
     container->index = index;
-    entry = local_variables_.LookupOrInsert(v, ComputePointerHash(v),
-                                            ZoneAllocationPolicy(zone()));
+    entry = local_variables_.LookupOrInsert(v, ComputePointerHash(v));
     entry->value = container;
   }
 
@@ -1713,8 +1719,7 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
       uint32_t index = builder_->AddGlobal(type, 0);
       IndexContainer* container = new (zone()) IndexContainer();
       container->index = index;
-      entry = global_variables_.LookupOrInsert(v, ComputePointerHash(v),
-                                               ZoneAllocationPolicy(zone()));
+      entry = global_variables_.LookupOrInsert(v, ComputePointerHash(v));
       entry->value = container;
     }
     return (reinterpret_cast<IndexContainer*>(entry->value))->index;
@@ -1727,8 +1732,7 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
       uint32_t index = builder_->AddFunction();
       IndexContainer* container = new (zone()) IndexContainer();
       container->index = index;
-      entry = functions_.LookupOrInsert(v, ComputePointerHash(v),
-                                        ZoneAllocationPolicy(zone()));
+      entry = functions_.LookupOrInsert(v, ComputePointerHash(v));
       entry->value = container;
     }
     return (reinterpret_cast<IndexContainer*>(entry->value))->index;
@@ -1792,6 +1796,10 @@ ZoneBuffer* AsmWasmBuilder::Run(i::Handle<i::FixedArray>* foreign_args) {
   impl.builder_->WriteTo(*buffer);
   return buffer;
 }
+
+const char* AsmWasmBuilder::foreign_init_name = "__foreign_init__";
+const char* AsmWasmBuilder::single_function_name = "__single_function__";
+
 }  // namespace wasm
 }  // namespace internal
 }  // namespace v8

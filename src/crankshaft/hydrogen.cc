@@ -2368,7 +2368,7 @@ HValue* HGraphBuilder::BuildAddStringLengths(HValue* left_length,
   HValue* length = AddUncasted<HAdd>(left_length, right_length);
   // Check that length <= kMaxLength <=> length < MaxLength + 1.
   HValue* max_length = Add<HConstant>(String::kMaxLength + 1);
-  if (top_info()->IsStub()) {
+  if (top_info()->IsStub() || !isolate()->IsStringLengthOverflowIntact()) {
     // This is a mitigation for crbug.com/627934; the real fix
     // will be to migrate the StringAddStub to TurboFan one day.
     IfBuilder if_invalid(this);
@@ -2380,6 +2380,7 @@ HValue* HGraphBuilder::BuildAddStringLengths(HValue* left_length,
     }
     if_invalid.End();
   } else {
+    graph()->MarkDependsOnStringLengthOverflow();
     Add<HBoundsCheck>(length, max_length);
   }
   return length;
@@ -3226,93 +3227,6 @@ void HGraphBuilder::BuildCopyElements(HValue* from_elements,
   AddIncrementCounter(counters->inlined_copied_elements());
 }
 
-
-HValue* HGraphBuilder::BuildCloneShallowArrayCow(HValue* boilerplate,
-                                                 HValue* allocation_site,
-                                                 AllocationSiteMode mode,
-                                                 ElementsKind kind) {
-  HAllocate* array = AllocateJSArrayObject(mode);
-
-  HValue* map = AddLoadMap(boilerplate);
-  HValue* elements = AddLoadElements(boilerplate);
-  HValue* length = AddLoadArrayLength(boilerplate, kind);
-
-  BuildJSArrayHeader(array,
-                     map,
-                     elements,
-                     mode,
-                     FAST_ELEMENTS,
-                     allocation_site,
-                     length);
-  return array;
-}
-
-
-HValue* HGraphBuilder::BuildCloneShallowArrayEmpty(HValue* boilerplate,
-                                                   HValue* allocation_site,
-                                                   AllocationSiteMode mode) {
-  HAllocate* array = AllocateJSArrayObject(mode);
-
-  HValue* map = AddLoadMap(boilerplate);
-
-  BuildJSArrayHeader(array,
-                     map,
-                     NULL,  // set elements to empty fixed array
-                     mode,
-                     FAST_ELEMENTS,
-                     allocation_site,
-                     graph()->GetConstant0());
-  return array;
-}
-
-
-HValue* HGraphBuilder::BuildCloneShallowArrayNonEmpty(HValue* boilerplate,
-                                                      HValue* allocation_site,
-                                                      AllocationSiteMode mode,
-                                                      ElementsKind kind) {
-  HValue* boilerplate_elements = AddLoadElements(boilerplate);
-  HValue* capacity = AddLoadFixedArrayLength(boilerplate_elements);
-
-  // Generate size calculation code here in order to make it dominate
-  // the JSArray allocation.
-  HValue* elements_size = BuildCalculateElementsSize(kind, capacity);
-
-  // Create empty JSArray object for now, store elimination should remove
-  // redundant initialization of elements and length fields and at the same
-  // time the object will be fully prepared for GC if it happens during
-  // elements allocation.
-  HValue* result = BuildCloneShallowArrayEmpty(
-      boilerplate, allocation_site, mode);
-
-  HAllocate* elements = BuildAllocateElements(kind, elements_size);
-
-  Add<HStoreNamedField>(result, HObjectAccess::ForElementsPointer(), elements);
-
-  // The allocation for the cloned array above causes register pressure on
-  // machines with low register counts. Force a reload of the boilerplate
-  // elements here to free up a register for the allocation to avoid unnecessary
-  // spillage.
-  boilerplate_elements = AddLoadElements(boilerplate);
-  boilerplate_elements->SetFlag(HValue::kCantBeReplaced);
-
-  // Copy the elements array header.
-  for (int i = 0; i < FixedArrayBase::kHeaderSize; i += kPointerSize) {
-    HObjectAccess access = HObjectAccess::ForFixedArrayHeader(i);
-    Add<HStoreNamedField>(
-        elements, access,
-        Add<HLoadNamedField>(boilerplate_elements, nullptr, access));
-  }
-
-  // And the result of the length
-  HValue* length = AddLoadArrayLength(boilerplate, kind);
-  Add<HStoreNamedField>(result, HObjectAccess::ForArrayLength(kind), length);
-
-  BuildCopyElements(boilerplate_elements, kind, elements,
-                    kind, length, NULL);
-  return result;
-}
-
-
 void HGraphBuilder::BuildCreateAllocationMemento(
     HValue* previous_object,
     HValue* previous_object_size,
@@ -3570,6 +3484,7 @@ HGraph::HGraph(CompilationInfo* info, CallInterfaceDescriptor descriptor)
       allow_code_motion_(false),
       use_optimistic_licm_(false),
       depends_on_empty_array_proto_elements_(false),
+      depends_on_string_length_overflow_(false),
       type_change_checksum_(0),
       maximum_environment_size_(0),
       no_side_effects_scope_count_(0),
@@ -6866,9 +6781,16 @@ void HOptimizedGraphBuilder::HandleGlobalVariableAssignment(
         HObjectAccess::ForContextSlot(Context::EXTENSION_INDEX));
     Handle<TypeFeedbackVector> vector =
         handle(current_feedback_vector(), isolate());
-    HStoreNamedGeneric* instr =
-        Add<HStoreNamedGeneric>(global_object, var->name(), value,
-                                function_language_mode(), vector, slot);
+    HValue* name = Add<HConstant>(var->name());
+    HValue* vector_value = Add<HConstant>(vector);
+    HValue* slot_value = Add<HConstant>(vector->GetIndex(slot));
+    Callable callable = CodeFactory::StoreICInOptimizedCode(
+        isolate(), function_language_mode());
+    HValue* stub = Add<HConstant>(callable.code());
+    HValue* values[] = {context(), global_object, name,
+                        value,     slot_value,    vector_value};
+    HCallWithDescriptor* instr = Add<HCallWithDescriptor>(
+        stub, 0, callable.descriptor(), ArrayVector(values));
     USE(instr);
     DCHECK(instr->HasObservableSideEffects());
     Add<HSimulate>(ast_id, REMOVABLE_SIMULATE);
@@ -7191,20 +7113,30 @@ HInstruction* HOptimizedGraphBuilder::BuildNamedGeneric(
     Handle<TypeFeedbackVector> vector =
         handle(current_feedback_vector(), isolate());
 
+    HValue* key = Add<HConstant>(name);
+    HValue* vector_value = Add<HConstant>(vector);
+    HValue* slot_value = Add<HConstant>(vector->GetIndex(slot));
+    HValue* values[] = {context(), object,     key,
+                        value,     slot_value, vector_value};
+
     if (current_feedback_vector()->GetKind(slot) ==
         FeedbackVectorSlotKind::KEYED_STORE_IC) {
       // It's possible that a keyed store of a constant string was converted
       // to a named store. Here, at the last minute, we need to make sure to
       // use a generic Keyed Store if we are using the type vector, because
       // it has to share information with full code.
-      HConstant* key = Add<HConstant>(name);
-      HStoreKeyedGeneric* result = New<HStoreKeyedGeneric>(
-          object, key, value, function_language_mode(), vector, slot);
+      Callable callable = CodeFactory::KeyedStoreICInOptimizedCode(
+          isolate(), function_language_mode());
+      HValue* stub = Add<HConstant>(callable.code());
+      HCallWithDescriptor* result = New<HCallWithDescriptor>(
+          stub, 0, callable.descriptor(), ArrayVector(values));
       return result;
     }
-
-    HStoreNamedGeneric* result = New<HStoreNamedGeneric>(
-        object, name, value, function_language_mode(), vector, slot);
+    Callable callable = CodeFactory::StoreICInOptimizedCode(
+        isolate(), function_language_mode());
+    HValue* stub = Add<HConstant>(callable.code());
+    HCallWithDescriptor* result = New<HCallWithDescriptor>(
+        stub, 0, callable.descriptor(), ArrayVector(values));
     return result;
   }
 }
@@ -7220,8 +7152,16 @@ HInstruction* HOptimizedGraphBuilder::BuildKeyedGeneric(
         New<HLoadKeyedGeneric>(object, key, vector, slot);
     return result;
   } else {
-    HStoreKeyedGeneric* result = New<HStoreKeyedGeneric>(
-        object, key, value, function_language_mode(), vector, slot);
+    HValue* vector_value = Add<HConstant>(vector);
+    HValue* slot_value = Add<HConstant>(vector->GetIndex(slot));
+    HValue* values[] = {context(), object,     key,
+                        value,     slot_value, vector_value};
+
+    Callable callable = CodeFactory::KeyedStoreICInOptimizedCode(
+        isolate(), function_language_mode());
+    HValue* stub = Add<HConstant>(callable.code());
+    HCallWithDescriptor* result = New<HCallWithDescriptor>(
+        stub, 0, callable.descriptor(), ArrayVector(values));
     return result;
   }
 }

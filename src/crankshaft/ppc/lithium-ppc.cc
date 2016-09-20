@@ -317,15 +317,6 @@ void LStoreNamedField::PrintDataTo(StringStream* stream) {
 }
 
 
-void LStoreNamedGeneric::PrintDataTo(StringStream* stream) {
-  object()->PrintTo(stream);
-  stream->Add(".");
-  stream->Add(String::cast(*name())->ToCString().get());
-  stream->Add(" <- ");
-  value()->PrintTo(stream);
-}
-
-
 void LLoadKeyed::PrintDataTo(StringStream* stream) {
   elements()->PrintTo(stream);
   stream->Add("[");
@@ -355,15 +346,6 @@ void LStoreKeyed::PrintDataTo(StringStream* stream) {
   } else {
     value()->PrintTo(stream);
   }
-}
-
-
-void LStoreKeyedGeneric::PrintDataTo(StringStream* stream) {
-  object()->PrintTo(stream);
-  stream->Add("[");
-  key()->PrintTo(stream);
-  stream->Add("] <- ");
-  value()->PrintTo(stream);
 }
 
 
@@ -2150,26 +2132,6 @@ LInstruction* LChunkBuilder::DoStoreKeyed(HStoreKeyed* instr) {
 }
 
 
-LInstruction* LChunkBuilder::DoStoreKeyedGeneric(HStoreKeyedGeneric* instr) {
-  LOperand* context = UseFixed(instr->context(), cp);
-  LOperand* obj =
-      UseFixed(instr->object(), StoreDescriptor::ReceiverRegister());
-  LOperand* key = UseFixed(instr->key(), StoreDescriptor::NameRegister());
-  LOperand* val = UseFixed(instr->value(), StoreDescriptor::ValueRegister());
-
-  DCHECK(instr->object()->representation().IsTagged());
-  DCHECK(instr->key()->representation().IsTagged());
-  DCHECK(instr->value()->representation().IsTagged());
-
-  LOperand* slot = FixedTemp(StoreWithVectorDescriptor::SlotRegister());
-  LOperand* vector = FixedTemp(StoreWithVectorDescriptor::VectorRegister());
-
-  LStoreKeyedGeneric* result =
-      new (zone()) LStoreKeyedGeneric(context, obj, key, val, slot, vector);
-  return MarkAsCall(result, instr);
-}
-
-
 LInstruction* LChunkBuilder::DoTransitionElementsKind(
     HTransitionElementsKind* instr) {
   if (IsSimpleMapChangeTransition(instr->from_kind(), instr->to_kind())) {
@@ -2242,19 +2204,6 @@ LInstruction* LChunkBuilder::DoStoreNamedField(HStoreNamedField* instr) {
   LOperand* temp = needs_write_barrier_for_map ? TempRegister() : NULL;
 
   return new (zone()) LStoreNamedField(obj, val, temp);
-}
-
-
-LInstruction* LChunkBuilder::DoStoreNamedGeneric(HStoreNamedGeneric* instr) {
-  LOperand* context = UseFixed(instr->context(), cp);
-  LOperand* obj =
-      UseFixed(instr->object(), StoreDescriptor::ReceiverRegister());
-  LOperand* val = UseFixed(instr->value(), StoreDescriptor::ValueRegister());
-  LOperand* slot = FixedTemp(StoreWithVectorDescriptor::SlotRegister());
-  LOperand* vector = FixedTemp(StoreWithVectorDescriptor::VectorRegister());
-  LStoreNamedGeneric* result =
-      new (zone()) LStoreNamedGeneric(context, obj, val, slot, vector);
-  return MarkAsCall(result, instr);
 }
 
 

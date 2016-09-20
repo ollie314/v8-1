@@ -61,12 +61,10 @@
             '..',
           ],
           'defines': [
-            'V8_SHARED',
             'BUILDING_V8_SHARED',
           ],
           'direct_dependent_settings': {
             'defines': [
-              'V8_SHARED',
               'USING_V8_SHARED',
             ],
           },
@@ -164,12 +162,10 @@
         }],
         ['component=="shared_library"', {
           'defines': [
-            'V8_SHARED',
             'BUILDING_V8_SHARED',
           ],
           'direct_dependent_settings': {
             'defines': [
-              'V8_SHARED',
               'USING_V8_SHARED',
             ],
           },
@@ -259,7 +255,6 @@
         ['component=="shared_library"', {
           'defines': [
             'BUILDING_V8_SHARED',
-            'V8_SHARED',
           ],
         }],
       ]
@@ -286,12 +281,10 @@
             }],
             ['component=="shared_library"', {
               'defines': [
-                'V8_SHARED',
                 'BUILDING_V8_SHARED',
               ],
               'direct_dependent_settings': {
                 'defines': [
-                  'V8_SHARED',
                   'USING_V8_SHARED',
                 ],
               },
@@ -961,6 +954,7 @@
         'ic/call-optimization.h',
         'ic/handler-compiler.cc',
         'ic/handler-compiler.h',
+        'ic/handler-configuration.h',
         'ic/ic-inl.h',
         'ic/ic-state.cc',
         'ic/ic-state.h',
@@ -1412,6 +1406,8 @@
             'ia32/interface-descriptors-ia32.cc',
             'ia32/macro-assembler-ia32.cc',
             'ia32/macro-assembler-ia32.h',
+            'ia32/simulator-ia32.cc',
+            'ia32/simulator-ia32.h',
             'builtins/ia32/builtins-ia32.cc',
             'compiler/ia32/code-generator-ia32.cc',
             'compiler/ia32/instruction-codes-ia32.h',
@@ -1451,6 +1447,8 @@
             'x87/interface-descriptors-x87.cc',
             'x87/macro-assembler-x87.cc',
             'x87/macro-assembler-x87.h',
+            'x87/simulator-x87.cc',
+            'x87/simulator-x87.h',
             'builtins/x87/builtins-x87.cc',
             'compiler/x87/code-generator-x87.cc',
             'compiler/x87/instruction-codes-x87.h',
@@ -1583,6 +1581,8 @@
             'x64/interface-descriptors-x64.cc',
             'x64/macro-assembler-x64.cc',
             'x64/macro-assembler-x64.h',
+            'x64/simulator-x64.cc',
+            'x64/simulator-x64.h',
             'x64/sse-instr.h',
             'debug/x64/debug-x64.cc',
             'full-codegen/x64/full-codegen-x64.cc',
@@ -1593,6 +1593,7 @@
             'ic/x64/stub-cache-x64.cc',
             'regexp/x64/regexp-macro-assembler-x64.cc',
             'regexp/x64/regexp-macro-assembler-x64.h',
+            'third_party/valgrind/valgrind.h',
           ],
         }],
         ['v8_target_arch=="x64"', {
@@ -1705,7 +1706,6 @@
         ['component=="shared_library"', {
           'defines': [
             'BUILDING_V8_SHARED',
-            'V8_SHARED',
           ],
         }],
         ['v8_postmortem_support=="true"', {
@@ -1753,11 +1753,9 @@
             4324,  # Struct padded due to declspec(align).
             4714,  # Function marked forceinline not inlined.
             4800,  # Value forced to bool.
-            4996,  # Deprecated function call.
           ],
           'cflags': [
             '-Wno-shorten-64-to-32',
-            '-Wno-deprecated-declarations',
           ],
         }],
         ['OS=="win" and v8_enable_i18n_support==1', {
@@ -1812,6 +1810,7 @@
         'base/functional.cc',
         'base/functional.h',
         'base/hashmap.h',
+        'base/hashmap-entry.h',
         'base/ieee754.cc',
         'base/ieee754.h',
         'base/iterator.h',

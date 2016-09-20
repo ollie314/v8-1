@@ -62,6 +62,7 @@ using v8::MemoryPressureLevel;
   V(FixedArray, empty_literals_array, EmptyLiteralsArray)                      \
   V(FixedArray, empty_type_feedback_vector, EmptyTypeFeedbackVector)           \
   V(FixedArray, empty_fixed_array, EmptyFixedArray)                            \
+  V(ScopeInfo, empty_scope_info, EmptyScopeInfo)                               \
   V(FixedArray, cleared_optimized_code_map, ClearedOptimizedCodeMap)           \
   V(DescriptorArray, empty_descriptor_array, EmptyDescriptorArray)             \
   /* Entries beyond the first 32                                            */ \
@@ -166,6 +167,7 @@ using v8::MemoryPressureLevel;
   V(Cell, is_concat_spreadable_protector, IsConcatSpreadableProtector)         \
   V(PropertyCell, has_instance_protector, HasInstanceProtector)                \
   V(Cell, species_protector, SpeciesProtector)                                 \
+  V(PropertyCell, string_length_protector, StringLengthProtector)              \
   /* Special numbers */                                                        \
   V(HeapNumber, nan_value, NanValue)                                           \
   V(HeapNumber, hole_nan_value, HoleNanValue)                                  \
@@ -2038,6 +2040,9 @@ class Heap {
   // Allocate empty fixed array.
   MUST_USE_RESULT AllocationResult AllocateEmptyFixedArray();
 
+  // Allocate empty scope info.
+  MUST_USE_RESULT AllocationResult AllocateEmptyScopeInfo();
+
   // Allocate empty fixed typed array of given type.
   MUST_USE_RESULT AllocationResult
       AllocateEmptyFixedTypedArray(ExternalArrayType array_type);
@@ -2425,7 +2430,7 @@ class AllSpaces BASE_EMBEDDED {
 
 // Space iterator for iterating over all old spaces of the heap: Old space
 // and code space.  Returns each space in turn, and null when it is done.
-class OldSpaces BASE_EMBEDDED {
+class V8_EXPORT_PRIVATE OldSpaces BASE_EMBEDDED {
  public:
   explicit OldSpaces(Heap* heap) : heap_(heap), counter_(OLD_SPACE) {}
   OldSpace* next();

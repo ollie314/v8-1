@@ -4572,6 +4572,7 @@ class ModuleInfo : public FixedArray {
  public:
   DECLARE_CAST(ModuleInfo)
   static Handle<ModuleInfo> New(Isolate* isolate, ModuleDescriptor* descr);
+  inline FixedArray* module_requests() const;
   inline FixedArray* special_exports() const;
   inline FixedArray* regular_exports() const;
 
@@ -4581,7 +4582,12 @@ class ModuleInfo : public FixedArray {
 
  private:
   friend class Factory;
-  enum { kSpecialExportsIndex, kRegularExportsIndex, kLength };
+  enum {
+    kModuleRequestsIndex,
+    kSpecialExportsIndex,
+    kRegularExportsIndex,
+    kLength
+  };
 };
 
 // The cache for maps used by normalized (dictionary mode) objects.
@@ -7152,6 +7158,10 @@ class SharedFunctionInfo: public HeapObject {
   // [scope_info]: Scope info.
   DECL_ACCESSORS(scope_info, ScopeInfo)
 
+  // The outer scope info for the purpose of parsing this function, or the hole
+  // value if it isn't yet known.
+  DECL_ACCESSORS(outer_scope_info, HeapObject)
+
   // [construct stub]: Code stub for constructing instances of this function.
   DECL_ACCESSORS(construct_stub, Code)
 
@@ -7509,7 +7519,8 @@ class SharedFunctionInfo: public HeapObject {
   static const int kCodeOffset = kNameOffset + kPointerSize;
   static const int kOptimizedCodeMapOffset = kCodeOffset + kPointerSize;
   static const int kScopeInfoOffset = kOptimizedCodeMapOffset + kPointerSize;
-  static const int kConstructStubOffset = kScopeInfoOffset + kPointerSize;
+  static const int kOuterScopeInfoOffset = kScopeInfoOffset + kPointerSize;
+  static const int kConstructStubOffset = kOuterScopeInfoOffset + kPointerSize;
   static const int kInstanceClassNameOffset =
       kConstructStubOffset + kPointerSize;
   static const int kFunctionDataOffset =
@@ -9327,6 +9338,9 @@ class String: public Name {
   // Caller must ensure that 0 <= start_index <= sub->length().
   static int IndexOf(Isolate* isolate, Handle<String> sub, Handle<String> pat,
                      int start_index);
+
+  static Object* LastIndexOf(Isolate* isolate, Handle<Object> receiver,
+                             Handle<Object> search, Handle<Object> position);
 
   // String equality operations.
   inline bool Equals(String* other);

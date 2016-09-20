@@ -6198,6 +6198,9 @@ void SharedFunctionInfo::set_scope_info(ScopeInfo* value,
                             mode);
 }
 
+ACCESSORS(SharedFunctionInfo, outer_scope_info, HeapObject,
+          kOuterScopeInfoOffset)
+
 bool SharedFunctionInfo::is_compiled() const {
   Builtins* builtins = GetIsolate()->builtins();
   DCHECK(code() != builtins->builtin(Builtins::kCompileOptimizedConcurrent));
@@ -7941,6 +7944,10 @@ Object* ModuleInfoEntry::import_name() const { return get(kImportNameIndex); }
 
 Object* ModuleInfoEntry::module_request() const {
   return get(kModuleRequestIndex);
+}
+
+FixedArray* ModuleInfo::module_requests() const {
+  return FixedArray::cast(get(kModuleRequestsIndex));
 }
 
 FixedArray* ModuleInfo::special_exports() const {

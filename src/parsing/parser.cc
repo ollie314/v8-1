@@ -638,7 +638,8 @@ Parser::Parser(ParseInfo* info)
   // ParseInfo during background parsing.
   DCHECK(!info->script().is_null() || info->source_stream() != nullptr ||
          info->character_stream() != nullptr);
-  set_allow_lazy(info->allow_lazy_parsing());
+  set_allow_lazy(FLAG_lazy && info->allow_lazy_parsing() &&
+                 !info->is_native() && info->extension() == nullptr);
   set_allow_natives(FLAG_allow_natives_syntax || info->is_native());
   set_allow_tailcalls(FLAG_harmony_tailcalls && !info->is_native() &&
                       info->isolate()->is_tail_call_elimination_enabled());
@@ -753,8 +754,7 @@ FunctionLiteral* Parser::DoParseProgram(ParseInfo* info) {
   DCHECK_NULL(scope_state_);
   DCHECK_NULL(target_stack_);
 
-  Mode parsing_mode = FLAG_lazy && allow_lazy() ? PARSE_LAZILY : PARSE_EAGERLY;
-  if (allow_natives() || extension_ != NULL) parsing_mode = PARSE_EAGERLY;
+  Mode parsing_mode = allow_lazy() ? PARSE_LAZILY : PARSE_EAGERLY;
 
   FunctionLiteral* result = NULL;
   {
@@ -884,6 +884,8 @@ FunctionLiteral* Parser::ParseLazy(Isolate* isolate, ParseInfo* info) {
 
   if (FLAG_trace_parse && result != NULL) {
     double ms = timer.Elapsed().InMillisecondsF();
+    // We need to make sure that the debug-name is available.
+    ast_value_factory()->Internalize(isolate);
     std::unique_ptr<char[]> name_chars = result->debug_name()->ToCString();
     PrintF("[parsing function: %s - took %0.3f ms]\n", name_chars.get(), ms);
   }
@@ -1485,11 +1487,9 @@ Declaration* Parser::DeclareVariable(const AstRawString* name,
                                      VariableMode mode, InitializationFlag init,
                                      int pos, bool* ok) {
   DCHECK_NOT_NULL(name);
-  Scope* scope =
-      IsLexicalVariableMode(mode) ? this->scope() : GetDeclarationScope();
-  VariableProxy* proxy =
-      scope->NewUnresolved(factory(), name, scanner()->location().beg_pos,
-                           scanner()->location().end_pos);
+  VariableProxy* proxy = factory()->NewVariableProxy(
+      name, NORMAL_VARIABLE, scanner()->location().beg_pos,
+      scanner()->location().end_pos);
   Declaration* declaration =
       factory()->NewVariableDeclaration(proxy, this->scope(), pos);
   Declare(declaration, DeclarationDescriptor::NORMAL, mode, init, CHECK_OK);
@@ -1656,7 +1656,8 @@ Statement* Parser::DeclareFunction(const AstRawString* variable_name,
   VariableMode mode =
       (!scope()->is_declaration_scope() || scope()->is_module_scope()) ? LET
                                                                        : VAR;
-  VariableProxy* proxy = NewUnresolved(variable_name);
+  VariableProxy* proxy =
+      factory()->NewVariableProxy(variable_name, NORMAL_VARIABLE);
   Declaration* declaration =
       factory()->NewFunctionDeclaration(proxy, function, scope(), pos);
   Declare(declaration, DeclarationDescriptor::NORMAL, mode, kCreatedInitialized,
@@ -2609,17 +2610,27 @@ Statement* Parser::ParseForStatement(ZoneList<const AstRawString*>* labels,
 
         Expect(Token::RPAREN, CHECK_OK);
 
-        // For legacy compat reasons, give for loops similar treatment to
-        // if statements in allowing a function declaration for a body
-        Statement* body = ParseScopedStatement(NULL, true, CHECK_OK);
-        Statement* final_loop = InitializeForEachStatement(
-            loop, expression, enumerable, body, each_keyword_position);
+        {
+          ReturnExprScope no_tail_calls(function_state_,
+                                        ReturnExprContext::kInsideForInOfBody);
+          BlockState block_state(&scope_state_);
+          block_state.set_start_position(scanner()->location().beg_pos);
 
-        Scope* for_scope = for_state.FinalizedBlockScope();
-        DCHECK_NULL(for_scope);
-        USE(for_scope);
-        return final_loop;
+          // For legacy compat reasons, give for loops similar treatment to
+          // if statements in allowing a function declaration for a body
+          Statement* body = ParseScopedStatement(NULL, true, CHECK_OK);
+          block_state.set_end_position(scanner()->location().end_pos);
+          Statement* final_loop = InitializeForEachStatement(
+              loop, expression, enumerable, body, each_keyword_position);
 
+          Scope* for_scope = for_state.FinalizedBlockScope();
+          DCHECK_NULL(for_scope);
+          USE(for_scope);
+          Scope* block_scope = block_state.FinalizedBlockScope();
+          DCHECK_NULL(block_scope);
+          USE(block_scope);
+          return final_loop;
+        }
       } else {
         init = factory()->NewExpressionStatement(expression, lhs_beg_pos);
       }
@@ -2936,8 +2947,7 @@ FunctionLiteral* Parser::ParseFunctionLiteral(
   // - For asm.js functions the body needs to be available when module
   //   validation is active, because we examine the entire module at once.
   bool use_temp_zone =
-      !is_lazily_parsed && FLAG_lazy && !allow_natives() &&
-      extension_ == NULL && allow_lazy() &&
+      !is_lazily_parsed && allow_lazy() &&
       function_type == FunctionLiteral::kDeclaration &&
       eager_compile_hint != FunctionLiteral::kShouldEagerCompile &&
       !(FLAG_validate_asm && scope()->IsAsmModule());
@@ -3024,10 +3034,10 @@ FunctionLiteral* Parser::ParseFunctionLiteral(
     // eagerly.
     if (is_lazily_parsed) {
       Scanner::BookmarkScope bookmark(scanner());
-      bool may_abort = bookmark.Set();
+      bookmark.Set();
       LazyParsingResult result =
           SkipLazyFunctionBody(&materialized_literal_count,
-                               &expected_property_count, may_abort, CHECK_OK);
+                               &expected_property_count, true, CHECK_OK);
 
       materialized_literal_count += formals.materialized_literals_count +
                                     function_state.materialized_literal_count();
@@ -3148,6 +3158,7 @@ Parser::LazyParsingResult Parser::SkipLazyFunctionBody(
   int function_block_pos = position();
   DeclarationScope* scope = this->scope()->AsDeclarationScope();
   DCHECK(scope->is_function_scope());
+  scope->set_is_lazily_parsed(true);
   if (consume_cached_parse_data() && !cached_parse_data_->rejected()) {
     // If we have cached data, we use it to skip parsing the function body. The
     // data contains the information we need to construct the lazy function.
@@ -3178,6 +3189,7 @@ Parser::LazyParsingResult Parser::SkipLazyFunctionBody(
       ParseLazyFunctionBodyWithPreParser(&logger, may_abort);
   // Return immediately if pre-parser decided to abort parsing.
   if (result == PreParser::kPreParseAbort) {
+    scope->set_is_lazily_parsed(false);
     return kLazyParsingAborted;
   }
   if (result == PreParser::kPreParseStackOverflow) {
@@ -3846,7 +3858,7 @@ Expression* Parser::ParseClassLiteral(const AstRawString* name,
 
   VariableProxy* proxy = nullptr;
   if (name != nullptr) {
-    proxy = NewUnresolved(name);
+    proxy = factory()->NewVariableProxy(name, NORMAL_VARIABLE);
     // TODO(verwaest): declare via block_state.
     Declaration* declaration =
         factory()->NewVariableDeclaration(proxy, block_state.scope(), pos);
@@ -3930,7 +3942,8 @@ Expression* Parser::ParseClassLiteral(const AstRawString* name,
           //}
           const AstRawString* name = ClassFieldVariableName(
               true, ast_value_factory(), instance_field_initializers->length());
-          VariableProxy* name_proxy = NewUnresolved(name);
+          VariableProxy* name_proxy =
+              factory()->NewVariableProxy(name, NORMAL_VARIABLE);
           Declaration* name_declaration = factory()->NewVariableDeclaration(
               name_proxy, scope(), kNoSourcePosition);
           Variable* name_var =
@@ -4011,7 +4024,8 @@ Expression* Parser::ParseClassLiteral(const AstRawString* name,
   for (int i = 0; i < instance_field_initializers->length(); ++i) {
     const AstRawString* function_name =
         ClassFieldVariableName(false, ast_value_factory(), i);
-    VariableProxy* function_proxy = NewUnresolved(function_name);
+    VariableProxy* function_proxy =
+        factory()->NewVariableProxy(function_name, NORMAL_VARIABLE);
     Declaration* function_declaration = factory()->NewVariableDeclaration(
         function_proxy, scope(), kNoSourcePosition);
     Variable* function_var =
@@ -4155,7 +4169,7 @@ void Parser::HandleSourceURLComments(Isolate* isolate, Handle<Script> script) {
 
 
 void Parser::Internalize(Isolate* isolate, Handle<Script> script, bool error) {
-  // Internalize strings.
+  // Internalize strings and values.
   ast_value_factory()->Internalize(isolate);
 
   // Error processing.
@@ -4222,7 +4236,6 @@ bool Parser::Parse(ParseInfo* info) {
   info->set_literal(result);
 
   Internalize(isolate, info->script(), result == NULL);
-  DCHECK(ast_value_factory()->IsInternalized());
   return (result != NULL);
 }
 
@@ -4549,21 +4562,46 @@ Expression* Parser::ExpressionListToExpression(ZoneList<Expression*>* args) {
 
 Expression* Parser::RewriteAwaitExpression(Expression* value, int await_pos) {
   // yield do {
+  //   promise_tmp = .promise;
   //   tmp = <operand>;
-  //   tmp = %AsyncFunctionAwait(.generator_object, tmp);
+  //   %AsyncFunctionAwait(.generator_object, tmp);
+  //   promise_tmp
   // }
+  // The value of the expression is returned to the caller of the async
+  // function for the first yield statement; for this, .promise is the
+  // appropriate return value, being a Promise that will be fulfilled or
+  // rejected with the appropriate value by the desugaring. Subsequent yield
+  // occurrences will return to the AsyncFunctionNext call within the
+  // implemementation of the intermediate throwaway Promise's then handler.
+  // This handler has nothing useful to do with the value, as the Promise is
+  // ignored. If we yielded the value of the throwawayPromise that
+  // AsyncFunctionAwait creates as an intermediate, it would create a memory
+  // leak; we must return .promise instead;
+  // The operand needs to be evaluated on a separate statement in order to get
+  // a break location, and the .promise needs to be read earlier so that it
+  // doesn't insert a false location.
+  // TODO(littledan): investigate why this ordering is needed in more detail.
   Variable* generator_object_variable =
       function_state_->generator_object_variable();
 
   // If generator_object_variable is null,
+  // TODO(littledan): Is this necessary?
   if (!generator_object_variable) return value;
 
   const int nopos = kNoSourcePosition;
 
-  Variable* temp_var = NewTemporary(ast_value_factory()->empty_string());
-  Block* do_block = factory()->NewBlock(nullptr, 2, false, nopos);
+  Block* do_block = factory()->NewBlock(nullptr, 3, false, nopos);
+
+  Variable* promise_temp_var =
+      NewTemporary(ast_value_factory()->empty_string());
+  Expression* promise_assignment = factory()->NewAssignment(
+      Token::ASSIGN, factory()->NewVariableProxy(promise_temp_var),
+      BuildDotPromise(), nopos);
+  do_block->statements()->Add(
+      factory()->NewExpressionStatement(promise_assignment, nopos), zone());
 
   // Wrap value evaluation to provide a break location.
+  Variable* temp_var = NewTemporary(ast_value_factory()->empty_string());
   Expression* value_assignment = factory()->NewAssignment(
       Token::ASSIGN, factory()->NewVariableProxy(temp_var), value, nopos);
   do_block->statements()->Add(
@@ -4583,14 +4621,13 @@ Expression* Parser::RewriteAwaitExpression(Expression* value, int await_pos) {
   Expression* async_function_await =
       factory()->NewCallRuntime(Context::ASYNC_FUNCTION_AWAIT_CAUGHT_INDEX,
                                 async_function_await_args, nopos);
+  do_block->statements()->Add(
+      factory()->NewExpressionStatement(async_function_await, await_pos),
+      zone());
 
   // Wrap await to provide a break location between value evaluation and yield.
-  Expression* await_assignment = factory()->NewAssignment(
-      Token::ASSIGN, factory()->NewVariableProxy(temp_var),
-      async_function_await, nopos);
-  do_block->statements()->Add(
-      factory()->NewExpressionStatement(await_assignment, await_pos), zone());
-  Expression* do_expr = factory()->NewDoExpression(do_block, temp_var, nopos);
+  Expression* do_expr =
+      factory()->NewDoExpression(do_block, promise_temp_var, nopos);
 
   generator_object = factory()->NewVariableProxy(generator_object_variable);
   return factory()->NewYield(generator_object, do_expr, nopos,
@@ -5790,13 +5827,6 @@ Statement* Parser::FinalizeForOfStatement(ForOfStatement* loop,
 
   return final_loop;
 }
-
-#ifdef DEBUG
-void Parser::Print(AstNode* node) {
-  ast_value_factory()->Internalize(Isolate::Current());
-  node->Print(Isolate::Current());
-}
-#endif  // DEBUG
 
 #undef CHECK_OK
 #undef CHECK_OK_VOID

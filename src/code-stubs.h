@@ -488,12 +488,6 @@ class CodeStub BASE_EMBEDDED {
     return Descriptor(isolate());                                       \
   }
 
-#define DEFINE_ON_STACK_CALL_INTERFACE_DESCRIPTOR(PARAMETER_COUNT)         \
- public:                                                                   \
-  CallInterfaceDescriptor GetCallInterfaceDescriptor() const override {    \
-    return OnStackArgsDescriptorBase::ForArgs(isolate(), PARAMETER_COUNT); \
-  }
-
 // There are some code stubs we just can't describe right now with a
 // CallInterfaceDescriptor. Isolate behavior for those cases with this macro.
 // An attempt to retrieve a descriptor will fail.
@@ -1274,8 +1268,8 @@ class FastCloneShallowArrayStub : public TurboFanCodeStub {
   static compiler::Node* Generate(CodeStubAssembler* assembler,
                                   compiler::Node* closure,
                                   compiler::Node* literal_index,
-                                  compiler::Node* constant_elements,
                                   compiler::Node* context,
+                                  CodeStubAssembler::Label* call_runtime,
                                   AllocationSiteMode allocation_site_mode);
 
   AllocationSiteMode allocation_site_mode() const {
@@ -1822,10 +1816,6 @@ class CallApiCallbackStub : public PlatformCodeStub {
       : CallApiCallbackStub(isolate, argc, false, call_data_undefined,
                             is_lazy) {}
 
-  CallInterfaceDescriptor GetCallInterfaceDescriptor() const override {
-    return ApiCallbackDescriptorBase::ForArgs(isolate(), argc());
-  }
-
  private:
   CallApiCallbackStub(Isolate* isolate, int argc, bool is_store,
                       bool call_data_undefined, bool is_lazy)
@@ -1849,6 +1839,7 @@ class CallApiCallbackStub : public PlatformCodeStub {
   class ArgumentBits : public BitField<int, 2, kArgBits> {};
   class IsLazyAccessorBits : public BitField<bool, 3 + kArgBits, 1> {};
 
+  DEFINE_CALL_INTERFACE_DESCRIPTOR(ApiCallback);
   DEFINE_PLATFORM_CODE_STUB(CallApiCallback, PlatformCodeStub);
 };
 
@@ -2128,7 +2119,7 @@ class RegExpExecStub: public PlatformCodeStub {
  public:
   explicit RegExpExecStub(Isolate* isolate) : PlatformCodeStub(isolate) { }
 
-  DEFINE_ON_STACK_CALL_INTERFACE_DESCRIPTOR(4);
+  DEFINE_CALL_INTERFACE_DESCRIPTOR(RegExpExec);
   DEFINE_PLATFORM_CODE_STUB(RegExpExec, PlatformCodeStub);
 };
 
@@ -3126,7 +3117,7 @@ class SubStringStub : public PlatformCodeStub {
  public:
   explicit SubStringStub(Isolate* isolate) : PlatformCodeStub(isolate) {}
 
-  DEFINE_ON_STACK_CALL_INTERFACE_DESCRIPTOR(3);
+  DEFINE_CALL_INTERFACE_DESCRIPTOR(SubString);
   DEFINE_PLATFORM_CODE_STUB(SubString, PlatformCodeStub);
 };
 

@@ -13,7 +13,7 @@
 #include "src/wasm/wasm-js.h"
 #include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-result.h"
-#include "src/zone.h"
+#include "src/zone/zone.h"
 
 namespace v8 {
 namespace internal {
@@ -201,7 +201,7 @@ int32_t CallWasmFunctionForTesting(Isolate* isolate, Handle<JSObject> instance,
 }
 
 void SetupIsolateForWasmModule(Isolate* isolate) {
-  WasmJs::InstallWasmFunctionMapIfNeeded(isolate, isolate->native_context());
+  WasmJs::InstallWasmMapsIfNeeded(isolate, isolate->native_context());
   WasmJs::InstallWasmModuleSymbolIfNeeded(isolate, isolate->global_object(),
                                           isolate->native_context());
 }

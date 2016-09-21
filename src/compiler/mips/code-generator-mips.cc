@@ -1355,7 +1355,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
 
     // ... more basic instructions ...
-
+    case kMipsSeb:
+      __ seb(i.OutputRegister(), i.InputRegister(0));
+      break;
+    case kMipsSeh:
+      __ seh(i.OutputRegister(), i.InputRegister(0));
+      break;
     case kMipsLbu:
       __ lbu(i.OutputRegister(), i.MemoryOperand());
       break;
@@ -2010,10 +2015,7 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
         case Constant::kHeapObject: {
           Handle<HeapObject> src_object = src.ToHeapObject();
           Heap::RootListIndex index;
-          int slot;
-          if (IsMaterializableFromFrame(src_object, &slot)) {
-            __ lw(dst, g.SlotToMemOperand(slot));
-          } else if (IsMaterializableFromRoot(src_object, &index)) {
+          if (IsMaterializableFromRoot(src_object, &index)) {
             __ LoadRoot(dst, index);
           } else {
             __ li(dst, src_object);

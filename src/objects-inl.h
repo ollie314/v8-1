@@ -701,6 +701,7 @@ TYPE_CHECKER(Map, MAP_TYPE)
 TYPE_CHECKER(FixedDoubleArray, FIXED_DOUBLE_ARRAY_TYPE)
 TYPE_CHECKER(WeakFixedArray, FIXED_ARRAY_TYPE)
 TYPE_CHECKER(TransitionArray, TRANSITION_ARRAY_TYPE)
+TYPE_CHECKER(JSStringIterator, JS_STRING_ITERATOR_TYPE)
 
 bool HeapObject::IsJSWeakCollection() const {
   return IsJSWeakMap() || IsJSWeakSet();
@@ -2113,6 +2114,8 @@ int JSObject::GetHeaderSize(InstanceType type) {
       return JSArgumentsObject::kHeaderSize;
     case JS_ERROR_TYPE:
       return JSObject::kHeaderSize;
+    case JS_STRING_ITERATOR_TYPE:
+      return JSStringIterator::kSize;
     default:
       UNREACHABLE();
       return 0;
@@ -3282,6 +3285,7 @@ CAST_ACCESSOR(JSReceiver)
 CAST_ACCESSOR(JSRegExp)
 CAST_ACCESSOR(JSSet)
 CAST_ACCESSOR(JSSetIterator)
+CAST_ACCESSOR(JSStringIterator)
 CAST_ACCESSOR(JSTypedArray)
 CAST_ACCESSOR(JSValue)
 CAST_ACCESSOR(JSWeakCollection)
@@ -5650,6 +5654,13 @@ ACCESSORS(AccessorInfo, data, Object, kDataOffset)
 
 ACCESSORS(Box, value, Object, kValueOffset)
 
+ACCESSORS(PromiseContainer, thenable, JSReceiver, kThenableOffset)
+ACCESSORS(PromiseContainer, then, JSFunction, kThenOffset)
+ACCESSORS(PromiseContainer, resolve, JSFunction, kResolveOffset)
+ACCESSORS(PromiseContainer, reject, JSFunction, kRejectOffset)
+ACCESSORS(PromiseContainer, before_debug_event, Object, kBeforeDebugEventOffset)
+ACCESSORS(PromiseContainer, after_debug_event, Object, kAfterDebugEventOffset)
+
 Map* PrototypeInfo::ObjectCreateMap() {
   return Map::cast(WeakCell::cast(object_create_map())->value());
 }
@@ -5703,6 +5714,9 @@ ACCESSORS(ContextExtension, extension, Object, kExtensionOffset)
 
 ACCESSORS(Module, code, Object, kCodeOffset)
 ACCESSORS(Module, exports, ObjectHashTable, kExportsOffset)
+ACCESSORS(Module, requested_modules, FixedArray, kRequestedModulesOffset)
+SMI_ACCESSORS(Module, flags, kFlagsOffset)
+BOOL_ACCESSORS(Module, flags, evaluated, kEvaluatedBit)
 
 ACCESSORS(AccessorPair, getter, Object, kGetterOffset)
 ACCESSORS(AccessorPair, setter, Object, kSetterOffset)
@@ -7958,10 +7972,20 @@ FixedArray* ModuleInfo::regular_exports() const {
   return FixedArray::cast(get(kRegularExportsIndex));
 }
 
+FixedArray* ModuleInfo::regular_imports() const {
+  return FixedArray::cast(get(kRegularImportsIndex));
+}
+
+FixedArray* ModuleInfo::special_imports() const {
+  return FixedArray::cast(get(kSpecialImportsIndex));
+}
+
 #ifdef DEBUG
 bool ModuleInfo::Equals(ModuleInfo* other) const {
-  return get(kSpecialExportsIndex) == other->get(kSpecialExportsIndex) &&
-         get(kRegularExportsIndex) == other->get(kRegularExportsIndex);
+  return regular_exports() == other->regular_exports() &&
+         regular_imports() == other->regular_imports() &&
+         special_exports() == other->special_exports() &&
+         special_imports() == other->special_imports();
 }
 #endif
 
@@ -8249,6 +8273,12 @@ static inline Handle<Object> MakeEntryPair(Isolate* isolate, Handle<Name> key,
   return isolate->factory()->NewJSArrayWithElements(entry_storage,
                                                     FAST_ELEMENTS, 2);
 }
+
+ACCESSORS(JSIteratorResult, value, Object, kValueOffset)
+ACCESSORS(JSIteratorResult, done, Object, kDoneOffset)
+
+ACCESSORS(JSStringIterator, string, String, kStringOffset)
+SMI_ACCESSORS(JSStringIterator, index, kNextIndexOffset)
 
 #undef TYPE_CHECKER
 #undef CAST_ACCESSOR

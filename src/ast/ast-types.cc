@@ -217,6 +217,7 @@ AstType::bitset AstBitsetType::Lub(i::Map* map) {
     case JS_MAP_TYPE:
     case JS_SET_ITERATOR_TYPE:
     case JS_MAP_ITERATOR_TYPE:
+    case JS_STRING_ITERATOR_TYPE:
     case JS_WEAK_MAP_TYPE:
     case JS_WEAK_SET_TYPE:
     case JS_PROMISE_TYPE:
@@ -259,6 +260,7 @@ AstType::bitset AstBitsetType::Lub(i::Map* map) {
     case ACCESS_CHECK_INFO_TYPE:
     case INTERCEPTOR_INFO_TYPE:
     case CALL_HANDLER_INFO_TYPE:
+    case PROMISE_CONTAINER_TYPE:
     case FUNCTION_TEMPLATE_INFO_TYPE:
     case OBJECT_TEMPLATE_INFO_TYPE:
     case SIGNATURE_INFO_TYPE:

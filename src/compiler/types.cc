@@ -214,6 +214,7 @@ Type::bitset BitsetType::Lub(i::Map* map) {
     case JS_MAP_TYPE:
     case JS_SET_ITERATOR_TYPE:
     case JS_MAP_ITERATOR_TYPE:
+    case JS_STRING_ITERATOR_TYPE:
     case JS_WEAK_MAP_TYPE:
     case JS_WEAK_SET_TYPE:
     case JS_PROMISE_TYPE:
@@ -264,6 +265,7 @@ Type::bitset BitsetType::Lub(i::Map* map) {
     case TYPE_FEEDBACK_INFO_TYPE:
     case ALIASED_ARGUMENTS_ENTRY_TYPE:
     case BOX_TYPE:
+    case PROMISE_CONTAINER_TYPE:
     case DEBUG_INFO_TYPE:
     case BREAK_POINT_INFO_TYPE:
     case CELL_TYPE:

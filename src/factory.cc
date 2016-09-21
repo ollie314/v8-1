@@ -92,7 +92,6 @@ Handle<Box> Factory::NewBox(Handle<Object> value) {
   return result;
 }
 
-
 Handle<PrototypeInfo> Factory::NewPrototypeInfo() {
   Handle<PrototypeInfo> result =
       Handle<PrototypeInfo>::cast(NewStruct(PROTOTYPE_INFO_TYPE));
@@ -600,6 +599,19 @@ MaybeHandle<String> Factory::NewConsString(Handle<String> left,
   return result;
 }
 
+Handle<String> Factory::NewSurrogatePairString(uint16_t lead, uint16_t trail) {
+  DCHECK_GE(lead, 0xD800);
+  DCHECK_LE(lead, 0xDBFF);
+  DCHECK_GE(trail, 0xDC00);
+  DCHECK_LE(trail, 0xDFFF);
+
+  Handle<SeqTwoByteString> str =
+      isolate()->factory()->NewRawTwoByteString(2).ToHandleChecked();
+  uc16* dest = str->GetChars();
+  dest[0] = lead;
+  dest[1] = trail;
+  return str;
+}
 
 Handle<String> Factory::NewProperSubString(Handle<String> str,
                                            int begin,
@@ -734,6 +746,17 @@ Handle<ExternalOneByteString> Factory::NewNativeSourceString(
   return external_string;
 }
 
+Handle<JSStringIterator> Factory::NewJSStringIterator(Handle<String> string) {
+  Handle<Map> map(isolate()->native_context()->string_iterator_map(),
+                  isolate());
+  Handle<String> flat_string = String::Flatten(string);
+  Handle<JSStringIterator> iterator =
+      Handle<JSStringIterator>::cast(NewJSObjectFromMap(map));
+  iterator->set_string(*flat_string);
+  iterator->set_index(0);
+
+  return iterator;
+}
 
 Handle<Symbol> Factory::NewSymbol() {
   CALL_HEAP_FUNCTION(
@@ -899,6 +922,20 @@ Handle<Struct> Factory::NewStruct(InstanceType type) {
       Struct);
 }
 
+Handle<PromiseContainer> Factory::NewPromiseContainer(
+    Handle<JSReceiver> thenable, Handle<JSFunction> then,
+    Handle<JSFunction> resolve, Handle<JSFunction> reject,
+    Handle<Object> before_debug_event, Handle<Object> after_debug_event) {
+  Handle<PromiseContainer> result =
+      Handle<PromiseContainer>::cast(NewStruct(PROMISE_CONTAINER_TYPE));
+  result->set_thenable(*thenable);
+  result->set_then(*then);
+  result->set_resolve(*resolve);
+  result->set_reject(*reject);
+  result->set_before_debug_event(*before_debug_event);
+  result->set_after_debug_event(*after_debug_event);
+  return result;
+}
 
 Handle<AliasedArgumentsEntry> Factory::NewAliasedArgumentsEntry(
     int aliased_context_slot) {
@@ -1712,12 +1749,21 @@ Handle<JSGeneratorObject> Factory::NewJSGeneratorObject(
       JSGeneratorObject);
 }
 
-Handle<Module> Factory::NewModule(Handle<SharedFunctionInfo> code,
-                                  int min_size) {
-  Handle<ObjectHashTable> exports = ObjectHashTable::New(isolate(), min_size);
+Handle<Module> Factory::NewModule(Handle<SharedFunctionInfo> code) {
+  Handle<ModuleInfo> module_info(code->scope_info()->ModuleDescriptorInfo(),
+                                 isolate());
+  Handle<ObjectHashTable> exports =
+      ObjectHashTable::New(isolate(), module_info->regular_exports()->length());
+  int requested_modules_length = module_info->module_requests()->length();
+  Handle<FixedArray> requested_modules =
+      requested_modules_length > 0 ? NewFixedArray(requested_modules_length)
+                                   : empty_fixed_array();
+
   Handle<Module> module = Handle<Module>::cast(NewStruct(MODULE_TYPE));
   module->set_code(*code);
   module->set_exports(*exports);
+  module->set_requested_modules(*requested_modules);
+  module->set_flags(0);
   return module;
 }
 
@@ -1742,6 +1788,15 @@ Handle<JSDataView> Factory::NewJSDataView() {
       JSDataView);
 }
 
+Handle<JSIteratorResult> Factory::NewJSIteratorResult(Handle<Object> value,
+                                                      bool done) {
+  Handle<Map> map(isolate()->native_context()->iterator_result_map());
+  Handle<JSIteratorResult> js_iter_result =
+      Handle<JSIteratorResult>::cast(NewJSObjectFromMap(map));
+  js_iter_result->set_value(*value);
+  js_iter_result->set_done(*ToBoolean(done));
+  return js_iter_result;
+}
 
 Handle<JSMap> Factory::NewJSMap() {
   Handle<Map> map(isolate()->native_context()->js_map_map());

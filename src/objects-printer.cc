@@ -750,6 +750,16 @@ void TypeFeedbackVector::TypeFeedbackVectorPrint(std::ostream& os) {  // NOLINT
         os << Code::ICState2String(nexus.StateFromFeedback());
         break;
       }
+      case FeedbackVectorSlotKind::INTERPRETER_BINARYOP_IC: {
+        BinaryOpICNexus nexus(this, slot);
+        os << Code::ICState2String(nexus.StateFromFeedback());
+        break;
+      }
+      case FeedbackVectorSlotKind::INTERPRETER_COMPARE_IC: {
+        CompareICNexus nexus(this, slot);
+        os << Code::ICState2String(nexus.StateFromFeedback());
+        break;
+      }
       case FeedbackVectorSlotKind::GENERAL:
         break;
       case FeedbackVectorSlotKind::INVALID:
@@ -1145,10 +1155,23 @@ void Box::BoxPrint(std::ostream& os) {  // NOLINT
   os << "\n";
 }
 
+void PromiseContainer::PromiseContainerPrint(std::ostream& os) {  // NOLINT
+  HeapObject::PrintHeader(os, "PromiseContainer");
+  os << "\n - thenable: " << Brief(thenable());
+  os << "\n - then: " << Brief(then());
+  os << "\n - resolve: " << Brief(resolve());
+  os << "\n - reject: " << Brief(reject());
+  os << "\n - before debug event: " << Brief(before_debug_event());
+  os << "\n - after debug event: " << Brief(after_debug_event());
+  os << "\n";
+}
+
 void Module::ModulePrint(std::ostream& os) {  // NOLINT
   HeapObject::PrintHeader(os, "Module");
   os << "\n - code: " << Brief(code());
   os << "\n - exports: " << Brief(exports());
+  os << "\n - requested_modules: " << Brief(requested_modules());
+  os << "\n - evaluated: " << evaluated();
   os << "\n";
 }
 

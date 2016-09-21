@@ -22,7 +22,7 @@
 #include "src/property-details.h"
 #include "src/unicode-decoder.h"
 #include "src/unicode.h"
-#include "src/zone.h"
+#include "src/zone/zone.h"
 
 #if V8_TARGET_ARCH_ARM
 #include "src/arm/constants-arm.h"  // NOLINT
@@ -57,6 +57,7 @@
 //         - JSCollection
 //           - JSSet
 //           - JSMap
+//         - JSStringIterator
 //         - JSSetIterator
 //         - JSMapIterator
 //         - JSWeakCollection
@@ -396,6 +397,7 @@ const int kStubMinorKeyBits = kSmiValueSize - kStubMajorKeyBits - 1;
   V(TYPE_FEEDBACK_INFO_TYPE)                                    \
   V(ALIASED_ARGUMENTS_ENTRY_TYPE)                               \
   V(BOX_TYPE)                                                   \
+  V(PROMISE_CONTAINER_TYPE)                                     \
   V(PROTOTYPE_INFO_TYPE)                                        \
   V(CONTEXT_EXTENSION_TYPE)                                     \
   V(MODULE_TYPE)                                                \
@@ -432,6 +434,7 @@ const int kStubMinorKeyBits = kSmiValueSize - kStubMajorKeyBits - 1;
   V(JS_PROMISE_TYPE)                                            \
   V(JS_REGEXP_TYPE)                                             \
   V(JS_ERROR_TYPE)                                              \
+  V(JS_STRING_ITERATOR_TYPE)                                    \
                                                                 \
   V(JS_BOUND_FUNCTION_TYPE)                                     \
   V(JS_FUNCTION_TYPE)                                           \
@@ -500,6 +503,7 @@ const int kStubMinorKeyBits = kSmiValueSize - kStubMajorKeyBits - 1;
 // manually.
 #define STRUCT_LIST(V)                                                       \
   V(BOX, Box, box)                                                           \
+  V(PROMISE_CONTAINER, PromiseContainer, promise_container)                  \
   V(ACCESSOR_INFO, AccessorInfo, accessor_info)                              \
   V(ACCESSOR_PAIR, AccessorPair, accessor_pair)                              \
   V(ACCESS_CHECK_INFO, AccessCheckInfo, access_check_info)                   \
@@ -681,6 +685,7 @@ enum InstanceType {
   TYPE_FEEDBACK_INFO_TYPE,
   ALIASED_ARGUMENTS_ENTRY_TYPE,
   BOX_TYPE,
+  PROMISE_CONTAINER_TYPE,
   DEBUG_INFO_TYPE,
   BREAK_POINT_INFO_TYPE,
   FIXED_ARRAY_TYPE,
@@ -725,6 +730,7 @@ enum InstanceType {
   JS_PROMISE_TYPE,
   JS_REGEXP_TYPE,
   JS_ERROR_TYPE,
+  JS_STRING_ITERATOR_TYPE,
   JS_BOUND_FUNCTION_TYPE,
   JS_FUNCTION_TYPE,  // LAST_JS_OBJECT_TYPE, LAST_JS_RECEIVER_TYPE
 
@@ -1006,6 +1012,7 @@ template <class C> inline bool Is(Object* obj);
   V(JSProxy)                     \
   V(JSError)                     \
   V(JSPromise)                   \
+  V(JSStringIterator)            \
   V(JSSet)                       \
   V(JSMap)                       \
   V(JSSetIterator)               \
@@ -2612,6 +2619,10 @@ class JSDataPropertyDescriptor: public JSObject {
 // as specified by ES6 section 25.1.1.3 The IteratorResult Interface
 class JSIteratorResult: public JSObject {
  public:
+  DECL_ACCESSORS(value, Object)
+
+  DECL_ACCESSORS(done, Object)
+
   // Offsets of object fields.
   static const int kValueOffset = JSObject::kHeaderSize;
   static const int kDoneOffset = kValueOffset + kPointerSize;
@@ -4575,6 +4586,8 @@ class ModuleInfo : public FixedArray {
   inline FixedArray* module_requests() const;
   inline FixedArray* special_exports() const;
   inline FixedArray* regular_exports() const;
+  inline FixedArray* special_imports() const;
+  inline FixedArray* regular_imports() const;
 
 #ifdef DEBUG
   inline bool Equals(ModuleInfo* other) const;
@@ -4586,6 +4599,8 @@ class ModuleInfo : public FixedArray {
     kModuleRequestsIndex,
     kSpecialExportsIndex,
     kRegularExportsIndex,
+    kSpecialImportsIndex,
+    kRegularImportsIndex,
     kLength
   };
 };
@@ -6640,6 +6655,34 @@ class Struct: public HeapObject {
   DECLARE_CAST(Struct)
 };
 
+// A container struct to hold state required for
+// PromiseResolveThenableJob. {before, after}_debug_event could
+// potentially be undefined if the debugger is turned off.
+class PromiseContainer : public Struct {
+ public:
+  DECL_ACCESSORS(thenable, JSReceiver)
+  DECL_ACCESSORS(then, JSFunction)
+  DECL_ACCESSORS(resolve, JSFunction)
+  DECL_ACCESSORS(reject, JSFunction)
+  DECL_ACCESSORS(before_debug_event, Object)
+  DECL_ACCESSORS(after_debug_event, Object)
+
+  static const int kThenableOffset = Struct::kHeaderSize;
+  static const int kThenOffset = kThenableOffset + kPointerSize;
+  static const int kResolveOffset = kThenOffset + kPointerSize;
+  static const int kRejectOffset = kResolveOffset + kPointerSize;
+  static const int kBeforeDebugEventOffset = kRejectOffset + kPointerSize;
+  static const int kAfterDebugEventOffset =
+      kBeforeDebugEventOffset + kPointerSize;
+  static const int kSize = kAfterDebugEventOffset + kPointerSize;
+
+  DECLARE_CAST(PromiseContainer)
+  DECLARE_PRINTER(PromiseContainer)
+  DECLARE_VERIFIER(PromiseContainer)
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(PromiseContainer);
+};
 
 // A simple one-element struct, useful where smis need to be boxed.
 class Box : public Struct {
@@ -7889,6 +7932,18 @@ class Module : public Struct {
 
   DECL_ACCESSORS(exports, ObjectHashTable)
 
+  // [[RequestedModules]]: Modules imported or re-exported by this module.
+  // Corresponds 1-to-1 to the module specifier strings in
+  // ModuleInfo::module_requests.
+  DECL_ACCESSORS(requested_modules, FixedArray)
+
+  // [[Evaluated]]: Whether this module has been evaluated. Modules
+  // are only evaluated a single time.
+  DECL_BOOLEAN_ACCESSORS(evaluated)
+
+  // Storage for [[Evaluated]]
+  DECL_INT_ACCESSORS(flags)
+
   static void CreateExport(Handle<Module> module, Handle<String> name);
   static void StoreExport(Handle<Module> module, Handle<String> name,
                           Handle<Object> value);
@@ -7896,9 +7951,13 @@ class Module : public Struct {
 
   static const int kCodeOffset = HeapObject::kHeaderSize;
   static const int kExportsOffset = kCodeOffset + kPointerSize;
-  static const int kSize = kExportsOffset + kPointerSize;
+  static const int kRequestedModulesOffset = kExportsOffset + kPointerSize;
+  static const int kFlagsOffset = kRequestedModulesOffset + kPointerSize;
+  static const int kSize = kFlagsOffset + kPointerSize;
 
  private:
+  enum { kEvaluatedBit };
+
   DISALLOW_IMPLICIT_CONSTRUCTORS(Module);
 };
 
@@ -10274,6 +10333,28 @@ class JSMap : public JSCollection {
   DISALLOW_IMPLICIT_CONSTRUCTORS(JSMap);
 };
 
+class JSStringIterator : public JSObject {
+ public:
+  // Dispatched behavior.
+  DECLARE_PRINTER(JSStringIterator)
+  DECLARE_VERIFIER(JSStringIterator)
+
+  DECLARE_CAST(JSStringIterator)
+
+  // [string]: the [[IteratedString]] internal field.
+  DECL_ACCESSORS(string, String)
+
+  // [index]: The [[StringIteratorNextIndex]] internal field.
+  inline int index() const;
+  inline void set_index(int value);
+
+  static const int kStringOffset = JSObject::kHeaderSize;
+  static const int kNextIndexOffset = kStringOffset + kPointerSize;
+  static const int kSize = kNextIndexOffset + kPointerSize;
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(JSStringIterator);
+};
 
 // OrderedHashTableIterator is an iterator that iterates over the keys and
 // values of an OrderedHashTable.

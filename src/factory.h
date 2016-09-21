@@ -60,6 +60,12 @@ class Factory final {
   // Create a new boxed value.
   Handle<Box> NewBox(Handle<Object> value);
 
+  // Create a new PromiseContainer struct.
+  Handle<PromiseContainer> NewPromiseContainer(
+      Handle<JSReceiver> thenable, Handle<JSFunction> then,
+      Handle<JSFunction> resolve, Handle<JSFunction> reject,
+      Handle<Object> before_debug_event, Handle<Object> after_debug_event);
+
   // Create a new PrototypeInfo struct.
   Handle<PrototypeInfo> NewPrototypeInfo();
 
@@ -174,6 +180,8 @@ class Factory final {
   MUST_USE_RESULT MaybeHandle<String> NewStringFromTwoByte(
       const ZoneVector<uc16>* str, PretenureFlag pretenure = NOT_TENURED);
 
+  Handle<JSStringIterator> NewJSStringIterator(Handle<String> string);
+
   // Allocates an internalized string in old space based on the character
   // stream.
   Handle<String> NewInternalizedStringFromUtf8(Vector<const char> str,
@@ -214,6 +222,10 @@ class Factory final {
   // Create a new cons string object which consists of a pair of strings.
   MUST_USE_RESULT MaybeHandle<String> NewConsString(Handle<String> left,
                                                     Handle<String> right);
+
+  // Create or lookup a single characters tring made up of a utf16 surrogate
+  // pair.
+  Handle<String> NewSurrogatePairString(uint16_t lead, uint16_t trail);
 
   // Create a new string object which holds a proper substring of a string.
   Handle<String> NewProperSubString(Handle<String> str,
@@ -475,7 +487,7 @@ class Factory final {
 
   Handle<JSGeneratorObject> NewJSGeneratorObject(Handle<JSFunction> function);
 
-  Handle<Module> NewModule(Handle<SharedFunctionInfo> code, int min_size);
+  Handle<Module> NewModule(Handle<SharedFunctionInfo> code);
 
   Handle<JSArrayBuffer> NewJSArrayBuffer(
       SharedFlag shared = SharedFlag::kNotShared,
@@ -501,6 +513,8 @@ class Factory final {
   Handle<JSDataView> NewJSDataView();
   Handle<JSDataView> NewJSDataView(Handle<JSArrayBuffer> buffer,
                                    size_t byte_offset, size_t byte_length);
+
+  Handle<JSIteratorResult> NewJSIteratorResult(Handle<Object> value, bool done);
 
   Handle<JSMap> NewJSMap();
   Handle<JSSet> NewJSSet();

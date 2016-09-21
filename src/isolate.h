@@ -23,12 +23,11 @@
 #include "src/messages.h"
 #include "src/regexp/regexp-stack.h"
 #include "src/runtime/runtime.h"
-#include "src/zone.h"
+#include "src/zone/zone.h"
 
 namespace v8 {
 
 namespace base {
-class AccountingAllocator;
 class RandomNumberGenerator;
 }
 
@@ -94,14 +93,6 @@ class Simulator;
 namespace interpreter {
 class Interpreter;
 }
-
-// Static indirection table for handles to constants.  If a frame
-// element represents a constant, the data contains an index into
-// this table of handles to the actual constants.
-// Static indirection table for handles to constants.  If a Result
-// represents a constant, the data contains an index into this table
-// of handles to the actual constants.
-typedef ZoneList<Handle<Object> > ZoneObjectList;
 
 #define RETURN_FAILURE_IF_SCHEDULED_EXCEPTION(isolate)    \
   do {                                                    \
@@ -1115,6 +1106,9 @@ class Isolate {
   void ReportPromiseReject(Handle<JSObject> promise, Handle<Object> value,
                            v8::PromiseRejectEvent event);
 
+  void PromiseResolveThenableJob(Handle<PromiseContainer> container,
+                                 MaybeHandle<Object>* result,
+                                 MaybeHandle<Object>* maybe_exception);
   void EnqueueMicrotask(Handle<Object> microtask);
   void RunMicrotasks();
   bool IsRunningMicrotasks() const { return is_running_microtasks_; }
@@ -1160,7 +1154,7 @@ class Isolate {
 
   interpreter::Interpreter* interpreter() const { return interpreter_; }
 
-  base::AccountingAllocator* allocator() { return allocator_; }
+  AccountingAllocator* allocator() { return allocator_; }
 
   bool IsInAnyContext(Object* object, uint32_t index);
 
@@ -1336,7 +1330,7 @@ class Isolate {
   HandleScopeData handle_scope_data_;
   HandleScopeImplementer* handle_scope_implementer_;
   UnicodeCache* unicode_cache_;
-  base::AccountingAllocator* allocator_;
+  AccountingAllocator* allocator_;
   Zone* runtime_zone_;
   InnerPointerToCodeCache* inner_pointer_to_code_cache_;
   GlobalHandles* global_handles_;

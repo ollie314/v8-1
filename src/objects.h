@@ -4582,7 +4582,8 @@ class ModuleInfoEntry : public FixedArray {
 class ModuleInfo : public FixedArray {
  public:
   DECLARE_CAST(ModuleInfo)
-  static Handle<ModuleInfo> New(Isolate* isolate, ModuleDescriptor* descr);
+  static Handle<ModuleInfo> New(Isolate* isolate, Zone* zone,
+                                ModuleDescriptor* descr);
   inline FixedArray* module_requests() const;
   inline FixedArray* special_exports() const;
   inline FixedArray* regular_exports() const;
@@ -6661,7 +6662,7 @@ class Struct: public HeapObject {
 class PromiseContainer : public Struct {
  public:
   DECL_ACCESSORS(thenable, JSReceiver)
-  DECL_ACCESSORS(then, JSFunction)
+  DECL_ACCESSORS(then, JSReceiver)
   DECL_ACCESSORS(resolve, JSFunction)
   DECL_ACCESSORS(reject, JSFunction)
   DECL_ACCESSORS(before_debug_event, Object)
@@ -7944,7 +7945,7 @@ class Module : public Struct {
   // Storage for [[Evaluated]]
   DECL_INT_ACCESSORS(flags)
 
-  static void CreateExport(Handle<Module> module, Handle<String> name);
+  static void CreateExport(Handle<Module> module, Handle<FixedArray> names);
   static void StoreExport(Handle<Module> module, Handle<String> name,
                           Handle<Object> value);
   static Handle<Object> LoadExport(Handle<Module> module, Handle<String> name);

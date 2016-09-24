@@ -4587,7 +4587,7 @@ class ModuleInfo : public FixedArray {
   inline FixedArray* module_requests() const;
   inline FixedArray* special_exports() const;
   inline FixedArray* regular_exports() const;
-  inline FixedArray* special_imports() const;
+  inline FixedArray* namespace_imports() const;
   inline FixedArray* regular_imports() const;
 
 #ifdef DEBUG
@@ -4600,7 +4600,7 @@ class ModuleInfo : public FixedArray {
     kModuleRequestsIndex,
     kSpecialExportsIndex,
     kRegularExportsIndex,
-    kSpecialImportsIndex,
+    kNamespaceImportsIndex,
     kRegularImportsIndex,
     kLength
   };
@@ -7945,19 +7945,53 @@ class Module : public Struct {
   // Storage for [[Evaluated]]
   DECL_INT_ACCESSORS(flags)
 
+  // Embedder-specified data
+  DECL_ACCESSORS(embedder_data, Object)
+
+  // Get the ModuleInfo associated with the code.
+  inline ModuleInfo* info() const;
+
   static void CreateExport(Handle<Module> module, Handle<FixedArray> names);
+  static Handle<Object> LoadExport(Handle<Module> module, Handle<String> name);
   static void StoreExport(Handle<Module> module, Handle<String> name,
                           Handle<Object> value);
-  static Handle<Object> LoadExport(Handle<Module> module, Handle<String> name);
+
+  static void CreateIndirectExport(Handle<Module> module, Handle<String> name,
+                                   Handle<ModuleInfoEntry> entry);
+
+  static Handle<Object> LoadImport(Handle<Module> module, Handle<String> name,
+                                   int module_request);
+
+  // The [must_resolve] argument indicates whether or not an exception should be
+  // thrown if the module does not provide an export named [name].
+  //
+  // If [must_resolve] is true, a null result indicates an exception. If
+  // [must_resolve] is false, a null result does not necessarily indicate an
+  // exception, but there may be one pending.
+  //
+  // Currently, an exception is always thrown in the case of a cycle and in the
+  // case of conflicting star exports.  TODO(neis): Make that spec-compliant.
+  static MUST_USE_RESULT MaybeHandle<Cell> ResolveExport(Handle<Module> module,
+                                                         Handle<String> name,
+                                                         bool must_resolve);
+  static MUST_USE_RESULT MaybeHandle<Cell> ResolveImport(Handle<Module> module,
+                                                         Handle<String> name,
+                                                         int module_request,
+                                                         bool must_resolve);
 
   static const int kCodeOffset = HeapObject::kHeaderSize;
   static const int kExportsOffset = kCodeOffset + kPointerSize;
   static const int kRequestedModulesOffset = kExportsOffset + kPointerSize;
   static const int kFlagsOffset = kRequestedModulesOffset + kPointerSize;
-  static const int kSize = kFlagsOffset + kPointerSize;
+  static const int kEmbedderDataOffset = kFlagsOffset + kPointerSize;
+  static const int kSize = kEmbedderDataOffset + kPointerSize;
 
  private:
   enum { kEvaluatedBit };
+
+  // Helper for ResolveExport.
+  static MUST_USE_RESULT MaybeHandle<Cell> ResolveExportUsingStarExports(
+      Handle<Module> module, Handle<String> name, bool must_resolve);
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(Module);
 };

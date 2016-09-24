@@ -1208,7 +1208,7 @@ void Parser::ParseImportDeclaration(bool* ok) {
   if (tok == Token::STRING) {
     const AstRawString* module_specifier = ParseModuleSpecifier(CHECK_OK_VOID);
     ExpectSemicolon(CHECK_OK_VOID);
-    module()->AddEmptyImport(module_specifier, scanner()->location(), zone());
+    module()->AddEmptyImport(module_specifier);
     return;
   }
 
@@ -1276,7 +1276,7 @@ void Parser::ParseImportDeclaration(bool* ok) {
 
   if (named_imports != nullptr) {
     if (named_imports->length() == 0) {
-      module()->AddEmptyImport(module_specifier, scanner()->location(), zone());
+      module()->AddEmptyImport(module_specifier);
     } else {
       for (int i = 0; i < named_imports->length(); ++i) {
         const NamedImport* import = named_imports->at(i);
@@ -1415,8 +1415,7 @@ Statement* Parser::ParseExportDeclaration(bool* ok) {
                               export_locations[i], zone());
         }
       } else if (length == 0) {
-        module()->AddEmptyImport(module_specifier, scanner()->location(),
-                                 zone());
+        module()->AddEmptyImport(module_specifier);
       } else {
         for (int i = 0; i < length; ++i) {
           module()->AddExport(original_names[i], export_names[i],
@@ -2610,7 +2609,9 @@ void Parser::ParseArrowFunctionFormalParameterList(
   for (int i = 0; i < parameters->Arity(); ++i) {
     auto parameter = parameters->at(i);
     DeclareFormalParameter(parameters->scope, parameter);
-    if (!duplicate_loc->IsValid()) {
+    if (!this->classifier()
+             ->is_valid_formal_parameter_list_without_duplicates() &&
+        !duplicate_loc->IsValid()) {
       *duplicate_loc =
           this->classifier()->duplicate_formal_parameter_error().location;
     }
@@ -2842,10 +2843,6 @@ FunctionLiteral* Parser::ParseFunctionLiteral(
 
     // Parsing the body may change the language mode in our scope.
     language_mode = scope->language_mode();
-    scope->DeclareArguments(ast_value_factory());
-    if (main_scope != scope) {
-      main_scope->DeclareArguments(ast_value_factory());
-    }
 
     // Validate name and parameter names. We can do this only after parsing the
     // function, since the function can declare itself strict.
@@ -3135,24 +3132,22 @@ Block* Parser::BuildParameterInitializationBlock(
 }
 
 Block* Parser::BuildRejectPromiseOnException(Block* inner_block, bool* ok) {
-  // .promise = %CreatePromise();
-  // .debug_is_active = %_DebugIsActive();
-  // if (.debug_is_active) %DebugPushPromise(.promise);
+  // .promise = %AsyncFunctionPromiseCreate();
   // try {
   //   <inner_block>
   // } catch (.catch) {
   //   %RejectPromise(.promise, .catch);
   //   return .promise;
   // } finally {
-  //   if (.debug_is_active) %DebugPopPromise();
+  //   %AsyncFunctionPromiseRelease(.promise);
   // }
-  Block* result = factory()->NewBlock(nullptr, 4, true, kNoSourcePosition);
+  Block* result = factory()->NewBlock(nullptr, 2, true, kNoSourcePosition);
 
-  // .promise = %CreatePromise();
+  // .promise = %AsyncFunctionPromiseCreate();
   Statement* set_promise;
   {
     Expression* create_promise = factory()->NewCallRuntime(
-        Context::PROMISE_CREATE_INDEX,
+        Context::ASYNC_FUNCTION_PROMISE_CREATE_INDEX,
         new (zone()) ZoneList<Expression*>(0, zone()), kNoSourcePosition);
     Assignment* assign_promise = factory()->NewAssignment(
         Token::INIT, factory()->NewVariableProxy(PromiseVariable()),
@@ -3161,37 +3156,6 @@ Block* Parser::BuildRejectPromiseOnException(Block* inner_block, bool* ok) {
         factory()->NewExpressionStatement(assign_promise, kNoSourcePosition);
   }
   result->statements()->Add(set_promise, zone());
-
-  Variable* debug_is_active =
-      scope()->NewTemporary(ast_value_factory()->empty_string());
-  // .debug_is_active = %_DebugIsActive();
-  Statement* set_debug_is_active;
-  {
-    Expression* call_debug_is_active = factory()->NewCallRuntime(
-        Runtime::kInlineDebugIsActive,
-        new (zone()) ZoneList<Expression*>(0, zone()), kNoSourcePosition);
-    Assignment* assign_debug_is_active = factory()->NewAssignment(
-        Token::INIT, factory()->NewVariableProxy(debug_is_active),
-        call_debug_is_active, kNoSourcePosition);
-    set_debug_is_active = factory()->NewExpressionStatement(
-        assign_debug_is_active, kNoSourcePosition);
-  }
-  result->statements()->Add(set_debug_is_active, zone());
-
-  //   if (.debug_is_active) %DebugPushPromise(.promise);
-  Statement* conditionally_debug_push_promise;
-  {
-    ZoneList<Expression*>* args = new (zone()) ZoneList<Expression*>(1, zone());
-    args->Add(factory()->NewVariableProxy(PromiseVariable()), zone());
-    Expression* call_push_promise = factory()->NewCallRuntime(
-        Runtime::kDebugPushPromise, args, kNoSourcePosition);
-    Statement* debug_push_promise =
-        factory()->NewExpressionStatement(call_push_promise, kNoSourcePosition);
-    conditionally_debug_push_promise = factory()->NewIfStatement(
-        factory()->NewVariableProxy(debug_is_active), debug_push_promise,
-        factory()->NewEmptyStatement(kNoSourcePosition), kNoSourcePosition);
-  }
-  result->statements()->Add(conditionally_debug_push_promise, zone());
 
   // catch (.catch) { return %RejectPromise(.promise, .catch), .promise }
   Scope* catch_scope = NewScope(CATCH_SCOPE);
@@ -3217,19 +3181,17 @@ Block* Parser::BuildRejectPromiseOnException(Block* inner_block, bool* ok) {
       factory()->NewBlock(nullptr, 1, true, kNoSourcePosition);
   outer_try_block->statements()->Add(try_catch_statement, zone());
 
-  // finally { if (.debug_is_active) %DebugPopPromise(); }
+  // finally { %AsyncFunctionPromiseRelease(.promise) }
   Block* finally_block =
       factory()->NewBlock(nullptr, 1, true, kNoSourcePosition);
   {
-    ZoneList<Expression*>* args = new (zone()) ZoneList<Expression*>(0, zone());
-    Expression* call_pop_promise = factory()->NewCallRuntime(
-        Runtime::kDebugPopPromise, args, kNoSourcePosition);
-    Statement* debug_pop_promise =
-        factory()->NewExpressionStatement(call_pop_promise, kNoSourcePosition);
-    Statement* conditionally_debug_pop_promise = factory()->NewIfStatement(
-        factory()->NewVariableProxy(debug_is_active), debug_pop_promise,
-        factory()->NewEmptyStatement(kNoSourcePosition), kNoSourcePosition);
-    finally_block->statements()->Add(conditionally_debug_pop_promise, zone());
+    ZoneList<Expression*>* args = new (zone()) ZoneList<Expression*>(1, zone());
+    args->Add(factory()->NewVariableProxy(PromiseVariable()), zone());
+    Expression* call_promise_release = factory()->NewCallRuntime(
+        Context::ASYNC_FUNCTION_PROMISE_RELEASE_INDEX, args, kNoSourcePosition);
+    Statement* promise_release = factory()->NewExpressionStatement(
+        call_promise_release, kNoSourcePosition);
+    finally_block->statements()->Add(promise_release, zone());
   }
 
   Statement* try_finally_statement = factory()->NewTryFinallyStatement(
@@ -3432,6 +3394,13 @@ ZoneList<Statement*>* Parser::ParseEagerFunctionBody(
     if (is_sloppy(function_scope->language_mode())) {
       InsertSloppyBlockFunctionVarBindings(function_scope);
     }
+  }
+
+  if (!IsArrowFunction(kind)) {
+    // Declare arguments after parsing the function since lexical 'arguments'
+    // masks the arguments object. Declare arguments before declaring the
+    // function var since the arguments object masks 'function arguments'.
+    function_scope->DeclareArguments(ast_value_factory());
   }
 
   if (function_type == FunctionLiteral::kNamedExpression) {

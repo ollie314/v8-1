@@ -420,6 +420,7 @@ namespace internal {
   F(IsAccessCheckNeeded, 1, 1)                       \
   F(CreateDataProperty, 3, 1)                        \
   F(LoadModuleExport, 1, 1)                          \
+  F(LoadModuleImport, 2, 1)                          \
   F(StoreModuleExport, 2, 1)
 
 #define FOR_EACH_INTRINSIC_OPERATORS(F) \
@@ -936,18 +937,15 @@ namespace internal {
   F(KeyedLoadIC_Miss, 4, 1)                  \
   F(KeyedLoadIC_MissFromStubFailure, 4, 1)   \
   F(KeyedStoreIC_Miss, 5, 1)                 \
-  F(KeyedStoreIC_MissFromStubFailure, 5, 1)  \
   F(KeyedStoreIC_Slow, 5, 1)                 \
   F(LoadElementWithInterceptor, 2, 1)        \
   F(LoadGlobalIC_Miss, 2, 1)                 \
   F(LoadGlobalIC_Slow, 2, 1)                 \
   F(LoadIC_Miss, 4, 1)                       \
-  F(LoadIC_MissFromStubFailure, 4, 1)        \
   F(LoadPropertyWithInterceptor, 3, 1)       \
   F(LoadPropertyWithInterceptorOnly, 3, 1)   \
   F(StoreCallbackProperty, 6, 1)             \
   F(StoreIC_Miss, 5, 1)                      \
-  F(StoreIC_MissFromStubFailure, 5, 1)       \
   F(StorePropertyWithInterceptor, 3, 1)      \
   F(ToBooleanIC_Miss, 1, 1)                  \
   F(Unreachable, 0, 1)

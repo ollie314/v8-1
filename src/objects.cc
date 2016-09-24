@@ -19580,6 +19580,15 @@ bool JSReceiver::HasProxyInPrototype(Isolate* isolate) {
   return false;
 }
 
+void Module::CreateIndirectExport(Handle<Module> module, Handle<String> name,
+                                  Handle<ModuleInfoEntry> entry) {
+  Isolate* isolate = module->GetIsolate();
+  Handle<ObjectHashTable> exports(module->exports(), isolate);
+  DCHECK(exports->Lookup(name)->IsTheHole(isolate));
+  exports = ObjectHashTable::Put(exports, name, entry);
+  module->set_exports(*exports);
+}
+
 void Module::CreateExport(Handle<Module> module, Handle<FixedArray> names) {
   DCHECK_LT(0, names->length());
   Isolate* isolate = module->GetIsolate();
@@ -19596,16 +19605,126 @@ void Module::CreateExport(Handle<Module> module, Handle<FixedArray> names) {
 
 void Module::StoreExport(Handle<Module> module, Handle<String> name,
                          Handle<Object> value) {
-  Handle<ObjectHashTable> exports(module->exports());
-  Handle<Cell> cell(Cell::cast(exports->Lookup(name)));
+  Handle<Cell> cell(Cell::cast(module->exports()->Lookup(name)));
   cell->set_value(*value);
 }
 
 Handle<Object> Module::LoadExport(Handle<Module> module, Handle<String> name) {
   Isolate* isolate = module->GetIsolate();
-  Handle<ObjectHashTable> exports(module->exports(), isolate);
-  Handle<Cell> cell(Cell::cast(exports->Lookup(name)));
-  return handle(cell->value(), isolate);
+  Handle<Object> object(module->exports()->Lookup(name), isolate);
+
+  // TODO(neis): Namespace imports are not yet implemented.  Trying to use this
+  // feature may crash here.
+  if (!object->IsCell()) UNIMPLEMENTED();
+
+  return handle(Handle<Cell>::cast(object)->value(), isolate);
+}
+
+Handle<Object> Module::LoadImport(Handle<Module> module, Handle<String> name,
+                                  int module_request) {
+  Isolate* isolate = module->GetIsolate();
+  Handle<Module> requested_module(
+      Module::cast(module->requested_modules()->get(module_request)), isolate);
+  return Module::LoadExport(requested_module, name);
+}
+
+MaybeHandle<Cell> Module::ResolveImport(Handle<Module> module,
+                                        Handle<String> name, int module_request,
+                                        bool must_resolve) {
+  Isolate* isolate = module->GetIsolate();
+  Handle<Module> requested_module(
+      Module::cast(module->requested_modules()->get(module_request)), isolate);
+  return Module::ResolveExport(requested_module, name, must_resolve);
+}
+
+MaybeHandle<Cell> Module::ResolveExport(Handle<Module> module,
+                                        Handle<String> name,
+                                        bool must_resolve) {
+  // TODO(neis): Detect cycles.
+
+  Isolate* isolate = module->GetIsolate();
+  Handle<Object> object(module->exports()->Lookup(name), isolate);
+
+  if (object->IsCell()) {
+    // Already resolved (e.g. because it's a local export).
+    return Handle<Cell>::cast(object);
+  }
+
+  if (object->IsModuleInfoEntry()) {
+    // Not yet resolved indirect export.
+    Handle<ModuleInfoEntry> entry = Handle<ModuleInfoEntry>::cast(object);
+    int module_request = Smi::cast(entry->module_request())->value();
+    Handle<String> import_name(String::cast(entry->import_name()), isolate);
+
+    Handle<Cell> cell;
+    if (!ResolveImport(module, import_name, module_request, true)
+             .ToHandle(&cell)) {
+      DCHECK(isolate->has_pending_exception());
+      return MaybeHandle<Cell>();
+    }
+
+    // The export table may have changed but the entry in question should be
+    // unchanged.
+    Handle<ObjectHashTable> exports(module->exports(), isolate);
+    DCHECK(exports->Lookup(name)->IsModuleInfoEntry());
+
+    exports = ObjectHashTable::Put(exports, name, cell);
+    module->set_exports(*exports);
+    return cell;
+  }
+
+  DCHECK(object->IsTheHole(isolate));
+  return Module::ResolveExportUsingStarExports(module, name, must_resolve);
+}
+
+MaybeHandle<Cell> Module::ResolveExportUsingStarExports(Handle<Module> module,
+                                                        Handle<String> name,
+                                                        bool must_resolve) {
+  Isolate* isolate = module->GetIsolate();
+  if (!name->Equals(isolate->heap()->default_string())) {
+    // Go through all star exports looking for the given name.  If multiple star
+    // exports provide the name, make sure they all map it to the same cell.
+    Handle<Cell> unique_cell;
+    Handle<FixedArray> special_exports(module->info()->special_exports(),
+                                       isolate);
+    for (int i = 0, n = special_exports->length(); i < n; ++i) {
+      i::Handle<i::ModuleInfoEntry> entry(
+          i::ModuleInfoEntry::cast(special_exports->get(i)), isolate);
+      if (!entry->export_name()->IsUndefined(isolate)) {
+        continue;  // Indirect export.
+      }
+      int module_request = Smi::cast(entry->module_request())->value();
+
+      Handle<Cell> cell;
+      if (ResolveImport(module, name, module_request, false).ToHandle(&cell)) {
+        if (unique_cell.is_null()) unique_cell = cell;
+        if (*unique_cell != *cell) {
+          THROW_NEW_ERROR(
+              isolate, NewSyntaxError(MessageTemplate::kAmbiguousExport, name),
+              Cell);
+        }
+      } else if (isolate->has_pending_exception()) {
+        return MaybeHandle<Cell>();
+      }
+    }
+
+    if (!unique_cell.is_null()) {
+      // Found a unique star export for this name.
+      Handle<ObjectHashTable> exports(module->exports(), isolate);
+      DCHECK(exports->Lookup(name)->IsTheHole(isolate));
+      exports = ObjectHashTable::Put(exports, name, unique_cell);
+      module->set_exports(*exports);
+      return unique_cell;
+    }
+  }
+
+  // Unresolvable.
+  if (must_resolve) {
+    THROW_NEW_ERROR(isolate,
+                    NewSyntaxError(MessageTemplate::kUnresolvableExport, name),
+                    Cell);
+  }
+  return MaybeHandle<Cell>();
 }
 
 }  // namespace internal

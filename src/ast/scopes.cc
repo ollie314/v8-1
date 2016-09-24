@@ -36,8 +36,9 @@ Variable* VariableMap::Declare(Zone* zone, Scope* scope,
   // AstRawStrings are unambiguous, i.e., the same string is always represented
   // by the same AstRawString*.
   // FIXME(marja): fix the type of Lookup.
-  Entry* p = ZoneHashMap::LookupOrInsert(const_cast<AstRawString*>(name),
-                                         name->hash());
+  Entry* p =
+      ZoneHashMap::LookupOrInsert(const_cast<AstRawString*>(name), name->hash(),
+                                  ZoneAllocationPolicy(zone));
   if (added) *added = p->value == nullptr;
   if (p->value == nullptr) {
     // The variable has not been declared yet -> insert it.
@@ -53,10 +54,11 @@ void VariableMap::Remove(Variable* var) {
   ZoneHashMap::Remove(const_cast<AstRawString*>(name), name->hash());
 }
 
-void VariableMap::Add(Variable* var) {
+void VariableMap::Add(Zone* zone, Variable* var) {
   const AstRawString* name = var->raw_name();
-  Entry* p = ZoneHashMap::LookupOrInsert(const_cast<AstRawString*>(name),
-                                         name->hash());
+  Entry* p =
+      ZoneHashMap::LookupOrInsert(const_cast<AstRawString*>(name), name->hash(),
+                                  ZoneAllocationPolicy(zone));
   DCHECK_NULL(p->value);
   DCHECK_EQ(name, p->key);
   p->value = var;
@@ -75,12 +77,13 @@ Variable* VariableMap::Lookup(const AstRawString* name) {
 SloppyBlockFunctionMap::SloppyBlockFunctionMap(Zone* zone)
     : ZoneHashMap(ZoneHashMap::PointersMatch, 8, ZoneAllocationPolicy(zone)) {}
 
-void SloppyBlockFunctionMap::Declare(const AstRawString* name,
+void SloppyBlockFunctionMap::Declare(Zone* zone, const AstRawString* name,
                                      SloppyBlockFunctionStatement* stmt) {
   // AstRawStrings are unambiguous, i.e., the same string is always represented
   // by the same AstRawString*.
-  Entry* p = ZoneHashMap::LookupOrInsert(const_cast<AstRawString*>(name),
-                                         name->hash());
+  Entry* p =
+      ZoneHashMap::LookupOrInsert(const_cast<AstRawString*>(name), name->hash(),
+                                  ZoneAllocationPolicy(zone));
   stmt->set_next(static_cast<SloppyBlockFunctionStatement*>(p->value));
   p->value = stmt;
 }
@@ -182,12 +185,13 @@ ModuleScope::ModuleScope(Isolate* isolate, Handle<ScopeInfo> scope_info,
   module_descriptor_->DeserializeRegularExports(isolate, avfactory,
                                                 regular_exports);
 
-  // Deserialize special imports.
-  Handle<FixedArray> special_imports(module_info->special_imports(), isolate);
-  for (int i = 0, n = special_imports->length(); i < n; ++i) {
+  // Deserialize namespace imports.
+  Handle<FixedArray> namespace_imports(module_info->namespace_imports(),
+                                       isolate);
+  for (int i = 0, n = namespace_imports->length(); i < n; ++i) {
     Handle<ModuleInfoEntry> serialized_entry(
-        ModuleInfoEntry::cast(special_imports->get(i)), isolate);
-    module_descriptor_->AddSpecialImport(
+        ModuleInfoEntry::cast(namespace_imports->get(i)), isolate);
+    module_descriptor_->AddNamespaceImport(
         ModuleDescriptor::Entry::Deserialize(isolate, avfactory,
                                              serialized_entry),
         avfactory->zone());
@@ -583,21 +587,17 @@ void DeclarationScope::DeclareArguments(AstValueFactory* ast_value_factory) {
   DCHECK(is_function_scope());
   DCHECK(!is_arrow_scope());
 
-  // Check if there's lexically declared variable named arguments to avoid
-  // redeclaration. See ES#sec-functiondeclarationinstantiation, step 20.
-  Variable* arg_variable = LookupLocal(ast_value_factory->arguments_string());
-  if (arg_variable != nullptr && IsLexicalVariableMode(arg_variable->mode())) {
-    return;
-  }
-
-  // Declare 'arguments' variable which exists in all non arrow functions.
-  // Note that it might never be accessed, in which case it won't be
-  // allocated during variable allocation.
-  if (arg_variable == nullptr) {
+  arguments_ = LookupLocal(ast_value_factory->arguments_string());
+  if (arguments_ == nullptr) {
+    // Declare 'arguments' variable which exists in all non arrow functions.
+    // Note that it might never be accessed, in which case it won't be
+    // allocated during variable allocation.
     arguments_ = Declare(zone(), this, ast_value_factory->arguments_string(),
-                         VAR, ARGUMENTS_VARIABLE, kCreatedInitialized);
-  } else {
-    arguments_ = arg_variable;
+                         VAR, NORMAL_VARIABLE, kCreatedInitialized);
+  } else if (IsLexicalVariableMode(arguments_->mode())) {
+    // Check if there's lexically declared variable named arguments to avoid
+    // redeclaration. See ES#sec-functiondeclarationinstantiation, step 20.
+    arguments_ = nullptr;
   }
 }
 
@@ -628,7 +628,7 @@ Variable* DeclarationScope::DeclareFunctionVar(const AstRawString* name) {
   if (calls_sloppy_eval()) {
     NonLocal(name, DYNAMIC);
   } else {
-    variables_.Add(function_);
+    variables_.Add(zone(), function_);
   }
   return function_;
 }
@@ -723,7 +723,7 @@ void Scope::Snapshot::Reparent(DeclarationScope* new_parent) const {
     new_parent->AddLocal(local);
     if (local->mode() == VAR) {
       outer_closure->variables_.Remove(local);
-      new_parent->variables_.Add(local);
+      new_parent->variables_.Add(new_parent->zone(), local);
     }
   }
   outer_closure->locals_.Rewind(top_local_);
@@ -1215,7 +1215,6 @@ void DeclarationScope::AnalyzePartially(DeclarationScope* migrate_to,
   DCHECK_EQ(outer_scope_->zone(), migrate_to->zone());
   DCHECK_EQ(NeedsHomeObject(), migrate_to->NeedsHomeObject());
   DCHECK_EQ(asm_function_, migrate_to->asm_function_);
-  DCHECK_EQ(arguments() != nullptr, migrate_to->arguments() != nullptr);
 }
 
 #ifdef DEBUG

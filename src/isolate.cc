@@ -1751,13 +1751,16 @@ Handle<Object> Isolate::GetPromiseOnStackOnThrow() {
         }
         return retval;
       case HandlerTable::PROMISE:
-        return promise_on_stack->promise();
+        return promise_on_stack
+                   ? Handle<Object>::cast(promise_on_stack->promise())
+                   : undefined;
       case HandlerTable::ASYNC_AWAIT: {
         // If in the initial portion of async/await, continue the loop to pop up
         // successive async/await stack frames until an asynchronous one with
         // dependents is found, or a non-async stack frame is encountered, in
         // order to handle the synchronous async/await catch prediction case:
         // assume that async function calls are awaited.
+        if (!promise_on_stack) return retval;
         retval = promise_on_stack->promise();
         if (PromiseHasUserDefinedRejectHandler(retval)) {
           return retval;
@@ -1997,8 +2000,6 @@ Isolate::Isolate(bool enable_serializer)
       deferred_handles_head_(NULL),
       optimizing_compile_dispatcher_(NULL),
       stress_deopt_count_(0),
-      virtual_handler_register_(NULL),
-      virtual_slot_register_(NULL),
       next_optimization_id_(0),
       js_calls_from_api_counter_(0),
 #if TRACE_MAPS
@@ -3254,6 +3255,21 @@ bool StackLimitCheck::JsHasOverflowed(uintptr_t gap) const {
   if (jssp - gap < stack_guard->real_jslimit()) return true;
 #endif  // USE_SIMULATOR
   return GetCurrentStackPosition() - gap < stack_guard->real_climit();
+}
+
+SaveContext::SaveContext(Isolate* isolate)
+    : isolate_(isolate), prev_(isolate->save_context()) {
+  if (isolate->context() != NULL) {
+    context_ = Handle<Context>(isolate->context());
+  }
+  isolate->set_save_context(this);
+
+  c_entry_fp_ = isolate->c_entry_fp(isolate->thread_local_top());
+}
+
+SaveContext::~SaveContext() {
+  isolate_->set_context(context_.is_null() ? NULL : *context_);
+  isolate_->set_save_context(prev_);
 }
 
 #ifdef DEBUG

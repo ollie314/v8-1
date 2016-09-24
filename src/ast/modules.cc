@@ -23,19 +23,14 @@ void ModuleDescriptor::AddImport(
 void ModuleDescriptor::AddStarImport(
     const AstRawString* local_name, const AstRawString* module_request,
     Scanner::Location loc, Zone* zone) {
-  DCHECK_NOT_NULL(local_name);
   Entry* entry = new (zone) Entry(loc);
   entry->local_name = local_name;
   entry->module_request = AddModuleRequest(module_request);
-  AddSpecialImport(entry, zone);
+  AddNamespaceImport(entry, zone);
 }
 
-
-void ModuleDescriptor::AddEmptyImport(
-    const AstRawString* module_request, Scanner::Location loc, Zone* zone) {
-  Entry* entry = new (zone) Entry(loc);
-  entry->module_request = AddModuleRequest(module_request);
-  AddSpecialImport(entry, zone);
+void ModuleDescriptor::AddEmptyImport(const AstRawString* module_request) {
+  AddModuleRequest(module_request);
 }
 
 
@@ -190,7 +185,7 @@ void ModuleDescriptor::MakeIndirectExportsExplicit(Zone* zone) {
       entry->import_name = import->second->import_name;
       entry->module_request = import->second->module_request;
       entry->local_name = nullptr;
-      special_exports_.Add(entry, zone);
+      AddSpecialExport(entry, zone);
       it = regular_exports_.erase(it);
     } else {
       it++;

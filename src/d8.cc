@@ -511,9 +511,75 @@ bool Shell::ExecuteString(Isolate* isolate, Local<String> source,
   return true;
 }
 
+namespace {
+
+std::string ToSTLString(Local<String> v8_str) {
+  String::Utf8Value utf8(v8_str);
+  // Should not be able to fail since the input is a String.
+  CHECK(*utf8);
+  return *utf8;
+}
+
+bool IsAbsolutePath(const std::string& path) {
+#if defined(_WIN32) || defined(_WIN64)
+  // TODO(adamk): This is an incorrect approximation, but should
+  // work for all our test-running cases.
+  return path.find(':') != std::string::npos;
+#else
+  return path[0] == '/';
+#endif
+}
+
+std::string GetWorkingDirectory() {
+#if defined(_WIN32) || defined(_WIN64)
+  char system_buffer[MAX_PATH];
+  // TODO(adamk): Support Unicode paths.
+  DWORD len = GetCurrentDirectoryA(MAX_PATH, system_buffer);
+  CHECK(len > 0);
+  return system_buffer;
+#else
+  char curdir[PATH_MAX];
+  CHECK_NOT_NULL(getcwd(curdir, PATH_MAX));
+  return curdir;
+#endif
+}
+
+// Returns the directory part of path, without the trailing '/'.
+std::string DirName(const std::string& path) {
+  DCHECK(IsAbsolutePath(path));
+  size_t last_slash = path.find_last_of('/');
+  DCHECK(last_slash != std::string::npos);
+  return path.substr(0, last_slash);
+}
+
+std::string EnsureAbsolutePath(const std::string& path,
+                               const std::string& dir_name) {
+  return IsAbsolutePath(path) ? path : dir_name + '/' + path;
+}
+
+MaybeLocal<Module> ResolveModuleCallback(Local<Context> context,
+                                         Local<String> specifier,
+                                         Local<Module> referrer,
+                                         Local<Value> data) {
+  Isolate* isolate = context->GetIsolate();
+  auto module_map = static_cast<std::map<std::string, Global<Module>>*>(
+      External::Cast(*data)->Value());
+  Local<String> dir_name = Local<String>::Cast(referrer->GetEmbedderData());
+  std::string absolute_path =
+      EnsureAbsolutePath(ToSTLString(specifier), ToSTLString(dir_name));
+  auto it = module_map->find(absolute_path);
+  if (it != module_map->end()) {
+    return it->second.Get(isolate);
+  }
+  return MaybeLocal<Module>();
+}
+
+}  // anonymous namespace
+
 MaybeLocal<Module> Shell::FetchModuleTree(
     Isolate* isolate, const std::string& file_name,
     std::map<std::string, Global<Module>>* module_map) {
+  DCHECK(IsAbsolutePath(file_name));
   TryCatch try_catch(isolate);
   try_catch.SetVerbose(true);
   Local<String> source_text = ReadFile(isolate, file_name.c_str());
@@ -532,12 +598,17 @@ MaybeLocal<Module> Shell::FetchModuleTree(
   }
   module_map->insert(
       std::make_pair(file_name, Global<Module>(isolate, module)));
+
+  std::string dir_name = DirName(file_name);
+  module->SetEmbedderData(
+      String::NewFromUtf8(isolate, dir_name.c_str(), NewStringType::kNormal)
+          .ToLocalChecked());
+
   for (int i = 0, length = module->GetModuleRequestsLength(); i < length; ++i) {
     Local<String> name = module->GetModuleRequest(i);
-    // TODO(adamk): Resolve the imported module to a full path.
-    std::string str = *String::Utf8Value(name);
-    if (!module_map->count(str)) {
-      if (FetchModuleTree(isolate, str, module_map).IsEmpty()) {
+    std::string absolute_path = EnsureAbsolutePath(ToSTLString(name), dir_name);
+    if (!module_map->count(absolute_path)) {
+      if (FetchModuleTree(isolate, absolute_path, module_map).IsEmpty()) {
         return MaybeLocal<Module>();
       }
     }
@@ -546,32 +617,17 @@ MaybeLocal<Module> Shell::FetchModuleTree(
   return module;
 }
 
-namespace {
-
-MaybeLocal<Module> ResolveModuleCallback(Local<Context> context,
-                                         Local<String> specifier,
-                                         Local<Module> referrer,
-                                         Local<Value> data) {
-  Isolate* isolate = context->GetIsolate();
-  auto module_map = static_cast<std::map<std::string, Global<Module>>*>(
-      External::Cast(*data)->Value());
-  std::string str_specifier = *String::Utf8Value(specifier);
-  // TODO(adamk): Resolve the specifier using the referrer
-  auto it = module_map->find(str_specifier);
-  if (it != module_map->end()) {
-    return it->second.Get(isolate);
-  }
-  return MaybeLocal<Module>();
-}
-
-}  // anonymous namespace
-
 bool Shell::ExecuteModule(Isolate* isolate, const char* file_name) {
   HandleScope handle_scope(isolate);
 
+  std::string absolute_path =
+      EnsureAbsolutePath(file_name, GetWorkingDirectory());
+  std::replace(absolute_path.begin(), absolute_path.end(), '\\', '/');
+
   Local<Module> root_module;
   std::map<std::string, Global<Module>> module_map;
-  if (!FetchModuleTree(isolate, file_name, &module_map).ToLocal(&root_module)) {
+  if (!FetchModuleTree(isolate, absolute_path, &module_map)
+           .ToLocal(&root_module)) {
     return false;
   }
 
@@ -584,11 +640,11 @@ bool Shell::ExecuteModule(Isolate* isolate, const char* file_name) {
     Local<Context> realm = data->realms_[data->realm_current_].Get(isolate);
     Context::Scope context_scope(realm);
 
-    // This can't fail until we support linking.
-    CHECK(root_module->Instantiate(realm, ResolveModuleCallback,
-                                   External::New(isolate, &module_map)));
-    maybe_result = root_module->Evaluate(realm);
-    EmptyMessageQueues(isolate);
+    if (root_module->Instantiate(realm, ResolveModuleCallback,
+                                 External::New(isolate, &module_map))) {
+      maybe_result = root_module->Evaluate(realm);
+      EmptyMessageQueues(isolate);
+    }
   }
   Local<Value> result;
   if (!maybe_result.ToLocal(&result)) {

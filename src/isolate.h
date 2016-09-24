@@ -1062,12 +1062,6 @@ class Isolate {
 
   void* stress_deopt_count_address() { return &stress_deopt_count_; }
 
-  void* virtual_handler_register_address() {
-    return &virtual_handler_register_;
-  }
-
-  void* virtual_slot_register_address() { return &virtual_slot_register_; }
-
   base::RandomNumberGenerator* random_number_generator();
 
   // Given an address occupied by a live code object, return that object.
@@ -1412,9 +1406,6 @@ class Isolate {
   // Counts deopt points if deopt_every_n_times is enabled.
   unsigned int stress_deopt_count_;
 
-  Address virtual_handler_register_;
-  Address virtual_slot_register_;
-
   int next_optimization_id_;
 
   // Counts javascript calls from the API. Wraps around on overflow.
@@ -1494,8 +1485,8 @@ class PromiseOnStack {
 // versions of GCC. See V8 issue 122 for details.
 class SaveContext BASE_EMBEDDED {
  public:
-  explicit inline SaveContext(Isolate* isolate);
-  inline ~SaveContext();
+  explicit SaveContext(Isolate* isolate);
+  ~SaveContext();
 
   Handle<Context> context() { return context_; }
   SaveContext* prev() { return prev_; }
@@ -1504,8 +1495,6 @@ class SaveContext BASE_EMBEDDED {
   bool IsBelowFrame(StandardFrame* frame) {
     return (c_entry_fp_ == 0) || (c_entry_fp_ > frame->sp());
   }
-
-  Isolate* isolate() { return isolate_; }
 
  private:
   Isolate* const isolate_;

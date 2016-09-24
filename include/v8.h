@@ -1089,6 +1089,9 @@ class V8_EXPORT Module {
    */
   Local<String> GetModuleRequest(int i) const;
 
+  void SetEmbedderData(Local<Value> data);
+  Local<Value> GetEmbedderData() const;
+
   typedef MaybeLocal<Module> (*ResolveCallback)(Local<Context> context,
                                                 Local<String> specifier,
                                                 Local<Module> referrer,
@@ -2009,6 +2012,11 @@ class V8_EXPORT Value : public Data {
    * Returns true if this value is a RegExp.
    */
   bool IsRegExp() const;
+
+  /**
+   * Returns true if this value is an async function.
+   */
+  bool IsAsyncFunction() const;
 
   /**
    * Returns true if this value is a Generator function.

@@ -5717,6 +5717,7 @@ ACCESSORS(Module, exports, ObjectHashTable, kExportsOffset)
 ACCESSORS(Module, requested_modules, FixedArray, kRequestedModulesOffset)
 SMI_ACCESSORS(Module, flags, kFlagsOffset)
 BOOL_ACCESSORS(Module, flags, evaluated, kEvaluatedBit)
+ACCESSORS(Module, embedder_data, Object, kEmbedderDataOffset)
 
 ACCESSORS(AccessorPair, getter, Object, kGetterOffset)
 ACCESSORS(AccessorPair, setter, Object, kSetterOffset)
@@ -7960,6 +7961,14 @@ Object* ModuleInfoEntry::module_request() const {
   return get(kModuleRequestIndex);
 }
 
+ModuleInfo* Module::info() const {
+  DisallowHeapAllocation no_gc;
+  SharedFunctionInfo* shared = code()->IsSharedFunctionInfo()
+                                   ? SharedFunctionInfo::cast(code())
+                                   : JSFunction::cast(code())->shared();
+  return shared->scope_info()->ModuleDescriptorInfo();
+}
+
 FixedArray* ModuleInfo::module_requests() const {
   return FixedArray::cast(get(kModuleRequestsIndex));
 }
@@ -7976,8 +7985,8 @@ FixedArray* ModuleInfo::regular_imports() const {
   return FixedArray::cast(get(kRegularImportsIndex));
 }
 
-FixedArray* ModuleInfo::special_imports() const {
-  return FixedArray::cast(get(kSpecialImportsIndex));
+FixedArray* ModuleInfo::namespace_imports() const {
+  return FixedArray::cast(get(kNamespaceImportsIndex));
 }
 
 #ifdef DEBUG
@@ -7985,7 +7994,7 @@ bool ModuleInfo::Equals(ModuleInfo* other) const {
   return regular_exports() == other->regular_exports() &&
          regular_imports() == other->regular_imports() &&
          special_exports() == other->special_exports() &&
-         special_imports() == other->special_imports();
+         namespace_imports() == other->namespace_imports();
 }
 #endif
 

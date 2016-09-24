@@ -234,21 +234,13 @@ PredictableCodeSizeScope::~PredictableCodeSizeScope() {
 // Implementation of CpuFeatureScope
 
 #ifdef DEBUG
-CpuFeatureScope::CpuFeatureScope(AssemblerBase* assembler, CpuFeature f)
+CpuFeatureScope::CpuFeatureScope(AssemblerBase* assembler, CpuFeature f,
+                                 CheckPolicy check)
     : assembler_(assembler) {
-  DCHECK(CpuFeatures::IsSupported(f));
+  DCHECK_IMPLIES(check == kCheckSupported, CpuFeatures::IsSupported(f));
   old_enabled_ = assembler_->enabled_cpu_features();
-  uint64_t mask = static_cast<uint64_t>(1) << f;
-  // TODO(svenpanne) This special case below doesn't belong here!
-#if V8_TARGET_ARCH_ARM
-  // ARMv7 is implied by VFP3.
-  if (f == VFP3) {
-    mask |= static_cast<uint64_t>(1) << ARMv7;
-  }
-#endif
-  assembler_->set_enabled_cpu_features(old_enabled_ | mask);
+  assembler_->EnableCpuFeature(f);
 }
-
 
 CpuFeatureScope::~CpuFeatureScope() {
   assembler_->set_enabled_cpu_features(old_enabled_);
@@ -1598,17 +1590,6 @@ ExternalReference ExternalReference::debug_is_active_address(
 ExternalReference ExternalReference::debug_after_break_target_address(
     Isolate* isolate) {
   return ExternalReference(isolate->debug()->after_break_target_address());
-}
-
-
-ExternalReference ExternalReference::virtual_handler_register(
-    Isolate* isolate) {
-  return ExternalReference(isolate->virtual_handler_register_address());
-}
-
-
-ExternalReference ExternalReference::virtual_slot_register(Isolate* isolate) {
-  return ExternalReference(isolate->virtual_slot_register_address());
 }
 
 

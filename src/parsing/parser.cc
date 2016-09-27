@@ -122,11 +122,17 @@ class DiscardableZoneScope {
     if (use_temp_zone) {
       parser_->fni_ = &fni_;
       parser_->zone_ = temp_zone;
+      if (parser_->reusable_preparser_ != nullptr) {
+        parser_->reusable_preparser_->zone_ = temp_zone;
+      }
     }
   }
   ~DiscardableZoneScope() {
     parser_->fni_ = prev_fni_;
     parser_->zone_ = prev_zone_;
+    if (parser_->reusable_preparser_ != nullptr) {
+      parser_->reusable_preparser_->zone_ = prev_zone_;
+    }
   }
 
  private:
@@ -226,7 +232,7 @@ FunctionLiteral* Parser::DefaultConstructor(const AstRawString* name,
 
   {
     FunctionState function_state(&function_state_, &scope_state_,
-                                 function_scope, kind);
+                                 function_scope);
 
     body = new (zone()) ZoneList<Statement*>(call_super ? 2 : 1, zone());
     if (call_super) {
@@ -768,6 +774,10 @@ FunctionLiteral* Parser::DoParseProgram(ParseInfo* info) {
     } else if (info->is_module()) {
       DCHECK_EQ(outer, info->script_scope());
       outer = NewModuleScope(info->script_scope());
+      // Never do lazy parsing in modules.  If we want to support this in the
+      // future, we must force context-allocation for all variables that are
+      // declared at the module level but not MODULE-allocated.
+      parsing_mode = PARSE_EAGERLY;
     }
 
     DeclarationScope* scope = outer->AsDeclarationScope();
@@ -776,8 +786,7 @@ FunctionLiteral* Parser::DoParseProgram(ParseInfo* info) {
 
     // Enter 'scope' with the given parsing mode.
     ParsingModeScope parsing_mode_scope(this, parsing_mode);
-    FunctionState function_state(&function_state_, &scope_state_, scope,
-                                 kNormalFunction);
+    FunctionState function_state(&function_state_, &scope_state_, scope);
 
     ZoneList<Statement*>* body = new(zone()) ZoneList<Statement*>(16, zone());
     bool ok = true;
@@ -923,9 +932,11 @@ FunctionLiteral* Parser::DoParseLazy(ParseInfo* info,
   {
     // Parse the function literal.
     Scope* outer = original_scope_;
+    DeclarationScope* outer_function = outer->GetClosureScope();
     DCHECK(outer);
-    FunctionState function_state(&function_state_, &scope_state_, outer,
-                                 info->function_kind());
+    FunctionState function_state(&function_state_, &scope_state_,
+                                 outer_function);
+    BlockState block_state(&scope_state_, outer);
     DCHECK(is_sloppy(outer->language_mode()) ||
            is_strict(info->language_mode()));
     FunctionLiteral::FunctionType function_type = ComputeFunctionType(info);
@@ -946,7 +957,8 @@ FunctionLiteral* Parser::DoParseLazy(ParseInfo* info,
       }
 
       // TODO(adamk): We should construct this scope from the ScopeInfo.
-      DeclarationScope* scope = NewFunctionScope(FunctionKind::kArrowFunction);
+      FunctionKind arrow_kind = is_async ? kAsyncArrowFunction : kArrowFunction;
+      DeclarationScope* scope = NewFunctionScope(arrow_kind);
 
       // These two bits only need to be explicitly set because we're
       // not passing the ScopeInfo to the Scope constructor.
@@ -981,8 +993,7 @@ FunctionLiteral* Parser::DoParseLazy(ParseInfo* info,
         checkpoint.Restore(&formals.materialized_literals_count);
         // Pass `accept_IN=true` to ParseArrowFunctionLiteral --- This should
         // not be observable, or else the preparser would have failed.
-        Expression* expression =
-            ParseArrowFunctionLiteral(true, formals, is_async, &ok);
+        Expression* expression = ParseArrowFunctionLiteral(true, formals, &ok);
         if (ok) {
           // Scanning must end at the same position that was recorded
           // previously. If not, parsing has been interrupted due to a stack
@@ -2683,7 +2694,9 @@ FunctionLiteral* Parser::ParseFunctionLiteral(
   // These are all things we can know at this point, without looking at the
   // function itself.
 
-  // In addition, we need to distinguish between these cases:
+  // We separate between lazy parsing top level functions and lazy parsing inner
+  // functions, because the latter needs to do more work. In particular, we need
+  // to track unresolved variables to distinguish between these cases:
   // (function foo() {
   //   bar = function() { return 1; }
   //  })();
@@ -2695,17 +2708,18 @@ FunctionLiteral* Parser::ParseFunctionLiteral(
 
   // Now foo will be parsed eagerly and compiled eagerly (optimization: assume
   // parenthesis before the function means that it will be called
-  // immediately). The inner function *must* be parsed eagerly to resolve the
-  // possible reference to the variable in foo's scope. However, it's possible
-  // that it will be compiled lazily.
+  // immediately). bar can be parsed lazily, but we need to parse it in a mode
+  // that tracks unresolved variables.
+  DCHECK_IMPLIES(mode() == PARSE_LAZILY, FLAG_lazy);
+  DCHECK_IMPLIES(mode() == PARSE_LAZILY, allow_lazy());
+  DCHECK_IMPLIES(mode() == PARSE_LAZILY, extension_ == nullptr);
 
-  // To make this additional case work, both Parser and PreParser implement a
-  // logic where only top-level functions will be parsed lazily.
-  bool is_lazily_parsed = mode() == PARSE_LAZILY &&
-                          scope()->AllowsLazyParsing() &&
-                          !function_state_->next_function_is_parenthesized();
+  bool is_lazy_top_level_function =
+      mode() == PARSE_LAZILY &&
+      eager_compile_hint == FunctionLiteral::kShouldLazyCompile &&
+      scope()->AllowsLazyParsingWithoutUnresolvedVariables();
 
-  // Determine whether the function body can be discarded after parsing.
+  // Determine whether we can still lazy parse the inner function.
   // The preconditions are:
   // - Lazy compilation has to be enabled.
   // - Neither V8 natives nor native function declarations can be allowed,
@@ -2720,11 +2734,16 @@ FunctionLiteral* Parser::ParseFunctionLiteral(
   // - The function literal shouldn't be hinted to eagerly compile.
   // - For asm.js functions the body needs to be available when module
   //   validation is active, because we examine the entire module at once.
+
+  // Inner functions will be parsed using a temporary Zone. After parsing, we
+  // will migrate unresolved variable into a Scope in the main Zone.
+  // TODO(marja): Refactor parsing modes: simplify this.
   bool use_temp_zone =
-      !is_lazily_parsed && allow_lazy() &&
+      !is_lazy_top_level_function && allow_lazy() &&
       function_type == FunctionLiteral::kDeclaration &&
       eager_compile_hint != FunctionLiteral::kShouldEagerCompile &&
       !(FLAG_validate_asm && scope()->IsAsmModule());
+  bool is_lazy_inner_function = use_temp_zone && FLAG_lazy_inner_functions;
 
   DeclarationScope* main_scope = nullptr;
   if (use_temp_zone) {
@@ -2762,7 +2781,7 @@ FunctionLiteral* Parser::ParseFunctionLiteral(
       DCHECK(main_scope->zone() != scope->zone());
     }
 
-    FunctionState function_state(&function_state_, &scope_state_, scope, kind);
+    FunctionState function_state(&function_state_, &scope_state_, scope);
 #ifdef DEBUG
     scope->SetScopeName(function_name);
 #endif
@@ -2800,35 +2819,38 @@ FunctionLiteral* Parser::ParseFunctionLiteral(
     // which says whether we need to create an arguments adaptor frame).
     if (formals.has_rest) arity--;
 
-    // Eager or lazy parse?
-    // If is_lazily_parsed, we'll parse lazily. We'll call SkipLazyFunctionBody,
-    // which may decide to abort lazy parsing if it suspects that wasn't a good
-    // idea. If so (in which case the parser is expected to have backtracked),
-    // or if we didn't try to lazy parse in the first place, we'll have to parse
-    // eagerly.
-    if (is_lazily_parsed) {
+    // Eager or lazy parse? If is_lazy_top_level_function, we'll parse
+    // lazily. We'll call SkipLazyFunctionBody, which may decide to abort lazy
+    // parsing if it suspects that wasn't a good idea. If so (in which case the
+    // parser is expected to have backtracked), or if we didn't try to lazy
+    // parse in the first place, we'll have to parse eagerly.
+    if (is_lazy_top_level_function || is_lazy_inner_function) {
       Scanner::BookmarkScope bookmark(scanner());
       bookmark.Set();
-      LazyParsingResult result =
-          SkipLazyFunctionBody(&materialized_literal_count,
-                               &expected_property_count, true, CHECK_OK);
+      LazyParsingResult result = SkipLazyFunctionBody(
+          &materialized_literal_count, &expected_property_count,
+          is_lazy_inner_function, is_lazy_top_level_function, CHECK_OK);
 
       materialized_literal_count += formals.materialized_literals_count +
                                     function_state.materialized_literal_count();
 
       if (result == kLazyParsingAborted) {
+        DCHECK(is_lazy_top_level_function);
         bookmark.Apply();
         // Trigger eager (re-)parsing, just below this block.
-        is_lazily_parsed = false;
+        is_lazy_top_level_function = false;
 
         // This is probably an initialization function. Inform the compiler it
         // should also eager-compile this function, and that we expect it to be
         // used once.
         eager_compile_hint = FunctionLiteral::kShouldEagerCompile;
         should_be_used_once_hint = true;
+      } else if (is_lazy_inner_function) {
+        DCHECK(main_scope != scope);
+        scope->AnalyzePartially(main_scope, &previous_zone_ast_node_factory);
       }
     }
-    if (!is_lazily_parsed) {
+    if (!is_lazy_top_level_function && !is_lazy_inner_function) {
       body = ParseEagerFunctionBody(function_name, pos, formals, kind,
                                     function_type, CHECK_OK);
 
@@ -2838,6 +2860,8 @@ FunctionLiteral* Parser::ParseFunctionLiteral(
         // If the preconditions are correct the function body should never be
         // accessed, but do this anyway for better behaviour if they're wrong.
         body = nullptr;
+        DCHECK(main_scope != scope);
+        scope->AnalyzePartially(main_scope, &previous_zone_ast_node_factory);
       }
     }
 
@@ -2867,11 +2891,6 @@ FunctionLiteral* Parser::ParseFunctionLiteral(
     }
     has_duplicate_parameters =
         !classifier()->is_valid_formal_parameter_list_without_duplicates();
-
-    if (use_temp_zone) {
-      DCHECK(main_scope != scope);
-      scope->AnalyzePartially(main_scope, &previous_zone_ast_node_factory);
-    }
   }  // DiscardableZoneScope goes out of scope.
 
   FunctionLiteral::ParameterFlag duplicate_parameters =
@@ -2922,14 +2941,16 @@ Expression* Parser::ParseAsyncFunctionExpression(bool* ok) {
 
 Parser::LazyParsingResult Parser::SkipLazyFunctionBody(
     int* materialized_literal_count, int* expected_property_count,
-    bool may_abort, bool* ok) {
+    bool is_inner_function, bool may_abort, bool* ok) {
   if (produce_cached_parse_data()) CHECK(log_);
 
   int function_block_pos = position();
-  DeclarationScope* scope = this->scope()->AsDeclarationScope();
+  DeclarationScope* scope = function_state_->scope();
   DCHECK(scope->is_function_scope());
   scope->set_is_lazily_parsed(true);
-  if (consume_cached_parse_data() && !cached_parse_data_->rejected()) {
+  // Inner functions are not part of the cached data.
+  if (!is_inner_function && consume_cached_parse_data() &&
+      !cached_parse_data_->rejected()) {
     // If we have cached data, we use it to skip parsing the function body. The
     // data contains the information we need to construct the lazy function.
     FunctionEntry entry =
@@ -2956,7 +2977,8 @@ Parser::LazyParsingResult Parser::SkipLazyFunctionBody(
   // AST. This gathers the data needed to build a lazy function.
   SingletonLogger logger;
   PreParser::PreParseResult result =
-      ParseLazyFunctionBodyWithPreParser(&logger, may_abort);
+      ParseLazyFunctionBodyWithPreParser(&logger, is_inner_function, may_abort);
+
   // Return immediately if pre-parser decided to abort parsing.
   if (result == PreParser::kPreParseAbort) {
     scope->set_is_lazily_parsed(false);
@@ -2983,7 +3005,7 @@ Parser::LazyParsingResult Parser::SkipLazyFunctionBody(
   SetLanguageMode(scope, logger.language_mode());
   if (logger.uses_super_property()) scope->RecordSuperPropertyUsage();
   if (logger.calls_eval()) scope->RecordEvalCall();
-  if (produce_cached_parse_data()) {
+  if (!is_inner_function && produce_cached_parse_data()) {
     DCHECK(log_);
     // Position right after terminal '}'.
     int body_end = scanner()->location().end_pos;
@@ -3255,8 +3277,10 @@ ZoneList<Statement*>* Parser::ParseEagerFunctionBody(
     const AstRawString* function_name, int pos,
     const ParserFormalParameters& parameters, FunctionKind kind,
     FunctionLiteral::FunctionType function_type, bool* ok) {
-  // Everything inside an eagerly parsed function will be parsed eagerly
-  // (see comment above).
+  // Everything inside an eagerly parsed function will be parsed eagerly (see
+  // comment above). Lazy inner functions are handled separately and they won't
+  // require the mode to be PARSE_LAZILY (see ParseFunctionLiteral).
+  // TODO(marja): Refactor parsing modes: remove this.
   ParsingModeScope parsing_mode(this, PARSE_EAGERLY);
   ZoneList<Statement*>* result = new(zone()) ZoneList<Statement*>(8, zone());
 
@@ -3427,7 +3451,7 @@ ZoneList<Statement*>* Parser::ParseEagerFunctionBody(
 }
 
 PreParser::PreParseResult Parser::ParseLazyFunctionBodyWithPreParser(
-    SingletonLogger* logger, bool may_abort) {
+    SingletonLogger* logger, bool is_inner_function, bool may_abort) {
   // This function may be called on a background thread too; record only the
   // main thread preparse times.
   if (pre_parse_timer_ != NULL) {
@@ -3452,10 +3476,19 @@ PreParser::PreParseResult Parser::ParseLazyFunctionBodyWithPreParser(
     SET_ALLOW(harmony_class_fields);
 #undef SET_ALLOW
   }
+  // Aborting inner function preparsing would leave scopes in an inconsistent
+  // state; we don't parse inner functions in the abortable mode anyway.
+  DCHECK(!is_inner_function || !may_abort);
+
+  DeclarationScope* function_scope = function_state_->scope();
   PreParser::PreParseResult result = reusable_preparser_->PreParseLazyFunction(
-      language_mode(), function_state_->kind(),
-      scope()->AsDeclarationScope()->has_simple_parameters(), parsing_module_,
-      logger, may_abort, use_counts_);
+      function_scope, parsing_module_, logger, is_inner_function, may_abort,
+      use_counts_);
+  // Detaching the scopes created by PreParser from the Scope chain must be done
+  // above (see ParseFunctionLiteral & AnalyzePartially).
+  if (!is_inner_function) {
+    function_scope->ResetAfterPreparsing(result == PreParser::kPreParseAbort);
+  }
   if (pre_parse_timer_ != NULL) {
     pre_parse_timer_->Stop();
   }
@@ -3519,7 +3552,7 @@ FunctionLiteral* Parser::SynthesizeClassFieldInitializer(int count) {
   initializer_scope->set_start_position(scanner()->location().end_pos);
   initializer_scope->set_end_position(scanner()->location().end_pos);
   FunctionState initializer_state(&function_state_, &scope_state_,
-                                  initializer_scope, kind);
+                                  initializer_scope);
   ZoneList<Statement*>* body = new (zone()) ZoneList<Statement*>(count, zone());
   for (int i = 0; i < count; ++i) {
     const AstRawString* name =

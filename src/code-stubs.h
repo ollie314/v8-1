@@ -148,12 +148,6 @@ class ObjectLiteral;
   V(StoreScriptContextField)                  \
   V(StrictEqual)                              \
   V(StrictNotEqual)                           \
-  V(StringEqual)                              \
-  V(StringNotEqual)                           \
-  V(StringLessThan)                           \
-  V(StringLessThanOrEqual)                    \
-  V(StringGreaterThan)                        \
-  V(StringGreaterThanOrEqual)                 \
   V(ToInteger)                                \
   V(ToLength)                                 \
   V(HasProperty)                              \
@@ -164,6 +158,7 @@ class ObjectLiteral;
   V(StoreFastElement)                         \
   V(StoreField)                               \
   V(StoreGlobal)                              \
+  V(StoreICTF)                                \
   V(StoreInterceptor)                         \
   V(StoreTransition)                          \
   V(LoadApiGetter)                            \
@@ -176,7 +171,8 @@ class ObjectLiteral;
   /* only */                                  \
   V(LoadICTrampolineTF)                       \
   V(LoadGlobalICTrampoline)                   \
-  V(KeyedLoadICTrampolineTF)
+  V(KeyedLoadICTrampolineTF)                  \
+  V(StoreICTrampolineTF)
 
 // List of code stubs only used on ARM 32 bits platforms.
 #if V8_TARGET_ARCH_ARM
@@ -986,57 +982,6 @@ class StrictNotEqualStub final : public TurboFanCodeStub {
 
   DEFINE_CALL_INTERFACE_DESCRIPTOR(Compare);
   DEFINE_TURBOFAN_BINARY_OP_CODE_STUB(StrictNotEqual, TurboFanCodeStub);
-};
-
-class StringEqualStub final : public TurboFanCodeStub {
- public:
-  explicit StringEqualStub(Isolate* isolate) : TurboFanCodeStub(isolate) {}
-
-  DEFINE_CALL_INTERFACE_DESCRIPTOR(Compare);
-  DEFINE_TURBOFAN_CODE_STUB(StringEqual, TurboFanCodeStub);
-};
-
-class StringNotEqualStub final : public TurboFanCodeStub {
- public:
-  explicit StringNotEqualStub(Isolate* isolate) : TurboFanCodeStub(isolate) {}
-
-  DEFINE_CALL_INTERFACE_DESCRIPTOR(Compare);
-  DEFINE_TURBOFAN_CODE_STUB(StringNotEqual, TurboFanCodeStub);
-};
-
-class StringLessThanStub final : public TurboFanCodeStub {
- public:
-  explicit StringLessThanStub(Isolate* isolate) : TurboFanCodeStub(isolate) {}
-
-  DEFINE_CALL_INTERFACE_DESCRIPTOR(Compare);
-  DEFINE_TURBOFAN_CODE_STUB(StringLessThan, TurboFanCodeStub);
-};
-
-class StringLessThanOrEqualStub final : public TurboFanCodeStub {
- public:
-  explicit StringLessThanOrEqualStub(Isolate* isolate)
-      : TurboFanCodeStub(isolate) {}
-
-  DEFINE_CALL_INTERFACE_DESCRIPTOR(Compare);
-  DEFINE_TURBOFAN_CODE_STUB(StringLessThanOrEqual, TurboFanCodeStub);
-};
-
-class StringGreaterThanStub final : public TurboFanCodeStub {
- public:
-  explicit StringGreaterThanStub(Isolate* isolate)
-      : TurboFanCodeStub(isolate) {}
-
-  DEFINE_CALL_INTERFACE_DESCRIPTOR(Compare);
-  DEFINE_TURBOFAN_CODE_STUB(StringGreaterThan, TurboFanCodeStub);
-};
-
-class StringGreaterThanOrEqualStub final : public TurboFanCodeStub {
- public:
-  explicit StringGreaterThanOrEqualStub(Isolate* isolate)
-      : TurboFanCodeStub(isolate) {}
-
-  DEFINE_CALL_INTERFACE_DESCRIPTOR(Compare);
-  DEFINE_TURBOFAN_CODE_STUB(StringGreaterThanOrEqual, TurboFanCodeStub);
 };
 
 class ToIntegerStub final : public TurboFanCodeStub {
@@ -2414,13 +2359,32 @@ class StoreICTrampolineStub : public PlatformCodeStub {
   }
 
  protected:
-  StoreICState state() const {
-    return StoreICState(static_cast<ExtraICState>(minor_key_));
-  }
+  StoreICState state() const { return StoreICState(GetExtraICState()); }
 
  private:
   DEFINE_CALL_INTERFACE_DESCRIPTOR(Store);
   DEFINE_PLATFORM_CODE_STUB(StoreICTrampoline, PlatformCodeStub);
+};
+
+class StoreICTrampolineTFStub : public TurboFanCodeStub {
+ public:
+  StoreICTrampolineTFStub(Isolate* isolate, const StoreICState& state)
+      : TurboFanCodeStub(isolate) {
+    minor_key_ = state.GetExtraICState();
+  }
+
+  void GenerateAssembly(CodeStubAssembler* assembler) const override;
+
+  Code::Kind GetCodeKind() const override { return Code::STORE_IC; }
+  ExtraICState GetExtraICState() const final {
+    return static_cast<ExtraICState>(minor_key_);
+  }
+
+ protected:
+  StoreICState state() const { return StoreICState(GetExtraICState()); }
+
+  DEFINE_CALL_INTERFACE_DESCRIPTOR(Store);
+  DEFINE_CODE_STUB(StoreICTrampolineTF, TurboFanCodeStub);
 };
 
 class KeyedStoreICTrampolineStub : public StoreICTrampolineStub {
@@ -2549,6 +2513,24 @@ class StoreICStub : public PlatformCodeStub {
 
  protected:
   void GenerateImpl(MacroAssembler* masm, bool in_frame);
+};
+
+class StoreICTFStub : public TurboFanCodeStub {
+ public:
+  StoreICTFStub(Isolate* isolate, const StoreICState& state)
+      : TurboFanCodeStub(isolate) {
+    minor_key_ = state.GetExtraICState();
+  }
+
+  void GenerateAssembly(CodeStubAssembler* assembler) const override;
+
+  Code::Kind GetCodeKind() const override { return Code::STORE_IC; }
+  ExtraICState GetExtraICState() const final {
+    return static_cast<ExtraICState>(minor_key_);
+  }
+
+  DEFINE_CALL_INTERFACE_DESCRIPTOR(StoreWithVector);
+  DEFINE_CODE_STUB(StoreICTF, TurboFanCodeStub);
 };
 
 class KeyedStoreICStub : public PlatformCodeStub {
@@ -3112,24 +3094,13 @@ class StoreBufferOverflowStub : public PlatformCodeStub {
   DEFINE_PLATFORM_CODE_STUB(StoreBufferOverflow, PlatformCodeStub);
 };
 
-class SubStringStub : public TurboFanCodeStub {
+
+class SubStringStub : public PlatformCodeStub {
  public:
-  explicit SubStringStub(Isolate* isolate) : TurboFanCodeStub(isolate) {}
-
-  static compiler::Node* Generate(CodeStubAssembler* assembler,
-                                  compiler::Node* string, compiler::Node* from,
-                                  compiler::Node* to, compiler::Node* context);
-
-  void GenerateAssembly(CodeStubAssembler* assembler) const override {
-    assembler->Return(Generate(assembler,
-                               assembler->Parameter(Descriptor::kString),
-                               assembler->Parameter(Descriptor::kFrom),
-                               assembler->Parameter(Descriptor::kTo),
-                               assembler->Parameter(Descriptor::kContext)));
-  }
+  explicit SubStringStub(Isolate* isolate) : PlatformCodeStub(isolate) {}
 
   DEFINE_CALL_INTERFACE_DESCRIPTOR(SubString);
-  DEFINE_CODE_STUB(SubString, TurboFanCodeStub);
+  DEFINE_PLATFORM_CODE_STUB(SubString, PlatformCodeStub);
 };
 
 class ToStringStub final : public PlatformCodeStub {

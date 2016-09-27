@@ -8,6 +8,8 @@
 #include <iomanip>
 #include <memory>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "src/objects-inl.h"
 
@@ -19580,6 +19582,62 @@ bool JSReceiver::HasProxyInPrototype(Isolate* isolate) {
   return false;
 }
 
+namespace {
+
+template <typename T>
+struct HandleValueHash {
+  V8_INLINE size_t operator()(Handle<T> handle) const { return handle->Hash(); }
+};
+
+struct ModuleHandleEqual {
+  V8_INLINE bool operator()(Handle<Module> lhs, Handle<Module> rhs) const {
+    return *lhs == *rhs;
+  }
+};
+
+struct StringHandleEqual {
+  V8_INLINE bool operator()(Handle<String> lhs, Handle<String> rhs) const {
+    return lhs->Equals(*rhs);
+  }
+};
+
+class UnorderedStringSet
+    : public std::unordered_set<Handle<String>, HandleValueHash<String>,
+                                StringHandleEqual,
+                                zone_allocator<Handle<String>>> {
+ public:
+  explicit UnorderedStringSet(Zone* zone)
+      : std::unordered_set<Handle<String>, HandleValueHash<String>,
+                           StringHandleEqual, zone_allocator<Handle<String>>>(
+            2 /* bucket count */, HandleValueHash<String>(),
+            StringHandleEqual(), zone_allocator<Handle<String>>(zone)) {}
+};
+
+}  // anonymous namespace
+
+class Module::ResolveSet
+    : public std::unordered_map<
+          Handle<Module>, UnorderedStringSet*, HandleValueHash<Module>,
+          ModuleHandleEqual, zone_allocator<std::pair<const Handle<Module>,
+                                                      UnorderedStringSet*>>> {
+ public:
+  explicit ResolveSet(Zone* zone)
+      : std::unordered_map<Handle<Module>, UnorderedStringSet*,
+                           HandleValueHash<Module>, ModuleHandleEqual,
+                           zone_allocator<std::pair<const Handle<Module>,
+                                                    UnorderedStringSet*>>>(
+            2 /* bucket count */, HandleValueHash<Module>(),
+            ModuleHandleEqual(),
+            zone_allocator<
+                std::pair<const Handle<Module>, UnorderedStringSet*>>(zone)),
+        zone_(zone) {}
+
+  Zone* zone() const { return zone_; }
+
+ private:
+  Zone* zone_;
+};
+
 void Module::CreateIndirectExport(Handle<Module> module, Handle<String> name,
                                   Handle<ModuleInfoEntry> entry) {
   Isolate* isolate = module->GetIsolate();
@@ -19630,24 +19688,43 @@ Handle<Object> Module::LoadImport(Handle<Module> module, Handle<String> name,
 
 MaybeHandle<Cell> Module::ResolveImport(Handle<Module> module,
                                         Handle<String> name, int module_request,
-                                        bool must_resolve) {
+                                        bool must_resolve,
+                                        Module::ResolveSet* resolve_set) {
   Isolate* isolate = module->GetIsolate();
   Handle<Module> requested_module(
       Module::cast(module->requested_modules()->get(module_request)), isolate);
-  return Module::ResolveExport(requested_module, name, must_resolve);
+  return Module::ResolveExport(requested_module, name, must_resolve,
+                               resolve_set);
 }
 
 MaybeHandle<Cell> Module::ResolveExport(Handle<Module> module,
-                                        Handle<String> name,
-                                        bool must_resolve) {
-  // TODO(neis): Detect cycles.
-
+                                        Handle<String> name, bool must_resolve,
+                                        Module::ResolveSet* resolve_set) {
   Isolate* isolate = module->GetIsolate();
   Handle<Object> object(module->exports()->Lookup(name), isolate);
-
   if (object->IsCell()) {
     // Already resolved (e.g. because it's a local export).
     return Handle<Cell>::cast(object);
+  }
+
+  // Must be an indirect export of some sort, so we need to detect cycles.
+  {
+    // Attempt insertion with a null string set.
+    auto result = resolve_set->insert({module, nullptr});
+    UnorderedStringSet*& name_set = result.first->second;
+    bool did_insert = result.second;
+    if (did_insert) {
+      // |module| wasn't in the map previously, so allocate a new name set.
+      Zone* zone = resolve_set->zone();
+      name_set =
+          new (zone->New(sizeof(UnorderedStringSet))) UnorderedStringSet(zone);
+    } else if (name_set->count(name)) {
+      // TODO(adamk): Throwing here is incorrect in the case of star exports.
+      THROW_NEW_ERROR(
+          isolate,
+          NewSyntaxError(MessageTemplate::kCyclicModuleDependency, name), Cell);
+    }
+    name_set->insert(name);
   }
 
   if (object->IsModuleInfoEntry()) {
@@ -19657,7 +19734,7 @@ MaybeHandle<Cell> Module::ResolveExport(Handle<Module> module,
     Handle<String> import_name(String::cast(entry->import_name()), isolate);
 
     Handle<Cell> cell;
-    if (!ResolveImport(module, import_name, module_request, true)
+    if (!ResolveImport(module, import_name, module_request, true, resolve_set)
              .ToHandle(&cell)) {
       DCHECK(isolate->has_pending_exception());
       return MaybeHandle<Cell>();
@@ -19674,12 +19751,13 @@ MaybeHandle<Cell> Module::ResolveExport(Handle<Module> module,
   }
 
   DCHECK(object->IsTheHole(isolate));
-  return Module::ResolveExportUsingStarExports(module, name, must_resolve);
+  return Module::ResolveExportUsingStarExports(module, name, must_resolve,
+                                               resolve_set);
 }
 
-MaybeHandle<Cell> Module::ResolveExportUsingStarExports(Handle<Module> module,
-                                                        Handle<String> name,
-                                                        bool must_resolve) {
+MaybeHandle<Cell> Module::ResolveExportUsingStarExports(
+    Handle<Module> module, Handle<String> name, bool must_resolve,
+    Module::ResolveSet* resolve_set) {
   Isolate* isolate = module->GetIsolate();
   if (!name->Equals(isolate->heap()->default_string())) {
     // Go through all star exports looking for the given name.  If multiple star
@@ -19696,7 +19774,8 @@ MaybeHandle<Cell> Module::ResolveExportUsingStarExports(Handle<Module> module,
       int module_request = Smi::cast(entry->module_request())->value();
 
       Handle<Cell> cell;
-      if (ResolveImport(module, name, module_request, false).ToHandle(&cell)) {
+      if (ResolveImport(module, name, module_request, false, resolve_set)
+              .ToHandle(&cell)) {
         if (unique_cell.is_null()) unique_cell = cell;
         if (*unique_cell != *cell) {
           THROW_NEW_ERROR(
@@ -19725,6 +19804,100 @@ MaybeHandle<Cell> Module::ResolveExportUsingStarExports(Handle<Module> module,
                     Cell);
   }
   return MaybeHandle<Cell>();
+}
+
+bool Module::Instantiate(Handle<Module> module, v8::Local<v8::Context> context,
+                         v8::Module::ResolveCallback callback,
+                         v8::Local<v8::Value> callback_data) {
+  // Already instantiated.
+  if (module->code()->IsJSFunction()) return true;
+
+  Isolate* isolate = module->GetIsolate();
+  Handle<SharedFunctionInfo> shared(SharedFunctionInfo::cast(module->code()),
+                                    isolate);
+  Handle<JSFunction> function =
+      isolate->factory()->NewFunctionFromSharedFunctionInfo(
+          shared,
+          handle(Utils::OpenHandle(*context)->native_context(), isolate));
+  module->set_code(*function);
+
+  Handle<ModuleInfo> module_info(shared->scope_info()->ModuleDescriptorInfo(),
+                                 isolate);
+
+  // Set up local exports.
+  Handle<FixedArray> regular_exports(module_info->regular_exports(), isolate);
+  for (int i = 0, n = regular_exports->length(); i < n; i += 2) {
+    Handle<FixedArray> export_names(
+        FixedArray::cast(regular_exports->get(i + 1)), isolate);
+    CreateExport(module, export_names);
+  }
+
+  // Partially set up indirect exports.
+  // For each indirect export, we create the appropriate slot in the export
+  // table and store its ModuleInfoEntry there.  When we later find the correct
+  // Cell in the module that actually provides the value, we replace the
+  // ModuleInfoEntry by that Cell (see ResolveExport).
+  Handle<FixedArray> special_exports(module_info->special_exports(), isolate);
+  for (int i = 0, n = special_exports->length(); i < n; ++i) {
+    Handle<ModuleInfoEntry> entry(
+        ModuleInfoEntry::cast(special_exports->get(i)), isolate);
+    Handle<Object> export_name(entry->export_name(), isolate);
+    if (export_name->IsUndefined(isolate)) continue;  // Star export.
+    CreateIndirectExport(module, Handle<String>::cast(export_name), entry);
+  }
+
+  Handle<FixedArray> module_requests(module_info->module_requests(), isolate);
+  for (int i = 0, length = module_requests->length(); i < length; ++i) {
+    Handle<String> specifier(String::cast(module_requests->get(i)), isolate);
+    v8::Local<v8::Module> api_requested_module;
+    // TODO(adamk): Revisit these failure cases once d8 knows how to
+    // persist a module_map across multiple top-level module loads, as
+    // the current module is left in a "half-instantiated" state.
+    if (!callback(context, v8::Utils::ToLocal(specifier),
+                  v8::Utils::ToLocal(module), callback_data)
+             .ToLocal(&api_requested_module)) {
+      // TODO(adamk): Give this a better error message. But this is a
+      // misuse of the API anyway.
+      isolate->ThrowIllegalOperation();
+      return false;
+    }
+    Handle<Module> requested_module = Utils::OpenHandle(*api_requested_module);
+    module->requested_modules()->set(i, *requested_module);
+    if (!Instantiate(requested_module, context, callback, callback_data)) {
+      return false;
+    }
+  }
+
+  Zone zone(isolate->allocator());
+
+  // Resolve imports.
+  Handle<FixedArray> regular_imports(module_info->regular_imports(), isolate);
+  for (int i = 0, n = regular_imports->length(); i < n; ++i) {
+    Handle<ModuleInfoEntry> entry(
+        ModuleInfoEntry::cast(regular_imports->get(i)), isolate);
+    Handle<String> name(String::cast(entry->import_name()), isolate);
+    int module_request = Smi::cast(entry->module_request())->value();
+    ResolveSet resolve_set(&zone);
+    if (ResolveImport(module, name, module_request, true, &resolve_set)
+            .is_null()) {
+      return false;
+    }
+  }
+
+  // Resolve indirect exports.
+  for (int i = 0, n = special_exports->length(); i < n; ++i) {
+    Handle<ModuleInfoEntry> entry(
+        ModuleInfoEntry::cast(special_exports->get(i)), isolate);
+    Handle<Object> name(entry->export_name(), isolate);
+    if (name->IsUndefined(isolate)) continue;  // Star export.
+    ResolveSet resolve_set(&zone);
+    if (ResolveExport(module, Handle<String>::cast(name), true, &resolve_set)
+            .is_null()) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 }  // namespace internal

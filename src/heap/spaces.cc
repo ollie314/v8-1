@@ -510,7 +510,7 @@ MemoryChunk* MemoryChunk::Initialize(Heap* heap, Address base, size_t size,
   chunk->InitializeReservedMemory();
   chunk->old_to_new_slots_ = nullptr;
   chunk->old_to_old_slots_ = nullptr;
-  chunk->typed_old_to_new_slots_ = nullptr;
+  chunk->typed_old_to_new_slots_.SetValue(nullptr);
   chunk->typed_old_to_old_slots_ = nullptr;
   chunk->skip_list_ = nullptr;
   chunk->write_barrier_counter_ = kWriteBarrierCounterGranularity;
@@ -1077,7 +1077,7 @@ void MemoryChunk::ReleaseAllocatedMemory() {
   }
   if (old_to_new_slots_ != nullptr) ReleaseOldToNewSlots();
   if (old_to_old_slots_ != nullptr) ReleaseOldToOldSlots();
-  if (typed_old_to_new_slots_ != nullptr) ReleaseTypedOldToNewSlots();
+  if (typed_old_to_new_slots_.Value() != nullptr) ReleaseTypedOldToNewSlots();
   if (typed_old_to_old_slots_ != nullptr) ReleaseTypedOldToOldSlots();
   if (local_tracker_ != nullptr) ReleaseLocalTracker();
 }
@@ -1113,13 +1113,14 @@ void MemoryChunk::ReleaseOldToOldSlots() {
 }
 
 void MemoryChunk::AllocateTypedOldToNewSlots() {
-  DCHECK(nullptr == typed_old_to_new_slots_);
-  typed_old_to_new_slots_ = new TypedSlotSet(address());
+  DCHECK(nullptr == typed_old_to_new_slots_.Value());
+  typed_old_to_new_slots_.SetValue(new TypedSlotSet(address()));
 }
 
 void MemoryChunk::ReleaseTypedOldToNewSlots() {
-  delete typed_old_to_new_slots_;
-  typed_old_to_new_slots_ = nullptr;
+  TypedSlotSet* typed_old_to_new_slots = typed_old_to_new_slots_.Value();
+  delete typed_old_to_new_slots;
+  typed_old_to_new_slots_.SetValue(nullptr);
 }
 
 void MemoryChunk::AllocateTypedOldToOldSlots() {
@@ -1484,8 +1485,9 @@ void PagedSpace::Verify(ObjectVisitor* visitor) {
 
 bool NewSpace::SetUp(int initial_semispace_capacity,
                      int maximum_semispace_capacity) {
-  DCHECK(initial_semispace_capacity <= maximum_semispace_capacity);
+  DCHECK_LE(initial_semispace_capacity, maximum_semispace_capacity);
   DCHECK(base::bits::IsPowerOfTwo32(maximum_semispace_capacity));
+  DCHECK_GE(initial_semispace_capacity, 2 * Page::kPageSize);
 
   to_space_.SetUp(initial_semispace_capacity, maximum_semispace_capacity);
   from_space_.SetUp(initial_semispace_capacity, maximum_semispace_capacity);
@@ -1586,8 +1588,16 @@ bool SemiSpace::EnsureCurrentCapacity() {
       current_page = current_page->next_page();
       if (actual_pages > expected_pages) {
         Page* to_remove = current_page->prev_page();
-        // Make sure we don't overtake the actual top pointer.
-        CHECK_NE(to_remove, current_page_);
+        if (to_remove == current_page_) {
+          // Corner case: All pages have been moved within new space. We are
+          // removing the page that contains the top pointer and need to set
+          // it to the end of the intermediate generation.
+          NewSpace* new_space = heap()->new_space();
+          CHECK_EQ(new_space->top(), current_page_->area_start());
+          current_page_ = to_remove->prev_page();
+          CHECK(current_page_->InIntermediateGeneration());
+          new_space->SetAllocationInfo(page_high(), page_high());
+        }
         to_remove->Unlink();
         heap()->memory_allocator()->Free<MemoryAllocator::kPooledAndQueue>(
             to_remove);
@@ -1913,9 +1923,6 @@ bool SemiSpace::Commit() {
   }
   Reset();
   AccountCommitted(current_capacity_);
-  if (age_mark_ == nullptr) {
-    age_mark_ = first_page()->area_start();
-  }
   committed_ = true;
   return true;
 }
@@ -2027,7 +2034,7 @@ void SemiSpace::FixPagesFlags(intptr_t flags, intptr_t mask) {
     if (id_ == kToSpace) {
       page->ClearFlag(MemoryChunk::IN_FROM_SPACE);
       page->SetFlag(MemoryChunk::IN_TO_SPACE);
-      page->ClearFlag(MemoryChunk::NEW_SPACE_BELOW_AGE_MARK);
+      page->ClearFlag(MemoryChunk::IN_INTERMEDIATE_GENERATION);
       page->ResetLiveBytes();
     } else {
       page->SetFlag(MemoryChunk::IN_FROM_SPACE);
@@ -2070,7 +2077,6 @@ void SemiSpace::Swap(SemiSpace* from, SemiSpace* to) {
   std::swap(from->current_capacity_, to->current_capacity_);
   std::swap(from->maximum_capacity_, to->maximum_capacity_);
   std::swap(from->minimum_capacity_, to->minimum_capacity_);
-  std::swap(from->age_mark_, to->age_mark_);
   std::swap(from->committed_, to->committed_);
   std::swap(from->anchor_, to->anchor_);
   std::swap(from->current_page_, to->current_page_);
@@ -2079,16 +2085,39 @@ void SemiSpace::Swap(SemiSpace* from, SemiSpace* to) {
   from->FixPagesFlags(0, 0);
 }
 
+void NewSpace::SealIntermediateGeneration() {
+  fragmentation_in_intermediate_generation_ = 0;
+  const Address mark = top();
 
-void SemiSpace::set_age_mark(Address mark) {
-  DCHECK_EQ(Page::FromAllocationAreaAddress(mark)->owner(), this);
-  age_mark_ = mark;
-  // Mark all pages up to the one containing mark.
-  for (Page* p : NewSpacePageRange(space_start(), mark)) {
-    p->SetFlag(MemoryChunk::NEW_SPACE_BELOW_AGE_MARK);
+  if (mark == to_space_.space_start()) {
+    // Do not mark any pages as being part of the intermediate generation if no
+    // objects got moved.
+    return;
+  }
+
+  for (Page* p : NewSpacePageRange(to_space_.space_start(), mark)) {
+    p->SetFlag(MemoryChunk::IN_INTERMEDIATE_GENERATION);
+  }
+
+  Page* p = Page::FromAllocationAreaAddress(mark);
+  if (mark < p->area_end()) {
+    heap()->CreateFillerObjectAt(mark, static_cast<int>(p->area_end() - mark),
+                                 ClearRecordedSlots::kNo);
+    fragmentation_in_intermediate_generation_ =
+        static_cast<size_t>(p->area_end() - mark);
+    DCHECK_EQ(to_space_.current_page(), p);
+    if (to_space_.AdvancePage()) {
+      UpdateAllocationInfo();
+    } else {
+      allocation_info_.Reset(to_space_.page_high(), to_space_.page_high());
+    }
+  }
+  if (FLAG_trace_gc_verbose) {
+    PrintIsolate(heap()->isolate(),
+                 "Sealing intermediate generation: bytes_lost=%zu\n",
+                 fragmentation_in_intermediate_generation_);
   }
 }
-
 
 #ifdef DEBUG
 void SemiSpace::Print() {}

@@ -455,7 +455,7 @@
 
     'debug_bot': {
       'mixins': [
-        'debug', 'static', 'goma', 'v8_enable_slow_dchecks',
+        'debug', 'shared', 'goma', 'v8_enable_slow_dchecks',
         'v8_optimized_debug'],
     },
 

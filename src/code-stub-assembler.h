@@ -19,6 +19,12 @@ class StubCache;
 
 enum class PrimitiveType { kBoolean, kNumber, kString, kSymbol };
 
+enum class UnicodeEncoding {
+  // Different unicode encodings in a |word32|:
+  UTF16,  // hi 16bits -> trailing surrogate or 0, low 16bits -> lead surrogate
+  UTF32,  // full UTF32 code unit / Unicode codepoint
+};
+
 // Provides JavaScript-specific "macro-assembler" functionality on top of the
 // CodeAssembler. By factoring the JavaScript-isms out of the CodeAssembler,
 // it's possible to add JavaScript-specific useful CodeAssembler "macros"
@@ -111,9 +117,7 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* SmiSub(compiler::Node* a, compiler::Node* b);
   compiler::Node* SmiSubWithOverflow(compiler::Node* a, compiler::Node* b);
   compiler::Node* SmiEqual(compiler::Node* a, compiler::Node* b);
-  compiler::Node* SmiAbove(compiler::Node* a, compiler::Node* b);
   compiler::Node* SmiAboveOrEqual(compiler::Node* a, compiler::Node* b);
-  compiler::Node* SmiBelow(compiler::Node* a, compiler::Node* b);
   compiler::Node* SmiLessThan(compiler::Node* a, compiler::Node* b);
   compiler::Node* SmiLessThanOrEqual(compiler::Node* a, compiler::Node* b);
   compiler::Node* SmiMin(compiler::Node* a, compiler::Node* b);
@@ -136,10 +140,8 @@ class CodeStubAssembler : public compiler::CodeAssembler {
 
   // Check a value for smi-ness
   compiler::Node* WordIsSmi(compiler::Node* a);
-  // Check that the value is a non-negative smi.
+  // Check that the value is a positive smi.
   compiler::Node* WordIsPositiveSmi(compiler::Node* a);
-  // Check that the value is a negative smi.
-  compiler::Node* WordIsNotPositiveSmi(compiler::Node* a);
 
   void BranchIfSmiEqual(compiler::Node* a, compiler::Node* b, Label* if_true,
                         Label* if_false) {
@@ -174,10 +176,6 @@ class CodeStubAssembler : public compiler::CodeAssembler {
     BranchIfSimd128Equal(lhs, LoadMap(lhs), rhs, LoadMap(rhs), if_equal,
                          if_notequal);
   }
-
-  void BranchIfSameValueZero(compiler::Node* a, compiler::Node* b,
-                             compiler::Node* context, Label* if_true,
-                             Label* if_false);
 
   void BranchIfFastJSArray(compiler::Node* object, compiler::Node* context,
                            Label* if_true, Label* if_false);
@@ -329,18 +327,6 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* AllocateSeqTwoByteString(int length);
   compiler::Node* AllocateSeqTwoByteString(compiler::Node* context,
                                            compiler::Node* length);
-
-  // Allocate a SlicedOneByteString with the given length, parent and offset.
-  // |length| and |offset| are expected to be tagged.
-  compiler::Node* AllocateSlicedOneByteString(compiler::Node* length,
-                                              compiler::Node* parent,
-                                              compiler::Node* offset);
-  // Allocate a SlicedTwoByteString with the given length, parent and offset.
-  // |length| and |offset| are expected to be tagged.
-  compiler::Node* AllocateSlicedTwoByteString(compiler::Node* length,
-                                              compiler::Node* parent,
-                                              compiler::Node* offset);
-
   // Allocate a JSArray without elements and initialize the header fields.
   compiler::Node* AllocateUninitializedJSArrayWithoutElements(
       ElementsKind kind, compiler::Node* array_map, compiler::Node* length,
@@ -390,16 +376,6 @@ class CodeStubAssembler : public compiler::CodeAssembler {
       compiler::Node* capacity,
       WriteBarrierMode barrier_mode = UPDATE_WRITE_BARRIER,
       ParameterMode mode = INTEGER_PARAMETERS);
-
-  // Copies |character_count| elements from |from_string| to |to_string|
-  // starting at the |from_index|'th character. |from_index| and
-  // |character_count| must be Smis s.t.
-  // 0 <= |from_index| <= |from_index| + |character_count| < from_string.length.
-  void CopyStringCharacters(compiler::Node* from_string,
-                            compiler::Node* to_string,
-                            compiler::Node* from_index,
-                            compiler::Node* character_count,
-                            String::Encoding encoding);
 
   // Loads an element from |array| of |from_kind| elements by given |offset|
   // (NOTE: not index!), does a hole check if |if_hole| is provided and
@@ -472,10 +448,9 @@ class CodeStubAssembler : public compiler::CodeAssembler {
                                    compiler::Node* smi_index);
   // Return the single character string with only {code}.
   compiler::Node* StringFromCharCode(compiler::Node* code);
-  // Return a new string object which holds a substring containing the range
-  // [from,to[ of string.  |from| and |to| are expected to be tagged.
-  compiler::Node* SubString(compiler::Node* context, compiler::Node* string,
-                            compiler::Node* from, compiler::Node* to);
+
+  compiler::Node* StringFromCodePoint(compiler::Node* codepoint,
+                                      UnicodeEncoding encoding);
 
   // Type conversion helpers.
   // Convert a String to a Number.
@@ -489,8 +464,14 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   // Convert any object to a Number.
   compiler::Node* ToNumber(compiler::Node* context, compiler::Node* input);
 
+  enum ToIntegerTruncationMode {
+    kNoTruncation,
+    kTruncateMinusZero,
+  };
+
   // Convert any object to an Integer.
-  compiler::Node* ToInteger(compiler::Node* context, compiler::Node* input);
+  compiler::Node* ToInteger(compiler::Node* context, compiler::Node* input,
+                            ToIntegerTruncationMode mode = kNoTruncation);
 
   // Returns a node that contains a decoded (unsigned!) value of a bit
   // field |T| in |word32|. Returns result as an uint32 node.
@@ -631,7 +612,7 @@ class CodeStubAssembler : public compiler::CodeAssembler {
                                       compiler::Node* callable,
                                       compiler::Node* object);
 
-  // LoadIC helpers.
+  // Load/StoreIC helpers.
   struct LoadICParameters {
     LoadICParameters(compiler::Node* context, compiler::Node* receiver,
                      compiler::Node* name, compiler::Node* slot,
@@ -649,6 +630,15 @@ class CodeStubAssembler : public compiler::CodeAssembler {
     compiler::Node* vector;
   };
 
+  struct StoreICParameters : public LoadICParameters {
+    StoreICParameters(compiler::Node* context, compiler::Node* receiver,
+                      compiler::Node* name, compiler::Node* value,
+                      compiler::Node* slot, compiler::Node* vector)
+        : LoadICParameters(context, receiver, name, slot, vector),
+          value(value) {}
+    compiler::Node* value;
+  };
+
   // Load type feedback vector from the stub caller's frame.
   compiler::Node* LoadTypeFeedbackVectorForStub();
 
@@ -660,12 +650,12 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* LoadReceiverMap(compiler::Node* receiver);
 
   // Checks monomorphic case. Returns {feedback} entry of the vector.
-  compiler::Node* TryMonomorphicCase(const LoadICParameters* p,
+  compiler::Node* TryMonomorphicCase(compiler::Node* slot,
+                                     compiler::Node* vector,
                                      compiler::Node* receiver_map,
                                      Label* if_handler, Variable* var_handler,
                                      Label* if_miss);
-  void HandlePolymorphicCase(const LoadICParameters* p,
-                             compiler::Node* receiver_map,
+  void HandlePolymorphicCase(compiler::Node* receiver_map,
                              compiler::Node* feedback, Label* if_handler,
                              Variable* var_handler, Label* if_miss,
                              int unroll_count);
@@ -746,6 +736,7 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   void LoadGlobalIC(const LoadICParameters* p);
   void KeyedLoadIC(const LoadICParameters* p);
   void KeyedLoadICGeneric(const LoadICParameters* p);
+  void StoreIC(const StoreICParameters* p);
 
   void TransitionElementsKind(compiler::Node* object, compiler::Node* map,
                               ElementsKind from_kind, ElementsKind to_kind,

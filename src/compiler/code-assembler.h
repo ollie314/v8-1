@@ -135,7 +135,9 @@ class RawMachineLabel;
   V(Float64Tanh)                        \
   V(Float64ExtractLowWord32)            \
   V(Float64ExtractHighWord32)           \
+  V(BitcastTaggedToWord)                \
   V(BitcastWordToTagged)                \
+  V(BitcastWordToTaggedSigned)          \
   V(TruncateFloat64ToFloat32)           \
   V(TruncateFloat64ToWord32)            \
   V(TruncateInt64ToInt32)               \
@@ -407,6 +409,9 @@ class CodeAssembler {
   Node* TailCallStub(const CallInterfaceDescriptor& descriptor, Node* target,
                      Node* context, Node* arg1, Node* arg2, Node* arg3,
                      Node* arg4, size_t result_size = 1);
+  Node* TailCallStub(const CallInterfaceDescriptor& descriptor, Node* target,
+                     Node* context, Node* arg1, Node* arg2, Node* arg3,
+                     Node* arg4, Node* arg5, size_t result_size = 1);
 
   Node* TailCallStub(const CallInterfaceDescriptor& descriptor, Node* target,
                      Node* context, const Arg& arg1, const Arg& arg2,

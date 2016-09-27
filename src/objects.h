@@ -1302,7 +1302,8 @@ class Object {
   MUST_USE_RESULT static MaybeHandle<Object> InstanceOf(
       Isolate* isolate, Handle<Object> object, Handle<Object> callable);
 
-  MUST_USE_RESULT static MaybeHandle<Object> GetProperty(LookupIterator* it);
+  V8_EXPORT_PRIVATE MUST_USE_RESULT static MaybeHandle<Object> GetProperty(
+      LookupIterator* it);
 
   // ES6 [[Set]] (when passed DONT_THROW)
   // Invariants for this and related functions (unless stated otherwise):
@@ -1965,7 +1966,7 @@ class JSReceiver: public HeapObject {
       PropertyDescriptor* desc, PropertyDescriptor* current,
       ShouldThrow should_throw, Handle<Name> property_name = Handle<Name>());
 
-  MUST_USE_RESULT static Maybe<bool> GetOwnPropertyDescriptor(
+  V8_EXPORT_PRIVATE MUST_USE_RESULT static Maybe<bool> GetOwnPropertyDescriptor(
       Isolate* isolate, Handle<JSReceiver> object, Handle<Object> key,
       PropertyDescriptor* desc);
   MUST_USE_RESULT static Maybe<bool> GetOwnPropertyDescriptor(
@@ -3504,7 +3505,8 @@ class StringTable: public HashTable<StringTable,
  public:
   // Find string in the string table. If it is not there yet, it is
   // added. The return value is the string found.
-  static Handle<String> LookupString(Isolate* isolate, Handle<String> key);
+  V8_EXPORT_PRIVATE static Handle<String> LookupString(Isolate* isolate,
+                                                       Handle<String> key);
   static Handle<String> LookupKey(Isolate* isolate, HashTableKey* key);
   static String* LookupKeyIfExists(Isolate* isolate, HashTableKey* key);
 
@@ -7948,36 +7950,29 @@ class Module : public Struct {
   // Embedder-specified data
   DECL_ACCESSORS(embedder_data, Object)
 
+  // Get the SharedFunctionInfo associated with the code.
+  inline SharedFunctionInfo* shared() const;
+
   // Get the ModuleInfo associated with the code.
   inline ModuleInfo* info() const;
 
-  static void CreateExport(Handle<Module> module, Handle<FixedArray> names);
+  // Compute a hash for this object.
+  inline uint32_t Hash() const;
+
+  // Implementation of spec operation ModuleDeclarationInstantiation.
+  // Returns false if an exception occurred during instantiation, true
+  // otherwise.
+  static MUST_USE_RESULT bool Instantiate(Handle<Module> module,
+                                          v8::Local<v8::Context> context,
+                                          v8::Module::ResolveCallback callback,
+                                          v8::Local<v8::Value> callback_data);
+
   static Handle<Object> LoadExport(Handle<Module> module, Handle<String> name);
   static void StoreExport(Handle<Module> module, Handle<String> name,
                           Handle<Object> value);
 
-  static void CreateIndirectExport(Handle<Module> module, Handle<String> name,
-                                   Handle<ModuleInfoEntry> entry);
-
   static Handle<Object> LoadImport(Handle<Module> module, Handle<String> name,
                                    int module_request);
-
-  // The [must_resolve] argument indicates whether or not an exception should be
-  // thrown if the module does not provide an export named [name].
-  //
-  // If [must_resolve] is true, a null result indicates an exception. If
-  // [must_resolve] is false, a null result does not necessarily indicate an
-  // exception, but there may be one pending.
-  //
-  // Currently, an exception is always thrown in the case of a cycle and in the
-  // case of conflicting star exports.  TODO(neis): Make that spec-compliant.
-  static MUST_USE_RESULT MaybeHandle<Cell> ResolveExport(Handle<Module> module,
-                                                         Handle<String> name,
-                                                         bool must_resolve);
-  static MUST_USE_RESULT MaybeHandle<Cell> ResolveImport(Handle<Module> module,
-                                                         Handle<String> name,
-                                                         int module_request,
-                                                         bool must_resolve);
 
   static const int kCodeOffset = HeapObject::kHeaderSize;
   static const int kExportsOffset = kCodeOffset + kPointerSize;
@@ -7989,9 +7984,31 @@ class Module : public Struct {
  private:
   enum { kEvaluatedBit };
 
+  static void CreateExport(Handle<Module> module, Handle<FixedArray> names);
+  static void CreateIndirectExport(Handle<Module> module, Handle<String> name,
+                                   Handle<ModuleInfoEntry> entry);
+
+  // The [must_resolve] argument indicates whether or not an exception should be
+  // thrown if the module does not provide an export named [name].
+  //
+  // If [must_resolve] is true, a null result indicates an exception. If
+  // [must_resolve] is false, a null result does not necessarily indicate an
+  // exception, but there may be one pending.
+  //
+  // Currently, an exception is always thrown in the case of a cycle and in the
+  // case of conflicting star exports.  TODO(neis): Make that spec-compliant.
+  class ResolveSet;
+  static MUST_USE_RESULT MaybeHandle<Cell> ResolveExport(
+      Handle<Module> module, Handle<String> name, bool must_resolve,
+      ResolveSet* resolve_set);
+  static MUST_USE_RESULT MaybeHandle<Cell> ResolveImport(
+      Handle<Module> module, Handle<String> name, int module_request,
+      bool must_resolve, ResolveSet* resolve_set);
+
   // Helper for ResolveExport.
   static MUST_USE_RESULT MaybeHandle<Cell> ResolveExportUsingStarExports(
-      Handle<Module> module, Handle<String> name, bool must_resolve);
+      Handle<Module> module, Handle<String> name, bool must_resolve,
+      ResolveSet* resolve_set);
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(Module);
 };
@@ -8527,7 +8544,8 @@ class JSRegExp: public JSObject {
   DECL_ACCESSORS(flags, Object)
   DECL_ACCESSORS(source, Object)
 
-  static MaybeHandle<JSRegExp> New(Handle<String> source, Flags flags);
+  V8_EXPORT_PRIVATE static MaybeHandle<JSRegExp> New(Handle<String> source,
+                                                     Flags flags);
   static Handle<JSRegExp> Copy(Handle<JSRegExp> regexp);
 
   static MaybeHandle<JSRegExp> Initialize(Handle<JSRegExp> regexp,
@@ -8984,8 +9002,7 @@ class AliasedArgumentsEntry: public Struct {
 enum AllowNullsFlag {ALLOW_NULLS, DISALLOW_NULLS};
 enum RobustnessFlag {ROBUST_STRING_TRAVERSAL, FAST_STRING_TRAVERSAL};
 
-
-class StringHasher {
+class V8_EXPORT_PRIVATE StringHasher {
  public:
   explicit inline StringHasher(int length, uint32_t seed);
 
@@ -9608,7 +9625,7 @@ class String: public Name {
   static bool SlowEquals(Handle<String> one, Handle<String> two);
 
   // Slow case of AsArrayIndex.
-  bool SlowAsArrayIndex(uint32_t* index);
+  V8_EXPORT_PRIVATE bool SlowAsArrayIndex(uint32_t* index);
 
   // Compute and set the hash code.
   uint32_t ComputeAndSetHash();

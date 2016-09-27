@@ -296,7 +296,7 @@ Node* CodeStubAssembler::SmiShiftBitsConstant() {
 
 Node* CodeStubAssembler::SmiFromWord32(Node* value) {
   value = ChangeInt32ToIntPtr(value);
-  return WordShl(value, SmiShiftBitsConstant());
+  return BitcastWordToTaggedSigned(WordShl(value, SmiShiftBitsConstant()));
 }
 
 Node* CodeStubAssembler::SmiTag(Node* value) {
@@ -304,15 +304,15 @@ Node* CodeStubAssembler::SmiTag(Node* value) {
   if (ToInt32Constant(value, constant_value) && Smi::IsValid(constant_value)) {
     return SmiConstant(Smi::FromInt(constant_value));
   }
-  return WordShl(value, SmiShiftBitsConstant());
+  return BitcastWordToTaggedSigned(WordShl(value, SmiShiftBitsConstant()));
 }
 
 Node* CodeStubAssembler::SmiUntag(Node* value) {
-  return WordSar(value, SmiShiftBitsConstant());
+  return WordSar(BitcastTaggedToWord(value), SmiShiftBitsConstant());
 }
 
 Node* CodeStubAssembler::SmiToWord32(Node* value) {
-  Node* result = WordSar(value, SmiShiftBitsConstant());
+  Node* result = SmiUntag(value);
   if (Is64()) {
     result = TruncateInt64ToInt32(result);
   }
@@ -337,16 +337,8 @@ Node* CodeStubAssembler::SmiSubWithOverflow(Node* a, Node* b) {
 
 Node* CodeStubAssembler::SmiEqual(Node* a, Node* b) { return WordEqual(a, b); }
 
-Node* CodeStubAssembler::SmiAbove(Node* a, Node* b) {
-  return UintPtrGreaterThan(a, b);
-}
-
 Node* CodeStubAssembler::SmiAboveOrEqual(Node* a, Node* b) {
   return UintPtrGreaterThanOrEqual(a, b);
-}
-
-Node* CodeStubAssembler::SmiBelow(Node* a, Node* b) {
-  return UintPtrLessThan(a, b);
 }
 
 Node* CodeStubAssembler::SmiLessThan(Node* a, Node* b) {
@@ -503,85 +495,6 @@ Node* CodeStubAssembler::WordIsSmi(Node* a) {
 Node* CodeStubAssembler::WordIsPositiveSmi(Node* a) {
   return WordEqual(WordAnd(a, IntPtrConstant(kSmiTagMask | kSmiSignMask)),
                    IntPtrConstant(0));
-}
-
-Node* CodeStubAssembler::WordIsNotPositiveSmi(Node* a) {
-  return WordNotEqual(WordAnd(a, IntPtrConstant(kSmiTagMask | kSmiSignMask)),
-                      IntPtrConstant(0));
-}
-
-void CodeStubAssembler::BranchIfSameValueZero(Node* a, Node* b, Node* context,
-                                              Label* if_true, Label* if_false) {
-  Node* number_map = HeapNumberMapConstant();
-  Label a_isnumber(this), a_isnotnumber(this), b_isnumber(this), a_isnan(this),
-      float_not_equal(this);
-  // If register A and register B are identical, goto `if_true`
-  GotoIf(WordEqual(a, b), if_true);
-  // If either register A or B are Smis, goto `if_false`
-  GotoIf(Word32Or(WordIsSmi(a), WordIsSmi(b)), if_false);
-  // GotoIf(WordIsSmi(b), if_false);
-
-  Node* a_map = LoadMap(a);
-  Node* b_map = LoadMap(b);
-  Branch(WordEqual(a_map, number_map), &a_isnumber, &a_isnotnumber);
-
-  // If both register A and B are HeapNumbers, return true if they are equal,
-  // or if both are NaN
-  Bind(&a_isnumber);
-  {
-    Branch(WordEqual(b_map, number_map), &b_isnumber, if_false);
-
-    Bind(&b_isnumber);
-    Node* a_value = LoadHeapNumberValue(a);
-    Node* b_value = LoadHeapNumberValue(b);
-    BranchIfFloat64Equal(a_value, b_value, if_true, &float_not_equal);
-
-    Bind(&float_not_equal);
-    BranchIfFloat64IsNaN(a_value, &a_isnan, if_false);
-
-    Bind(&a_isnan);
-    BranchIfFloat64IsNaN(a_value, if_true, if_false);
-  }
-
-  Bind(&a_isnotnumber);
-  {
-    Label a_isstring(this), a_isnotstring(this);
-    Node* a_instance_type = LoadMapInstanceType(a_map);
-
-    Branch(Int32LessThan(a_instance_type, Int32Constant(FIRST_NONSTRING_TYPE)),
-           &a_isstring, &a_isnotstring);
-
-    Bind(&a_isstring);
-    {
-      Label b_isstring(this), b_isnotstring(this);
-      Node* b_instance_type = LoadInstanceType(b_map);
-
-      Branch(
-          Int32LessThan(b_instance_type, Int32Constant(FIRST_NONSTRING_TYPE)),
-          &b_isstring, if_false);
-
-      Bind(&b_isstring);
-      {
-        Callable callable = CodeFactory::StringEqual(isolate());
-        Node* result = CallStub(callable, context, a, b);
-        Branch(WordEqual(BooleanConstant(true), result), if_true, if_false);
-      }
-    }
-
-    Bind(&a_isnotstring);
-    {
-      // Check if {lhs} is a Simd128Value.
-      Label a_issimd128value(this);
-      Branch(Word32Equal(a_instance_type, Int32Constant(SIMD128_VALUE_TYPE)),
-             &a_issimd128value, if_false);
-
-      Bind(&a_issimd128value);
-      {
-        // Load the map of {rhs}.
-        BranchIfSimd128Equal(a, a_map, b, b_map, if_true, if_false);
-      }
-    }
-  }
 }
 
 void CodeStubAssembler::BranchIfSimd128Equal(Node* lhs, Node* lhs_map,
@@ -1395,44 +1308,11 @@ Node* CodeStubAssembler::AllocateSeqTwoByteString(Node* context, Node* length) {
   return var_result.value();
 }
 
-Node* CodeStubAssembler::AllocateSlicedOneByteString(Node* length, Node* parent,
-                                                     Node* offset) {
-  Node* result = Allocate(SlicedString::kSize);
-  Node* map = LoadRoot(Heap::kSlicedOneByteStringMapRootIndex);
-  StoreMapNoWriteBarrier(result, map);
-  StoreObjectFieldNoWriteBarrier(result, SlicedString::kLengthOffset, length,
-                                 MachineRepresentation::kTagged);
-  StoreObjectFieldNoWriteBarrier(result, SlicedString::kHashFieldOffset,
-                                 Int32Constant(String::kEmptyHashField),
-                                 MachineRepresentation::kWord32);
-  StoreObjectFieldNoWriteBarrier(result, SlicedString::kParentOffset, parent,
-                                 MachineRepresentation::kTagged);
-  StoreObjectFieldNoWriteBarrier(result, SlicedString::kOffsetOffset, offset,
-                                 MachineRepresentation::kTagged);
-  return result;
-}
-
-Node* CodeStubAssembler::AllocateSlicedTwoByteString(Node* length, Node* parent,
-                                                     Node* offset) {
-  Node* result = Allocate(SlicedString::kSize);
-  Node* map = LoadRoot(Heap::kSlicedStringMapRootIndex);
-  StoreMapNoWriteBarrier(result, map);
-  StoreObjectFieldNoWriteBarrier(result, SlicedString::kLengthOffset, length,
-                                 MachineRepresentation::kTagged);
-  StoreObjectFieldNoWriteBarrier(result, SlicedString::kHashFieldOffset,
-                                 Int32Constant(String::kEmptyHashField),
-                                 MachineRepresentation::kWord32);
-  StoreObjectFieldNoWriteBarrier(result, SlicedString::kParentOffset, parent,
-                                 MachineRepresentation::kTagged);
-  StoreObjectFieldNoWriteBarrier(result, SlicedString::kOffsetOffset, offset,
-                                 MachineRepresentation::kTagged);
-  return result;
-}
-
 Node* CodeStubAssembler::AllocateUninitializedJSArrayWithoutElements(
     ElementsKind kind, Node* array_map, Node* length, Node* allocation_site) {
   Comment("begin allocation of JSArray without elements");
   int base_size = JSArray::kSize;
+
   if (allocation_site != nullptr) {
     base_size += AllocationMemento::kSize;
   }
@@ -1763,75 +1643,6 @@ void CodeStubAssembler::CopyFixedArrayElements(
   Bind(&done);
   IncrementCounter(isolate()->counters()->inlined_copied_elements(), 1);
   Comment("] CopyFixedArrayElements");
-}
-
-void CodeStubAssembler::CopyStringCharacters(compiler::Node* from_string,
-                                             compiler::Node* to_string,
-                                             compiler::Node* from_index,
-                                             compiler::Node* character_count,
-                                             String::Encoding encoding) {
-  Label out(this);
-
-  // Nothing to do for zero characters.
-
-  GotoIf(SmiLessThanOrEqual(character_count, SmiConstant(Smi::FromInt(0))),
-         &out);
-
-  // Calculate offsets into the strings.
-
-  Node* from_offset;
-  Node* limit_offset;
-  Node* to_offset;
-
-  {
-    Node* byte_count = SmiToWord32(character_count);
-    Node* from_byte_index = SmiToWord32(from_index);
-    if (encoding == String::ONE_BYTE_ENCODING) {
-      const int offset = SeqOneByteString::kHeaderSize - kHeapObjectTag;
-      from_offset = IntPtrAdd(IntPtrConstant(offset), from_byte_index);
-      limit_offset = IntPtrAdd(from_offset, byte_count);
-      to_offset = IntPtrConstant(offset);
-    } else {
-      STATIC_ASSERT(2 == sizeof(uc16));
-      byte_count = WordShl(byte_count, 1);
-      from_byte_index = WordShl(from_byte_index, 1);
-
-      const int offset = SeqTwoByteString::kHeaderSize - kHeapObjectTag;
-      from_offset = IntPtrAdd(IntPtrConstant(offset), from_byte_index);
-      limit_offset = IntPtrAdd(from_offset, byte_count);
-      to_offset = IntPtrConstant(offset);
-    }
-  }
-
-  Variable var_from_offset(this, MachineType::PointerRepresentation());
-  Variable var_to_offset(this, MachineType::PointerRepresentation());
-
-  var_from_offset.Bind(from_offset);
-  var_to_offset.Bind(to_offset);
-
-  Variable* vars[] = {&var_from_offset, &var_to_offset};
-  Label decrement(this, 2, vars);
-
-  Label loop(this, 2, vars);
-  Goto(&loop);
-  Bind(&loop);
-  {
-    from_offset = var_from_offset.value();
-    to_offset = var_to_offset.value();
-
-    // TODO(jgruber): We could make this faster through larger copy unit sizes.
-    Node* value = Load(MachineType::Uint8(), from_string, from_offset);
-    StoreNoWriteBarrier(MachineRepresentation::kWord8, to_string, to_offset,
-                        value);
-
-    Node* new_from_offset = IntPtrAdd(from_offset, IntPtrConstant(1));
-    var_from_offset.Bind(new_from_offset);
-    var_to_offset.Bind(IntPtrAdd(to_offset, IntPtrConstant(1)));
-
-    Branch(WordNotEqual(new_from_offset, limit_offset), &loop, &out);
-  }
-
-  Bind(&out);
 }
 
 Node* CodeStubAssembler::LoadElementAndPrepareForStore(Node* array,
@@ -2544,247 +2355,55 @@ Node* CodeStubAssembler::StringFromCharCode(Node* code) {
   return var_result.value();
 }
 
-Node* CodeStubAssembler::SubString(Node* context, Node* string, Node* from,
-                                   Node* to) {
-  Label end(this);
-  Label runtime(this);
+Node* CodeStubAssembler::StringFromCodePoint(compiler::Node* codepoint,
+                                             UnicodeEncoding encoding) {
+  Variable var_result(this, MachineRepresentation::kTagged);
+  var_result.Bind(EmptyStringConstant());
 
-  Variable var_instance_type(this, MachineRepresentation::kWord8);  // Int32.
-  Variable var_result(this, MachineRepresentation::kTagged);        // String.
-  Variable var_from(this, MachineRepresentation::kTagged);          // Smi.
-  Variable var_string(this, MachineRepresentation::kTagged);        // String.
+  Label if_isword16(this), if_isword32(this), return_result(this);
 
-  var_instance_type.Bind(Int32Constant(0));
-  var_string.Bind(string);
-  var_from.Bind(from);
+  Branch(Uint32LessThan(codepoint, Int32Constant(0x10000)), &if_isword16,
+         &if_isword32);
 
-  // Make sure first argument is a string.
-
-  // Bailout if receiver is a Smi.
-  GotoIf(WordIsSmi(string), &runtime);
-
-  // Load the instance type of the {string}.
-  Node* const instance_type = LoadInstanceType(string);
-  var_instance_type.Bind(instance_type);
-
-  // Check if {string} is a String.
-  GotoIf(Int32GreaterThanOrEqual(instance_type,
-                                 Int32Constant(FIRST_NONSTRING_TYPE)),
-         &runtime);
-
-  // Make sure that both from and to are non-negative smis.
-
-  GotoIf(WordIsNotPositiveSmi(from), &runtime);
-  GotoIf(WordIsNotPositiveSmi(to), &runtime);
-
-  Node* const substr_length = SmiSub(to, from);
-  Node* const string_length = LoadStringLength(string);
-
-  // Begin dispatching based on substring length.
-
-  Label original_string_or_invalid_length(this);
-  GotoIf(SmiAboveOrEqual(substr_length, string_length),
-         &original_string_or_invalid_length);
-
-  // A real substring (substr_length < string_length).
-
-  Label single_char(this);
-  GotoIf(SmiEqual(substr_length, SmiConstant(Smi::FromInt(1))), &single_char);
-
-  // TODO(jgruber): Add an additional case for substring of length == 0?
-
-  // Deal with different string types: update the index if necessary
-  // and put the underlying string into var_string.
-
-  // If the string is not indirect, it can only be sequential or external.
-  STATIC_ASSERT(kIsIndirectStringMask == (kSlicedStringTag & kConsStringTag));
-  STATIC_ASSERT(kIsIndirectStringMask != 0);
-  Label underlying_unpacked(this);
-  GotoIf(Word32Equal(
-             Word32And(instance_type, Int32Constant(kIsIndirectStringMask)),
-             Int32Constant(0)),
-         &underlying_unpacked);
-
-  // The subject string is either a sliced or cons string.
-
-  Label sliced_string(this);
-  GotoIf(Word32NotEqual(
-             Word32And(instance_type, Int32Constant(kSlicedNotConsMask)),
-             Int32Constant(0)),
-         &sliced_string);
-
-  // Cons string.  Check whether it is flat, then fetch first part.
-  // Flat cons strings have an empty second part.
+  Bind(&if_isword16);
   {
-    GotoIf(WordNotEqual(LoadObjectField(string, ConsString::kSecondOffset),
-                        EmptyStringConstant()),
-           &runtime);
-
-    Node* first_string_part = LoadObjectField(string, ConsString::kFirstOffset);
-    var_string.Bind(first_string_part);
-    var_instance_type.Bind(LoadInstanceType(first_string_part));
-
-    Goto(&underlying_unpacked);
+    var_result.Bind(StringFromCharCode(codepoint));
+    Goto(&return_result);
   }
 
-  Bind(&sliced_string);
+  Bind(&if_isword32);
   {
-    // Fetch parent and correct start index by offset.
-    Node* sliced_offset = LoadObjectField(string, SlicedString::kOffsetOffset);
-    var_from.Bind(SmiAdd(from, sliced_offset));
+    switch (encoding) {
+      case UnicodeEncoding::UTF16:
+        break;
+      case UnicodeEncoding::UTF32: {
+        // Convert UTF32 to UTF16 code units, and store as a 32 bit word.
+        Node* lead_offset = Int32Constant(0xD800 - (0x10000 >> 10));
 
-    Node* slice_parent = LoadObjectField(string, SlicedString::kParentOffset);
-    var_string.Bind(slice_parent);
+        // lead = (codepoint >> 10) + LEAD_OFFSET
+        Node* lead =
+            Int32Add(WordShr(codepoint, Int32Constant(10)), lead_offset);
 
-    Node* slice_parent_instance_type = LoadInstanceType(slice_parent);
-    var_instance_type.Bind(slice_parent_instance_type);
+        // trail = (codepoint & 0x3FF) + 0xDC00;
+        Node* trail = Int32Add(Word32And(codepoint, Int32Constant(0x3FF)),
+                               Int32Constant(0xDC00));
 
-    Goto(&underlying_unpacked);
+        // codpoint = (trail << 16) | lead;
+        codepoint = Word32Or(WordShl(trail, Int32Constant(16)), lead);
+        break;
+      }
+    }
+
+    Node* value = AllocateSeqTwoByteString(2);
+    StoreNoWriteBarrier(
+        MachineRepresentation::kWord32, value,
+        IntPtrConstant(SeqTwoByteString::kHeaderSize - kHeapObjectTag),
+        codepoint);
+    var_result.Bind(value);
+    Goto(&return_result);
   }
 
-  // The subject string can only be external or sequential string of either
-  // encoding at this point.
-  Bind(&underlying_unpacked);
-
-  if (FLAG_string_slices) {
-    Label copy_routine(this);
-
-    // Short slice.  Copy instead of slicing.
-    GotoIf(SmiLessThan(substr_length,
-                       SmiConstant(Smi::FromInt(SlicedString::kMinLength))),
-           &copy_routine);
-
-    // Allocate new sliced string.
-
-    Label two_byte_slice(this);
-    STATIC_ASSERT((kStringEncodingMask & kOneByteStringTag) != 0);
-    STATIC_ASSERT((kStringEncodingMask & kTwoByteStringTag) == 0);
-
-    Counters* counters = isolate()->counters();
-    IncrementCounter(counters->sub_string_native(), 1);
-
-    GotoIf(Word32Equal(Word32And(var_instance_type.value(),
-                                 Int32Constant(kStringEncodingMask)),
-                       Int32Constant(0)),
-           &two_byte_slice);
-
-    var_result.Bind(AllocateSlicedOneByteString(
-        substr_length, var_string.value(), var_from.value()));
-    Goto(&end);
-
-    Bind(&two_byte_slice);
-
-    var_result.Bind(AllocateSlicedTwoByteString(
-        substr_length, var_string.value(), var_from.value()));
-    Goto(&end);
-
-    Bind(&copy_routine);
-  }
-
-  // The subject string can only be external or sequential string of either
-  // encoding at this point.
-  STATIC_ASSERT(kExternalStringTag != 0);
-  STATIC_ASSERT(kSeqStringTag == 0);
-  Label sequential_string(this);
-  GotoIf(Word32Equal(Word32And(var_instance_type.value(),
-                               Int32Constant(kExternalStringTag)),
-                     Int32Constant(0)),
-         &sequential_string);
-
-  // Handle external string.
-  {
-    // Rule out short external strings.
-    STATIC_ASSERT(kShortExternalStringTag != 0);
-    GotoIf(Word32NotEqual(Word32And(var_instance_type.value(),
-                                    Int32Constant(kShortExternalStringMask)),
-                          Int32Constant(0)),
-           &runtime);
-
-    // Move the pointer so that offset-wise, it looks like a sequential string.
-    STATIC_ASSERT(SeqTwoByteString::kHeaderSize ==
-                  SeqOneByteString::kHeaderSize);
-
-    Node* resource_data =
-        LoadObjectField(var_string.value(), ExternalString::kResourceDataOffset,
-                        MachineType::AnyTagged());
-    var_string.Bind(IntPtrSub(
-        resource_data,
-        Int32Constant(SeqTwoByteString::kHeaderSize - kHeapObjectTag)));
-
-    Goto(&sequential_string);
-  }
-
-  Label two_byte_sequential(this);
-  Bind(&sequential_string);
-  {
-    STATIC_ASSERT((kOneByteStringTag & kStringEncodingMask) != 0);
-    GotoIf(Word32Equal(Word32And(var_instance_type.value(),
-                                 Int32Constant(kStringEncodingMask)),
-                       Int32Constant(0)),
-           &two_byte_sequential);
-  }
-
-  // The subject string is a sequential one-byte string.
-  {
-    Node* result = AllocateSeqOneByteString(context, SmiToWord(substr_length));
-    CopyStringCharacters(var_string.value(), result, var_from.value(),
-                         substr_length, String::ONE_BYTE_ENCODING);
-    var_result.Bind(result);
-
-    Counters* counters = isolate()->counters();
-    IncrementCounter(counters->sub_string_native(), 1);
-
-    Goto(&end);
-  }
-
-  // The subject string is a sequential two-byte string.
-  Bind(&two_byte_sequential);
-  {
-    Node* result = AllocateSeqTwoByteString(context, SmiToWord(substr_length));
-    CopyStringCharacters(var_string.value(), result, var_from.value(),
-                         substr_length, String::TWO_BYTE_ENCODING);
-    var_result.Bind(result);
-
-    Counters* counters = isolate()->counters();
-    IncrementCounter(counters->sub_string_native(), 1);
-
-    Goto(&end);
-  }
-
-  // Substrings of length 1 are generated through CharCodeAt and FromCharCode.
-  Bind(&single_char);
-  {
-    Node* char_code = StringCharCodeAt(var_string.value(), var_from.value());
-    var_result.Bind(StringFromCharCode(char_code));
-    Goto(&end);
-  }
-
-  Bind(&original_string_or_invalid_length);
-  {
-    // Longer than original string's length or negative: unsafe arguments.
-    GotoIf(SmiAbove(substr_length, string_length), &runtime);
-
-    // Equal length - check if {from, to} == {0, str.length}.
-    GotoIf(SmiAbove(from, SmiConstant(Smi::FromInt(0))), &runtime);
-
-    // Return the original string (substr_length == string_length).
-
-    Counters* counters = isolate()->counters();
-    IncrementCounter(counters->sub_string_native(), 1);
-
-    var_result.Bind(string);
-    Goto(&end);
-  }
-
-  // Fall back to a runtime call.
-  Bind(&runtime);
-  {
-    var_result.Bind(
-        CallRuntime(Runtime::kSubString, context, string, from, to));
-    Goto(&end);
-  }
-
-  Bind(&end);
+  Bind(&return_result);
   return var_result.value();
 }
 
@@ -2985,7 +2604,8 @@ Node* CodeStubAssembler::ToNumber(Node* context, Node* input) {
   return var_result.value();
 }
 
-Node* CodeStubAssembler::ToInteger(Node* context, Node* input) {
+Node* CodeStubAssembler::ToInteger(Node* context, Node* input,
+                                   ToIntegerTruncationMode mode) {
   // We might need to loop once for ToNumber conversion.
   Variable var_arg(this, MachineRepresentation::kTagged);
   Label loop(this, &var_arg), out(this);
@@ -3018,6 +2638,12 @@ Node* CodeStubAssembler::ToInteger(Node* context, Node* input) {
 
       // Truncate {arg} towards zero.
       Node* value = Float64Trunc(arg_value);
+
+      if (mode == kTruncateMinusZero) {
+        // Truncate -0.0 to 0.
+        GotoIf(Float64Equal(value, Float64Constant(0.0)), &return_zero);
+      }
+
       var_arg.Bind(ChangeFloat64ToTagged(value));
       Goto(&out);
     }
@@ -4104,23 +3730,23 @@ compiler::Node* CodeStubAssembler::LoadReceiverMap(compiler::Node* receiver) {
 }
 
 compiler::Node* CodeStubAssembler::TryMonomorphicCase(
-    const LoadICParameters* p, compiler::Node* receiver_map, Label* if_handler,
-    Variable* var_handler, Label* if_miss) {
+    compiler::Node* slot, compiler::Node* vector, compiler::Node* receiver_map,
+    Label* if_handler, Variable* var_handler, Label* if_miss) {
   DCHECK_EQ(MachineRepresentation::kTagged, var_handler->rep());
 
   // TODO(ishell): add helper class that hides offset computations for a series
   // of loads.
   int32_t header_size = FixedArray::kHeaderSize - kHeapObjectTag;
-  Node* offset = ElementOffsetFromIndex(p->slot, FAST_HOLEY_ELEMENTS,
+  Node* offset = ElementOffsetFromIndex(slot, FAST_HOLEY_ELEMENTS,
                                         SMI_PARAMETERS, header_size);
-  Node* feedback = Load(MachineType::AnyTagged(), p->vector, offset);
+  Node* feedback = Load(MachineType::AnyTagged(), vector, offset);
 
   // Try to quickly handle the monomorphic case without knowing for sure
   // if we have a weak cell in feedback. We do know it's safe to look
   // at WeakCell::kValueOffset.
   GotoUnless(WordEqual(receiver_map, LoadWeakCellValue(feedback)), if_miss);
 
-  Node* handler = Load(MachineType::AnyTagged(), p->vector,
+  Node* handler = Load(MachineType::AnyTagged(), vector,
                        IntPtrAdd(offset, IntPtrConstant(kPointerSize)));
 
   var_handler->Bind(handler);
@@ -4129,9 +3755,8 @@ compiler::Node* CodeStubAssembler::TryMonomorphicCase(
 }
 
 void CodeStubAssembler::HandlePolymorphicCase(
-    const LoadICParameters* p, compiler::Node* receiver_map,
-    compiler::Node* feedback, Label* if_handler, Variable* var_handler,
-    Label* if_miss, int unroll_count) {
+    compiler::Node* receiver_map, compiler::Node* feedback, Label* if_handler,
+    Variable* var_handler, Label* if_miss, int unroll_count) {
   DCHECK_EQ(MachineRepresentation::kTagged, var_handler->rep());
 
   // Iterate {feedback} array.
@@ -4664,8 +4289,9 @@ void CodeStubAssembler::LoadIC(const LoadICParameters* p) {
   Node* receiver_map = LoadReceiverMap(p->receiver);
 
   // Check monomorphic case.
-  Node* feedback = TryMonomorphicCase(p, receiver_map, &if_handler,
-                                      &var_handler, &try_polymorphic);
+  Node* feedback =
+      TryMonomorphicCase(p->slot, p->vector, receiver_map, &if_handler,
+                         &var_handler, &try_polymorphic);
   Bind(&if_handler);
   {
     HandleLoadICHandlerCase(p, var_handler.value(), &miss);
@@ -4677,7 +4303,7 @@ void CodeStubAssembler::LoadIC(const LoadICParameters* p) {
     Comment("LoadIC_try_polymorphic");
     GotoUnless(WordEqual(LoadMap(feedback), FixedArrayMapConstant()),
                &try_megamorphic);
-    HandlePolymorphicCase(p, receiver_map, feedback, &if_handler, &var_handler,
+    HandlePolymorphicCase(receiver_map, feedback, &if_handler, &var_handler,
                           &miss, 2);
   }
 
@@ -4709,8 +4335,9 @@ void CodeStubAssembler::KeyedLoadIC(const LoadICParameters* p) {
   Node* receiver_map = LoadReceiverMap(p->receiver);
 
   // Check monomorphic case.
-  Node* feedback = TryMonomorphicCase(p, receiver_map, &if_handler,
-                                      &var_handler, &try_polymorphic);
+  Node* feedback =
+      TryMonomorphicCase(p->slot, p->vector, receiver_map, &if_handler,
+                         &var_handler, &try_polymorphic);
   Bind(&if_handler);
   {
     HandleLoadICHandlerCase(p, var_handler.value(), &miss, kSupportElements);
@@ -4722,7 +4349,7 @@ void CodeStubAssembler::KeyedLoadIC(const LoadICParameters* p) {
     Comment("KeyedLoadIC_try_polymorphic");
     GotoUnless(WordEqual(LoadMap(feedback), FixedArrayMapConstant()),
                &try_megamorphic);
-    HandlePolymorphicCase(p, receiver_map, feedback, &if_handler, &var_handler,
+    HandlePolymorphicCase(receiver_map, feedback, &if_handler, &var_handler,
                           &miss, 2);
   }
 
@@ -4748,8 +4375,8 @@ void CodeStubAssembler::KeyedLoadIC(const LoadICParameters* p) {
         p->slot, FAST_HOLEY_ELEMENTS, SMI_PARAMETERS,
         FixedArray::kHeaderSize + kPointerSize - kHeapObjectTag);
     Node* array = Load(MachineType::AnyTagged(), p->vector, offset);
-    HandlePolymorphicCase(p, receiver_map, array, &if_handler, &var_handler,
-                          &miss, 1);
+    HandlePolymorphicCase(receiver_map, array, &if_handler, &var_handler, &miss,
+                          1);
   }
   Bind(&miss);
   {
@@ -4912,6 +4539,55 @@ void CodeStubAssembler::KeyedLoadICGeneric(const LoadICParameters* p) {
     // TODO(jkummerow): Should we use the GetProperty TF stub instead?
     TailCallRuntime(Runtime::kKeyedGetProperty, p->context, p->receiver,
                     p->name);
+  }
+}
+
+void CodeStubAssembler::StoreIC(const StoreICParameters* p) {
+  Variable var_handler(this, MachineRepresentation::kTagged);
+  // TODO(ishell): defer blocks when it works.
+  Label if_handler(this, &var_handler), try_polymorphic(this),
+      try_megamorphic(this /*, Label::kDeferred*/),
+      miss(this /*, Label::kDeferred*/);
+
+  Node* receiver_map = LoadReceiverMap(p->receiver);
+
+  // Check monomorphic case.
+  Node* feedback =
+      TryMonomorphicCase(p->slot, p->vector, receiver_map, &if_handler,
+                         &var_handler, &try_polymorphic);
+  Bind(&if_handler);
+  {
+    Comment("StoreIC_if_handler");
+    StoreWithVectorDescriptor descriptor(isolate());
+    TailCallStub(descriptor, var_handler.value(), p->context, p->receiver,
+                 p->name, p->value, p->slot, p->vector);
+  }
+
+  Bind(&try_polymorphic);
+  {
+    // Check polymorphic case.
+    Comment("StoreIC_try_polymorphic");
+    GotoUnless(
+        WordEqual(LoadMap(feedback), LoadRoot(Heap::kFixedArrayMapRootIndex)),
+        &try_megamorphic);
+    HandlePolymorphicCase(receiver_map, feedback, &if_handler, &var_handler,
+                          &miss, 2);
+  }
+
+  Bind(&try_megamorphic);
+  {
+    // Check megamorphic case.
+    GotoUnless(
+        WordEqual(feedback, LoadRoot(Heap::kmegamorphic_symbolRootIndex)),
+        &miss);
+
+    TryProbeStubCache(isolate()->store_stub_cache(), p->receiver, p->name,
+                      &if_handler, &var_handler, &miss);
+  }
+  Bind(&miss);
+  {
+    TailCallRuntime(Runtime::kStoreIC_Miss, p->context, p->value, p->slot,
+                    p->vector, p->receiver, p->name);
   }
 }
 

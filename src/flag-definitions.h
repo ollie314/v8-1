@@ -198,7 +198,6 @@ DEFINE_IMPLICATION(es_staging, move_object_start)
   V(harmony_function_sent, "harmony function.sent")                     \
   V(harmony_sharedarraybuffer, "harmony sharedarraybuffer")             \
   V(harmony_simd, "harmony simd")                                       \
-  V(harmony_explicit_tailcalls, "harmony explicit tail calls")          \
   V(harmony_do_expressions, "harmony do-expressions")                   \
   V(harmony_restrictive_generators,                                     \
     "harmony restrictions on generator declarations")                   \
@@ -532,6 +531,8 @@ DEFINE_BOOL(wasm_simd_prototype, false,
             "enable prototype simd opcodes for wasm")
 DEFINE_BOOL(wasm_eh_prototype, false,
             "enable prototype exception handling opcodes for wasm")
+DEFINE_BOOL(wasm_mv_prototype, false,
+            "enable prototype multi-value support for wasm")
 
 DEFINE_BOOL(wasm_trap_handler, false,
             "use signal handlers to catch out of bounds memory access in wasm"
@@ -1123,6 +1124,7 @@ DEFINE_BOOL(test_primary_stub_cache, false,
 // codegen-ia32.cc / codegen-arm.cc
 DEFINE_BOOL(print_code, false, "print generated code")
 DEFINE_BOOL(print_opt_code, false, "print optimized code")
+DEFINE_STRING(print_opt_code_filter, "*", "filter for printing optimized code")
 DEFINE_BOOL(print_unopt_code, false,
             "print unoptimized code before "
             "printing optimized code based on it")

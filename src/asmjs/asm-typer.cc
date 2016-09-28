@@ -128,6 +128,7 @@ AsmTyper::AsmTyper(Isolate* isolate, Zone* zone, Script* script,
       script_(script),
       root_(root),
       forward_definitions_(zone),
+      ffi_use_signatures_(zone),
       stdlib_types_(zone),
       stdlib_math_types_(zone),
       module_info_(VariableInfo::ForSpecialSymbol(zone_, kModule)),
@@ -329,8 +330,8 @@ AsmTyper::VariableInfo* AsmTyper::ImportLookup(Property* import) {
   return i->second;
 }
 
-AsmTyper::VariableInfo* AsmTyper::Lookup(Variable* variable) {
-  ZoneHashMap* scope = in_function_ ? &local_scope_ : &global_scope_;
+AsmTyper::VariableInfo* AsmTyper::Lookup(Variable* variable) const {
+  const ZoneHashMap* scope = in_function_ ? &local_scope_ : &global_scope_;
   ZoneHashMap::Entry* entry =
       scope->Lookup(variable, ComputePointerHash(variable));
   if (entry == nullptr && in_function_) {
@@ -422,6 +423,8 @@ AsmType* AsmTyper::TypeOf(AstNode* node) const {
 
   return AsmType::None();
 }
+
+AsmType* AsmTyper::TypeOf(Variable* v) const { return Lookup(v)->type(); }
 
 AsmTyper::StandardMember AsmTyper::VariableAsStandardMember(Variable* var) {
   auto* var_info = Lookup(var);
@@ -1510,7 +1513,7 @@ AsmType* AsmTyper::ValidateCompareOperation(CompareOperation* cmp) {
 }
 
 namespace {
-bool IsNegate(BinaryOperation* binop) {
+bool IsInvert(BinaryOperation* binop) {
   if (binop->op() != Token::BIT_XOR) {
     return false;
   }
@@ -1525,7 +1528,7 @@ bool IsNegate(BinaryOperation* binop) {
 }
 
 bool IsUnaryMinus(BinaryOperation* binop) {
-  // *VIOLATION* The parser replaces uses of +x with x*1.0.
+  // *VIOLATION* The parser replaces uses of -x with x*-1.
   if (binop->op() != Token::MUL) {
     return false;
   }
@@ -1571,7 +1574,7 @@ AsmType* AsmTyper::ValidateBinaryOperation(BinaryOperation* expr) {
       }
 
       if (IsUnaryMinus(expr)) {
-        // *VIOLATION* the parser converts -x to x * -1.0.
+        // *VIOLATION* the parser converts -x to x * -1.
         AsmType* left_type;
         RECURSE(left_type = ValidateExpression(expr->left()));
         SetTypeOf(expr->right(), left_type);
@@ -1596,11 +1599,11 @@ AsmType* AsmTyper::ValidateBinaryOperation(BinaryOperation* expr) {
     case Token::BIT_AND:
       return ValidateBitwiseANDExpression(expr);
     case Token::BIT_XOR:
-      if (IsNegate(expr)) {
+      if (IsInvert(expr)) {
         auto* left = expr->left();
         auto* left_as_binop = left->AsBinaryOperation();
 
-        if (left_as_binop != nullptr && IsNegate(left_as_binop)) {
+        if (left_as_binop != nullptr && IsInvert(left_as_binop)) {
           // This is the special ~~ operator.
           AsmType* left_type;
           RECURSE(left_type = ValidateExpression(left_as_binop->left()));
@@ -1659,6 +1662,12 @@ AsmType* AsmTyper::ValidateNumericLiteral(Literal* literal) {
 
   if (literal->raw_value()->ContainsDot()) {
     return AsmType::Double();
+  }
+
+  // The parser collapses expressions like !0 and !123 to true/false.
+  // We therefore need to permit these as alternate versions of 0 / 1.
+  if (literal->raw_value()->IsTrue() || literal->raw_value()->IsFalse()) {
+    return AsmType::Int();
   }
 
   uint32_t value;
@@ -2306,9 +2315,20 @@ AsmType* AsmTyper::ValidateCall(AsmType* return_type, Call* call) {
       FAIL(call, "Calling something that's not a function.");
     }
 
-    if (callee_type->AsFFIType() != nullptr &&
-        return_type == AsmType::Float()) {
-      FAIL(call, "Foreign functions can't return float.");
+    if (callee_type->AsFFIType() != nullptr) {
+      if (return_type == AsmType::Float()) {
+        FAIL(call, "Foreign functions can't return float.");
+      }
+      // Record FFI use signature, since the asm->wasm translator must know
+      // all uses up-front.
+      ffi_use_signatures_.emplace_back(
+          FFIUseSignature(call_var_proxy->var(), zone_));
+      FFIUseSignature* sig = &ffi_use_signatures_.back();
+      sig->return_type_ = return_type;
+      sig->arg_types_.reserve(args.size());
+      for (size_t i = 0; i < args.size(); ++i) {
+        sig->arg_types_.emplace_back(args[i]);
+      }
     }
 
     if (!callee_type->CanBeInvokedWith(return_type, args)) {

@@ -135,30 +135,6 @@ PreParser::PreParseResult PreParser::PreParseLazyFunction(
 // That means that contextual checks (like a label being declared where
 // it is used) are generally omitted.
 
-PreParser::Statement PreParser::ParseAsyncFunctionDeclaration(
-    ZoneList<const AstRawString*>* names, bool default_export, bool* ok) {
-  // AsyncFunctionDeclaration ::
-  //   async [no LineTerminator here] function BindingIdentifier[Await]
-  //       ( FormalParameters[Await] ) { AsyncFunctionBody }
-  DCHECK_EQ(scanner()->current_token(), Token::ASYNC);
-  int pos = position();
-  Expect(Token::FUNCTION, CHECK_OK);
-  ParseFunctionFlags flags = ParseFunctionFlags::kIsAsync;
-  return ParseHoistableDeclaration(pos, flags, names, default_export, ok);
-}
-
-PreParser::Statement PreParser::ParseClassDeclaration(
-    ZoneList<const AstRawString*>* names, bool default_export, bool* ok) {
-  int pos = position();
-  bool is_strict_reserved = false;
-  Identifier name =
-      ParseIdentifierOrStrictReservedWord(&is_strict_reserved, CHECK_OK);
-  ExpressionClassifier no_classifier(this);
-  ParseClassLiteral(name, scanner()->location(), is_strict_reserved, pos,
-                    CHECK_OK);
-  return Statement::Default();
-}
-
 PreParser::Statement PreParser::ParseFunctionDeclaration(bool* ok) {
   Consume(Token::FUNCTION);
   int pos = position();
@@ -243,33 +219,6 @@ PreParser::Expression PreParser::ParseFunctionLiteral(
   return Expression::Default();
 }
 
-PreParser::Expression PreParser::ParseAsyncFunctionExpression(bool* ok) {
-  // AsyncFunctionDeclaration ::
-  //   async [no LineTerminator here] function ( FormalParameters[Await] )
-  //       { AsyncFunctionBody }
-  //
-  //   async [no LineTerminator here] function BindingIdentifier[Await]
-  //       ( FormalParameters[Await] ) { AsyncFunctionBody }
-  int pos = position();
-  Expect(Token::FUNCTION, CHECK_OK);
-  bool is_strict_reserved = false;
-  Identifier name;
-  FunctionLiteral::FunctionType type = FunctionLiteral::kAnonymousExpression;
-
-  if (peek_any_identifier()) {
-    type = FunctionLiteral::kNamedExpression;
-    name = ParseIdentifierOrStrictReservedWord(FunctionKind::kAsyncFunction,
-                                               &is_strict_reserved, CHECK_OK);
-  }
-
-  ParseFunctionLiteral(name, scanner()->location(),
-                       is_strict_reserved ? kFunctionNameIsStrictReserved
-                                          : kFunctionNameValidityUnknown,
-                       FunctionKind::kAsyncFunction, pos, type, language_mode(),
-                       CHECK_OK);
-  return Expression::Default();
-}
-
 PreParser::LazyParsingResult PreParser::ParseLazyFunctionLiteralBody(
     bool may_abort, bool* ok) {
   int body_start = position();
@@ -288,69 +237,6 @@ PreParser::LazyParsingResult PreParser::ParseLazyFunctionLiteralBody(
                     function_state_->expected_property_count(), language_mode(),
                     scope->uses_super_property(), scope->calls_eval());
   return kLazyParsingComplete;
-}
-
-PreParserExpression PreParser::ParseClassLiteral(
-    PreParserIdentifier name, Scanner::Location class_name_location,
-    bool name_is_strict_reserved, int pos, bool* ok) {
-  // All parts of a ClassDeclaration and ClassExpression are strict code.
-  if (name_is_strict_reserved) {
-    ReportMessageAt(class_name_location,
-                    MessageTemplate::kUnexpectedStrictReserved);
-    *ok = false;
-    return EmptyExpression();
-  }
-  if (IsEvalOrArguments(name)) {
-    ReportMessageAt(class_name_location, MessageTemplate::kStrictEvalArguments);
-    *ok = false;
-    return EmptyExpression();
-  }
-
-  LanguageMode class_language_mode = language_mode();
-  BlockState block_state(&scope_state_);
-  scope()->SetLanguageMode(
-      static_cast<LanguageMode>(class_language_mode | STRICT));
-  // TODO(marja): Make PreParser use scope names too.
-  // this->scope()->SetScopeName(name);
-
-  bool has_extends = Check(Token::EXTENDS);
-  if (has_extends) {
-    ExpressionClassifier extends_classifier(this);
-    ParseLeftHandSideExpression(CHECK_OK);
-    CheckNoTailCallExpressions(CHECK_OK);
-    ValidateExpression(CHECK_OK);
-    impl()->AccumulateFormalParameterContainmentErrors();
-  }
-
-  ClassLiteralChecker checker(this);
-  bool has_seen_constructor = false;
-
-  Expect(Token::LBRACE, CHECK_OK);
-  while (peek() != Token::RBRACE) {
-    if (Check(Token::SEMICOLON)) continue;
-    bool is_computed_name = false;  // Classes do not care about computed
-                                    // property names here.
-    ExpressionClassifier property_classifier(this);
-    ParseClassPropertyDefinition(&checker, has_extends, &is_computed_name,
-                                 &has_seen_constructor, CHECK_OK);
-    ValidateExpression(CHECK_OK);
-    impl()->AccumulateFormalParameterContainmentErrors();
-  }
-
-  Expect(Token::RBRACE, CHECK_OK);
-
-  return Expression::Default();
-}
-
-void PreParser::ParseAsyncArrowSingleExpressionBody(PreParserStatementList body,
-                                                    bool accept_IN, int pos,
-                                                    bool* ok) {
-  scope()->ForceContextAllocation();
-
-  PreParserExpression return_value =
-      ParseAssignmentExpression(accept_IN, CHECK_OK_VOID);
-
-  body->Add(PreParserStatement::ExpressionStatement(return_value), zone());
 }
 
 PreParserExpression PreParser::ExpressionFromIdentifier(

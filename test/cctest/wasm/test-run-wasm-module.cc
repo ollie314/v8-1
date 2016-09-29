@@ -5,9 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "src/wasm/encoder.h"
 #include "src/wasm/module-decoder.h"
 #include "src/wasm/wasm-macro-gen.h"
+#include "src/wasm/wasm-module-builder.h"
 #include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-opcodes.h"
 
@@ -110,8 +110,7 @@ TEST(Run_WasmModule_ReadLoadedDataSegment) {
       WASM_LOAD_MEM(MachineType::Int32(), WASM_I8(kDataSegmentDest0))};
   f->EmitCode(code, sizeof(code));
   byte data[] = {0xaa, 0xbb, 0xcc, 0xdd};
-  builder->AddDataSegment(new (&zone) WasmDataSegmentEncoder(
-      &zone, data, sizeof(data), kDataSegmentDest0));
+  builder->AddDataSegment(data, sizeof(data), kDataSegmentDest0);
   TestModule(&zone, builder, 0xddccbbaa);
 }
 

@@ -962,7 +962,7 @@ bool Heap::CollectGarbage(GarbageCollector collector,
       !incremental_marking()->should_hurry() && FLAG_incremental_marking &&
       OldGenerationSpaceAvailable() <= 0) {
     if (!incremental_marking()->IsComplete() &&
-        !mark_compact_collector()->marking_deque_.IsEmpty() &&
+        !mark_compact_collector()->marking_deque()->IsEmpty() &&
         !FLAG_gc_global) {
       if (FLAG_trace_incremental_marking) {
         isolate()->PrintWithTimestamp(
@@ -1733,7 +1733,8 @@ void Heap::Scavenge() {
 
   DCHECK(new_space_front == new_space_->top());
 
-  new_space_->SealIntermediateGeneration();
+  // Set age mark.
+  new_space_->set_age_mark(new_space_->top());
 
   ArrayBufferTracker::FreeDeadInNewSpace(this);
 
@@ -5082,6 +5083,7 @@ bool Heap::ConfigureHeap(int max_semi_space_size, int max_old_space_size,
   }
 
   initial_semispace_size_ = Min(initial_semispace_size_, max_semi_space_size_);
+
   if (FLAG_semi_space_growth_factor < 2) {
     FLAG_semi_space_growth_factor = 2;
   }

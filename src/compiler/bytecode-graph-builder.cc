@@ -65,8 +65,9 @@ class BytecodeGraphBuilder::Environment : public ZoneObject {
 
   Environment* CopyForConditional();
   Environment* CopyForLoop();
+  Environment* CopyForOsrEntry();
   void Merge(Environment* other);
-  void PrepareForOsr();
+  void PrepareForOsrEntry();
 
   void PrepareForLoopExit(Node* loop);
 
@@ -346,6 +347,12 @@ BytecodeGraphBuilder::Environment::CopyForLoop() {
 }
 
 BytecodeGraphBuilder::Environment*
+BytecodeGraphBuilder::Environment::CopyForOsrEntry() {
+  return new (zone())
+      Environment(this, builder_->liveness_analyzer()->NewBlock());
+}
+
+BytecodeGraphBuilder::Environment*
 BytecodeGraphBuilder::Environment::CopyForConditional() {
   LivenessAnalyzerBlock* copy_liveness_block = nullptr;
   if (liveness_block() != nullptr) {
@@ -409,34 +416,27 @@ void BytecodeGraphBuilder::Environment::PrepareForLoop() {
   builder()->exit_controls_.push_back(terminate);
 }
 
-void BytecodeGraphBuilder::Environment::PrepareForOsr() {
+void BytecodeGraphBuilder::Environment::PrepareForOsrEntry() {
   DCHECK_EQ(IrOpcode::kLoop, GetControlDependency()->opcode());
   DCHECK_EQ(1, GetControlDependency()->InputCount());
+
   Node* start = graph()->start();
 
-  // Create a control node for the OSR entry point and merge it into the loop
-  // header. Update the current environment's control dependency accordingly.
+  // Create a control node for the OSR entry point and update the current
+  // environment's dependencies accordingly.
   Node* entry = graph()->NewNode(common()->OsrLoopEntry(), start, start);
-  Node* control = builder()->MergeControl(GetControlDependency(), entry);
-  UpdateControlDependency(control);
+  UpdateControlDependency(entry);
+  UpdateEffectDependency(entry);
 
-  // Create a merge of the effect from the OSR entry and the existing effect
-  // dependency. Update the current environment's effect dependency accordingly.
-  Node* effect = builder()->MergeEffect(GetEffectDependency(), entry, control);
-  UpdateEffectDependency(effect);
-
-  // Rename all values in the environment which will extend or introduce Phi
-  // nodes to contain the OSR values available at the entry point.
-  Node* osr_context = graph()->NewNode(
-      common()->OsrValue(Linkage::kOsrContextSpillSlotIndex), entry);
-  context_ = builder()->MergeValue(context_, osr_context, control);
+  // Create OSR values for each environment value.
+  SetContext(graph()->NewNode(
+      common()->OsrValue(Linkage::kOsrContextSpillSlotIndex), entry));
   int size = static_cast<int>(values()->size());
   for (int i = 0; i < size; i++) {
     int idx = i;  // Indexing scheme follows {StandardFrame}, adapt accordingly.
     if (i >= register_base()) idx += InterpreterFrameConstants::kExtraSlotCount;
     if (i >= accumulator_base()) idx = Linkage::kOsrAccumulatorRegisterIndex;
-    Node* osr_value = graph()->NewNode(common()->OsrValue(idx), entry);
-    values_[i] = builder()->MergeValue(values_[i], osr_value, control);
+    values()->at(i) = graph()->NewNode(common()->OsrValue(idx), entry);
   }
 }
 
@@ -786,9 +786,9 @@ void BytecodeGraphBuilder::VisitMov() {
   environment()->BindRegister(bytecode_iterator().GetRegisterOperand(1), value);
 }
 
-Node* BytecodeGraphBuilder::BuildLoadGlobal(TypeofMode typeof_mode) {
-  VectorSlotPair feedback =
-      CreateVectorSlotPair(bytecode_iterator().GetIndexOperand(0));
+Node* BytecodeGraphBuilder::BuildLoadGlobal(uint32_t feedback_slot_index,
+                                            TypeofMode typeof_mode) {
+  VectorSlotPair feedback = CreateVectorSlotPair(feedback_slot_index);
   DCHECK_EQ(FeedbackVectorSlotKind::LOAD_GLOBAL_IC,
             feedback_vector()->GetKind(feedback.slot()));
   Handle<Name> name(feedback_vector()->GetName(feedback.slot()));
@@ -798,20 +798,23 @@ Node* BytecodeGraphBuilder::BuildLoadGlobal(TypeofMode typeof_mode) {
 
 void BytecodeGraphBuilder::VisitLdaGlobal() {
   FrameStateBeforeAndAfter states(this);
-  Node* node = BuildLoadGlobal(TypeofMode::NOT_INSIDE_TYPEOF);
+  Node* node = BuildLoadGlobal(bytecode_iterator().GetIndexOperand(0),
+                               TypeofMode::NOT_INSIDE_TYPEOF);
   environment()->BindAccumulator(node, &states);
 }
 
 void BytecodeGraphBuilder::VisitLdrGlobal() {
   FrameStateBeforeAndAfter states(this);
-  Node* node = BuildLoadGlobal(TypeofMode::NOT_INSIDE_TYPEOF);
+  Node* node = BuildLoadGlobal(bytecode_iterator().GetIndexOperand(0),
+                               TypeofMode::NOT_INSIDE_TYPEOF);
   environment()->BindRegister(bytecode_iterator().GetRegisterOperand(1), node,
                               &states);
 }
 
 void BytecodeGraphBuilder::VisitLdaGlobalInsideTypeof() {
   FrameStateBeforeAndAfter states(this);
-  Node* node = BuildLoadGlobal(TypeofMode::INSIDE_TYPEOF);
+  Node* node = BuildLoadGlobal(bytecode_iterator().GetIndexOperand(0),
+                               TypeofMode::INSIDE_TYPEOF);
   environment()->BindAccumulator(node, &states);
 }
 
@@ -888,11 +891,12 @@ void BytecodeGraphBuilder::VisitLdaLookupSlotInsideTypeof() {
   BuildLdaLookupSlot(TypeofMode::INSIDE_TYPEOF);
 }
 
-void BytecodeGraphBuilder::BuildLdaLookupContextSlot(TypeofMode typeof_mode) {
-  uint32_t depth = bytecode_iterator().GetUnsignedImmediateOperand(2);
-
-  // Check if any context in the depth has an extension.
+BytecodeGraphBuilder::Environment* BytecodeGraphBuilder::CheckContextExtensions(
+    uint32_t depth) {
+  // Output environment where the context has an extension
   Environment* slow_environment = nullptr;
+
+  DCHECK_GT(depth, 0u);
 
   // We only need to check up to the last-but-one depth, because the an eval in
   // the same scope as the variable itself has no way of shadowing it.
@@ -906,18 +910,16 @@ void BytecodeGraphBuilder::BuildLdaLookupContextSlot(TypeofMode typeof_mode) {
                 extension_slot, jsgraph()->TheHoleConstant());
 
     NewBranch(check_no_extension);
-    Environment* false_environment = environment();
     Environment* true_environment = environment()->CopyForConditional();
 
     {
-      set_environment(false_environment);
       NewIfFalse();
       // If there is an extension, merge into the slow path.
       if (slow_environment == nullptr) {
-        slow_environment = false_environment;
+        slow_environment = environment();
         NewMerge();
       } else {
-        slow_environment->Merge(false_environment);
+        slow_environment->Merge(environment());
       }
     }
 
@@ -928,6 +930,17 @@ void BytecodeGraphBuilder::BuildLdaLookupContextSlot(TypeofMode typeof_mode) {
       // the fast path.
     }
   }
+
+  DCHECK_NOT_NULL(slow_environment);
+
+  return slow_environment;
+}
+
+void BytecodeGraphBuilder::BuildLdaLookupContextSlot(TypeofMode typeof_mode) {
+  uint32_t depth = bytecode_iterator().GetUnsignedImmediateOperand(2);
+
+  // Check if any context in the depth has an extension.
+  Environment* slow_environment = CheckContextExtensions(depth);
 
   // Fast path, do a context load.
   {
@@ -956,7 +969,7 @@ void BytecodeGraphBuilder::BuildLdaLookupContextSlot(TypeofMode typeof_mode) {
     environment()->BindAccumulator(value, &states);
   }
 
-  fast_environment->Merge(slow_environment);
+  fast_environment->Merge(environment());
   set_environment(fast_environment);
 }
 
@@ -969,9 +982,24 @@ void BytecodeGraphBuilder::VisitLdaLookupContextSlotInsideTypeof() {
 }
 
 void BytecodeGraphBuilder::BuildLdaLookupGlobalSlot(TypeofMode typeof_mode) {
-  // TODO(leszeks): Build the fast path here.
+  uint32_t depth = bytecode_iterator().GetUnsignedImmediateOperand(2);
+
+  // Check if any context in the depth has an extension.
+  Environment* slow_environment = CheckContextExtensions(depth);
+
+  // Fast path, do a global load.
+  {
+    FrameStateBeforeAndAfter states(this);
+    Node* node =
+        BuildLoadGlobal(bytecode_iterator().GetIndexOperand(1), typeof_mode);
+    environment()->BindAccumulator(node, &states);
+
+    NewMerge();
+  }
+  Environment* fast_environment = environment();
 
   // Slow path, do a runtime load lookup.
+  set_environment(slow_environment);
   {
     FrameStateBeforeAndAfter states(this);
 
@@ -985,6 +1013,9 @@ void BytecodeGraphBuilder::BuildLdaLookupGlobalSlot(TypeofMode typeof_mode) {
     Node* value = NewNode(op, name);
     environment()->BindAccumulator(value, &states);
   }
+
+  fast_environment->Merge(environment());
+  set_environment(fast_environment);
 }
 
 void BytecodeGraphBuilder::VisitLdaLookupGlobalSlot() {
@@ -1912,7 +1943,10 @@ void BytecodeGraphBuilder::BuildOSRLoopEntryPoint(int current_offset) {
   if (!osr_ast_id_.IsNone() && osr_ast_id_.ToInt() == current_offset) {
     // For OSR add a special {OsrLoopEntry} node into the current loop header.
     // It will be turned into a usable entry by the OSR deconstruction.
-    environment()->PrepareForOsr();
+    Environment* loop_env = merge_environments_[current_offset];
+    Environment* osr_env = loop_env->CopyForOsrEntry();
+    osr_env->PrepareForOsrEntry();
+    loop_env->Merge(osr_env);
   }
 }
 

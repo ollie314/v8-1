@@ -4,6 +4,10 @@
 
 #include "test/inspector/task-runner.h"
 
+#if !defined(_WIN32) && !defined(_WIN64)
+#include <unistd.h>  // NOLINT
+#endif               // !defined(_WIN32) && !defined(_WIN64)
+
 namespace {
 
 const int kTaskRunnerIndex = 2;

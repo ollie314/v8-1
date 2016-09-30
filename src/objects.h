@@ -4542,7 +4542,7 @@ class ScopeInfo : public FixedArray {
   class HasSimpleParametersField
       : public BitField<bool, AsmFunctionField::kNext, 1> {};
   class FunctionKindField
-      : public BitField<FunctionKind, HasSimpleParametersField::kNext, 9> {};
+      : public BitField<FunctionKind, HasSimpleParametersField::kNext, 10> {};
   class HasOuterScopeInfoField
       : public BitField<bool, FunctionKindField::kNext, 1> {};
   class IsDebugEvaluateScopeField
@@ -4857,6 +4857,13 @@ class BytecodeArray : public FixedArrayBase {
   static const int kMaxSize = 512 * MB;
   // Maximal length of a single BytecodeArray.
   static const int kMaxLength = kMaxSize - kHeaderSize;
+
+  static const int kPointerFieldsBeginOffset = kConstantPoolOffset;
+  static const int kPointerFieldsEndOffset = kFrameSizeOffset;
+
+  typedef FixedBodyDescriptor<kPointerFieldsBeginOffset,
+                              kPointerFieldsEndOffset, kHeaderSize>
+      MarkingBodyDescriptor;
 
   class BodyDescriptor;
 
@@ -7707,6 +7714,7 @@ class SharedFunctionInfo: public HeapObject {
     kIsSetterFunction,
     // byte 3
     kIsAsyncFunction,
+    kIsModule,
     kDeserialized,
     kIsDeclaration,
     kIsAsmWasmBroken,
@@ -7728,9 +7736,11 @@ class SharedFunctionInfo: public HeapObject {
   ASSERT_FUNCTION_KIND_ORDER(kBaseConstructor, kIsBaseConstructor);
   ASSERT_FUNCTION_KIND_ORDER(kGetterFunction, kIsGetterFunction);
   ASSERT_FUNCTION_KIND_ORDER(kSetterFunction, kIsSetterFunction);
+  ASSERT_FUNCTION_KIND_ORDER(kAsyncFunction, kIsAsyncFunction);
+  ASSERT_FUNCTION_KIND_ORDER(kModule, kIsModule);
 #undef ASSERT_FUNCTION_KIND_ORDER
 
-  class FunctionKindBits : public BitField<FunctionKind, kIsArrow, 9> {};
+  class FunctionKindBits : public BitField<FunctionKind, kIsArrow, 10> {};
 
   class DeoptCountBits : public BitField<int, 0, 4> {};
   class OptReenableTriesBits : public BitField<int, 4, 18> {};
@@ -8916,6 +8926,10 @@ class AllocationSite: public Struct {
   // field.
   static const int kPointerFieldsBeginOffset = kTransitionInfoOffset;
   static const int kPointerFieldsEndOffset = kWeakNextOffset;
+
+  typedef FixedBodyDescriptor<kPointerFieldsBeginOffset,
+                              kPointerFieldsEndOffset, kSize>
+      MarkingBodyDescriptor;
 
   // For other visitors, use the fixed body descriptor below.
   typedef FixedBodyDescriptor<HeapObject::kHeaderSize, kSize, kSize>
@@ -10166,9 +10180,6 @@ class PropertyCell : public HeapObject {
   static const int kValueOffset = kDetailsOffset + kPointerSize;
   static const int kDependentCodeOffset = kValueOffset + kPointerSize;
   static const int kSize = kDependentCodeOffset + kPointerSize;
-
-  static const int kPointerFieldsBeginOffset = kValueOffset;
-  static const int kPointerFieldsEndOffset = kSize;
 
   typedef FixedBodyDescriptor<kValueOffset,
                               kSize,

@@ -361,9 +361,9 @@ class ThreadLocalTop BASE_EMBEDDED {
 
 #if USE_SIMULATOR
 
-#define ISOLATE_INIT_SIMULATOR_LIST(V)       \
-  V(bool, simulator_initialized, false)      \
-  V(base::HashMap*, simulator_i_cache, NULL) \
+#define ISOLATE_INIT_SIMULATOR_LIST(V)                    \
+  V(bool, simulator_initialized, false)                   \
+  V(base::CustomMatcherHashMap*, simulator_i_cache, NULL) \
   V(Redirection*, simulator_redirection, NULL)
 #else
 
@@ -621,6 +621,7 @@ class Isolate {
   bool IsExternalHandlerOnTop(Object* exception);
 
   inline bool is_catchable_by_javascript(Object* exception);
+  inline bool is_catchable_by_wasm(Object* exception);
 
   // JS execution stack (see frames.h).
   static Address c_entry_fp(ThreadLocalTop* thread) {

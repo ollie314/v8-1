@@ -510,8 +510,8 @@ void Heap::MergeAllocationSitePretenuringFeedback(
 class Heap::PretenuringScope {
  public:
   explicit PretenuringScope(Heap* heap) : heap_(heap) {
-    heap_->global_pretenuring_feedback_ = new base::HashMap(
-        base::HashMap::PointersMatch, kInitialFeedbackCapacity);
+    heap_->global_pretenuring_feedback_ =
+        new base::HashMap(kInitialFeedbackCapacity);
   }
 
   ~PretenuringScope() {
@@ -3937,7 +3937,14 @@ AllocationResult Heap::AllocateRawFixedArray(int length,
   int size = FixedArray::SizeFor(length);
   AllocationSpace space = SelectSpace(pretenure);
 
-  return AllocateRaw(size, space);
+  AllocationResult result = AllocateRaw(size, space);
+  if (!result.IsRetry() && size > kMaxRegularHeapObjectSize &&
+      FLAG_use_marking_progress_bar) {
+    MemoryChunk* chunk =
+        MemoryChunk::FromAddress(result.ToObjectChecked()->address());
+    chunk->SetFlag(MemoryChunk::HAS_PROGRESS_BAR);
+  }
+  return result;
 }
 
 

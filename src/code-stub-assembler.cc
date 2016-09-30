@@ -38,53 +38,23 @@ void CodeStubAssembler::Assert(Node* condition) {
 #endif
 }
 
-Node* CodeStubAssembler::BooleanMapConstant() {
-  return HeapConstant(isolate()->factory()->boolean_map());
-}
-
-Node* CodeStubAssembler::EmptyStringConstant() {
-  return LoadRoot(Heap::kempty_stringRootIndex);
-}
-
-Node* CodeStubAssembler::FixedArrayMapConstant() {
-  return LoadRoot(Heap::kFixedArrayMapRootIndex);
-}
-
-Node* CodeStubAssembler::FixedCowArrayMapConstant() {
-  return LoadRoot(Heap::kFixedCOWArrayMapRootIndex);
-}
-
-Node* CodeStubAssembler::FixedDoubleArrayMapConstant() {
-  return LoadRoot(Heap::kFixedDoubleArrayMapRootIndex);
-}
-
-Node* CodeStubAssembler::HeapNumberMapConstant() {
-  return LoadRoot(Heap::kHeapNumberMapRootIndex);
-}
-
 Node* CodeStubAssembler::NoContextConstant() {
   return SmiConstant(Smi::FromInt(0));
 }
 
-Node* CodeStubAssembler::MinusZeroConstant() {
-  return LoadRoot(Heap::kMinusZeroValueRootIndex);
-}
+#define HEAP_CONSTANT_ACCESSOR(rootName, name)     \
+  Node* CodeStubAssembler::name##Constant() {      \
+    return LoadRoot(Heap::k##rootName##RootIndex); \
+  }
+HEAP_CONSTANT_LIST(HEAP_CONSTANT_ACCESSOR);
+#undef HEAP_CONSTANT_ACCESSOR
 
-Node* CodeStubAssembler::NanConstant() {
-  return LoadRoot(Heap::kNanValueRootIndex);
-}
-
-Node* CodeStubAssembler::NullConstant() {
-  return LoadRoot(Heap::kNullValueRootIndex);
-}
-
-Node* CodeStubAssembler::UndefinedConstant() {
-  return LoadRoot(Heap::kUndefinedValueRootIndex);
-}
-
-Node* CodeStubAssembler::TheHoleConstant() {
-  return LoadRoot(Heap::kTheHoleValueRootIndex);
-}
+#define HEAP_CONSTANT_TEST(rootName, name)         \
+  Node* CodeStubAssembler::Is##name(Node* value) { \
+    return WordEqual(value, name##Constant());     \
+  }
+HEAP_CONSTANT_LIST(HEAP_CONSTANT_TEST);
+#undef HEAP_CONSTANT_TEST
 
 Node* CodeStubAssembler::HashSeed() {
   return LoadAndUntagToWord32Root(Heap::kHashSeedRootIndex);
@@ -965,6 +935,11 @@ Node* CodeStubAssembler::LoadMapBitField3(Node* map) {
 
 Node* CodeStubAssembler::LoadMapInstanceType(Node* map) {
   return LoadObjectField(map, Map::kInstanceTypeOffset, MachineType::Uint8());
+}
+
+Node* CodeStubAssembler::LoadMapElementsKind(Node* map) {
+  Node* bit_field2 = LoadMapBitField2(map);
+  return BitFieldDecode<Map::ElementsKindBits>(bit_field2);
 }
 
 Node* CodeStubAssembler::LoadMapDescriptors(Node* map) {
@@ -2227,6 +2202,34 @@ Node* CodeStubAssembler::ToThisValue(Node* context, Node* value,
 
   Bind(&done_loop);
   return var_value.value();
+}
+
+Node* CodeStubAssembler::ThrowIfNotInstanceType(Node* context, Node* value,
+                                                InstanceType instance_type,
+                                                char const* method_name) {
+  Label out(this), throw_exception(this, Label::kDeferred);
+  Variable var_value_map(this, MachineRepresentation::kTagged);
+
+  GotoIf(WordIsSmi(value), &throw_exception);
+
+  // Load the instance type of the {value}.
+  var_value_map.Bind(LoadMap(value));
+  Node* const value_instance_type = LoadMapInstanceType(var_value_map.value());
+
+  Branch(Word32Equal(value_instance_type, Int32Constant(instance_type)), &out,
+         &throw_exception);
+
+  // The {value} is not a compatible receiver for this method.
+  Bind(&throw_exception);
+  CallRuntime(
+      Runtime::kThrowIncompatibleMethodReceiver, context,
+      HeapConstant(factory()->NewStringFromAsciiChecked(method_name, TENURED)),
+      value);
+  var_value_map.Bind(UndefinedConstant());
+  Goto(&out);  // Never reached.
+
+  Bind(&out);
+  return var_value_map.value();
 }
 
 Node* CodeStubAssembler::StringCharCodeAt(Node* string, Node* index) {
@@ -3680,8 +3683,7 @@ void CodeStubAssembler::TryLookupElement(Node* object, Node* map,
                               Int32Constant(LAST_SPECIAL_RECEIVER_TYPE)),
          if_bailout);
 
-  Node* bit_field2 = LoadMapBitField2(map);
-  Node* elements_kind = BitFieldDecode<Map::ElementsKindBits>(bit_field2);
+  Node* elements_kind = LoadMapElementsKind(map);
 
   // TODO(verwaest): Support other elements kinds as well.
   Label if_isobjectorsmi(this), if_isdouble(this), if_isdictionary(this),
@@ -4791,8 +4793,7 @@ void CodeStubAssembler::KeyedLoadICGeneric(const LoadICParameters* p) {
     Comment("integer index");
     Node* index = var_index.value();
     Node* elements = LoadElements(receiver);
-    Node* bitfield2 = LoadMapBitField2(receiver_map);
-    Node* elements_kind = BitFieldDecode<Map::ElementsKindBits>(bitfield2);
+    Node* elements_kind = LoadMapElementsKind(receiver_map);
     Node* is_jsarray_condition =
         Word32Equal(instance_type, Int32Constant(JS_ARRAY_TYPE));
     Variable var_double_value(this, MachineRepresentation::kFloat64);

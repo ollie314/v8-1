@@ -179,20 +179,15 @@ class IncrementalMarkingMarkingVisitor
     StaticMarkingVisitor<IncrementalMarkingMarkingVisitor>::Initialize();
     table_.Register(kVisitFixedArray, &VisitFixedArrayIncremental);
     table_.Register(kVisitNativeContext, &VisitNativeContextIncremental);
-    table_.Register(kVisitJSRegExp, &VisitJSRegExp);
   }
 
   static const int kProgressBarScanningChunk = 32 * 1024;
 
   static void VisitFixedArrayIncremental(Map* map, HeapObject* object) {
     MemoryChunk* chunk = MemoryChunk::FromAddress(object->address());
-    // TODO(mstarzinger): Move setting of the flag to the allocation site of
-    // the array. The visitor should just check the flag.
-    if (FLAG_use_marking_progress_bar &&
-        chunk->owner()->identity() == LO_SPACE) {
-      chunk->SetFlag(MemoryChunk::HAS_PROGRESS_BAR);
-    }
     if (chunk->IsFlagSet(MemoryChunk::HAS_PROGRESS_BAR)) {
+      DCHECK(!FLAG_use_marking_progress_bar ||
+             chunk->owner()->identity() == LO_SPACE);
       Heap* heap = map->GetHeap();
       // When using a progress bar for large fixed arrays, scan only a chunk of
       // the array and try to push it onto the marking deque again until it is

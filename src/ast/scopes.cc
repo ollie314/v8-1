@@ -25,7 +25,7 @@ namespace internal {
 //       this is ensured.
 
 VariableMap::VariableMap(Zone* zone)
-    : ZoneHashMap(ZoneHashMap::PointersMatch, 8, ZoneAllocationPolicy(zone)) {}
+    : ZoneHashMap(8, ZoneAllocationPolicy(zone)) {}
 
 Variable* VariableMap::Declare(Zone* zone, Scope* scope,
                                const AstRawString* name, VariableMode mode,
@@ -75,7 +75,7 @@ Variable* VariableMap::Lookup(const AstRawString* name) {
 }
 
 SloppyBlockFunctionMap::SloppyBlockFunctionMap(Zone* zone)
-    : ZoneHashMap(ZoneHashMap::PointersMatch, 8, ZoneAllocationPolicy(zone)) {}
+    : ZoneHashMap(8, ZoneAllocationPolicy(zone)) {}
 
 void SloppyBlockFunctionMap::Declare(Zone* zone, const AstRawString* name,
                                      SloppyBlockFunctionStatement* stmt) {
@@ -152,7 +152,8 @@ DeclarationScope::DeclarationScope(Zone* zone, Scope* outer_scope,
 
 ModuleScope::ModuleScope(DeclarationScope* script_scope,
                          AstValueFactory* ast_value_factory)
-    : DeclarationScope(ast_value_factory->zone(), script_scope, MODULE_SCOPE) {
+    : DeclarationScope(ast_value_factory->zone(), script_scope, MODULE_SCOPE,
+                       kModule) {
   Zone* zone = ast_value_factory->zone();
   module_descriptor_ = new (zone) ModuleDescriptor(zone);
   set_language_mode(STRICT);
@@ -1457,6 +1458,7 @@ void Scope::CheckZones() {
   DCHECK(!needs_migration_);
   for (Scope* scope = inner_scope_; scope != nullptr; scope = scope->sibling_) {
     CHECK_EQ(scope->zone(), zone());
+    scope->CheckZones();
   }
 }
 #endif  // DEBUG

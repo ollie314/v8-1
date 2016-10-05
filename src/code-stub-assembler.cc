@@ -760,9 +760,8 @@ void CodeStubAssembler::BranchIfToBooleanIsTrue(Node* value, Label* if_true,
     // types, the HeapNumber type and everything else.
     GotoIf(Word32Equal(value_instance_type, Int32Constant(HEAP_NUMBER_TYPE)),
            &if_valueisheapnumber);
-    Branch(
-        Int32LessThan(value_instance_type, Int32Constant(FIRST_NONSTRING_TYPE)),
-        &if_valueisstring, &if_valueisother);
+    Branch(IsStringInstanceType(value_instance_type), &if_valueisstring,
+           &if_valueisother);
 
     Bind(&if_valueisstring);
     {
@@ -1116,10 +1115,30 @@ Node* CodeStubAssembler::StoreObjectField(
                IntPtrConstant(offset - kHeapObjectTag), value);
 }
 
+Node* CodeStubAssembler::StoreObjectField(Node* object, Node* offset,
+                                          Node* value) {
+  int const_offset;
+  if (ToInt32Constant(offset, const_offset)) {
+    return StoreObjectField(object, const_offset, value);
+  }
+  return Store(MachineRepresentation::kTagged, object,
+               IntPtrSub(offset, IntPtrConstant(kHeapObjectTag)), value);
+}
+
 Node* CodeStubAssembler::StoreObjectFieldNoWriteBarrier(
     Node* object, int offset, Node* value, MachineRepresentation rep) {
   return StoreNoWriteBarrier(rep, object,
                              IntPtrConstant(offset - kHeapObjectTag), value);
+}
+
+Node* CodeStubAssembler::StoreObjectFieldNoWriteBarrier(
+    Node* object, Node* offset, Node* value, MachineRepresentation rep) {
+  int const_offset;
+  if (ToInt32Constant(offset, const_offset)) {
+    return StoreObjectFieldNoWriteBarrier(object, const_offset, value, rep);
+  }
+  return StoreNoWriteBarrier(
+      rep, object, IntPtrSub(offset, IntPtrConstant(kHeapObjectTag)), value);
 }
 
 Node* CodeStubAssembler::StoreMapNoWriteBarrier(Node* object, Node* map) {
@@ -1318,6 +1337,50 @@ Node* CodeStubAssembler::AllocateSlicedTwoByteString(Node* length, Node* parent,
   return result;
 }
 
+Node* CodeStubAssembler::AllocateRegExpResult(Node* context, Node* length,
+                                              Node* index, Node* input) {
+  Node* const max_length =
+      SmiConstant(Smi::FromInt(JSArray::kInitialMaxFastElementArray));
+  Assert(SmiLessThanOrEqual(length, max_length));
+
+  // Allocate the JSRegExpResult.
+  // TODO(jgruber): Fold JSArray and FixedArray allocations, then remove
+  // unneeded store of elements.
+  Node* const result = Allocate(JSRegExpResult::kSize);
+
+  // TODO(jgruber): Store map as Heap constant?
+  Node* const native_context = LoadNativeContext(context);
+  Node* const map =
+      LoadContextElement(native_context, Context::REGEXP_RESULT_MAP_INDEX);
+  StoreMapNoWriteBarrier(result, map);
+
+  // Initialize the header before allocating the elements.
+  Node* const empty_array = EmptyFixedArrayConstant();
+  DCHECK(Heap::RootIsImmortalImmovable(Heap::kEmptyFixedArrayRootIndex));
+  StoreObjectFieldNoWriteBarrier(result, JSArray::kPropertiesOffset,
+                                 empty_array);
+  StoreObjectFieldNoWriteBarrier(result, JSArray::kElementsOffset, empty_array);
+  StoreObjectFieldNoWriteBarrier(result, JSArray::kLengthOffset, length);
+
+  StoreObjectFieldNoWriteBarrier(result, JSRegExpResult::kIndexOffset, index);
+  StoreObjectField(result, JSRegExpResult::kInputOffset, input);
+
+  Node* const zero = IntPtrConstant(0);
+  Node* const length_intptr = SmiUntag(length);
+  const ElementsKind elements_kind = FAST_ELEMENTS;
+  const ParameterMode parameter_mode = INTPTR_PARAMETERS;
+
+  Node* const elements =
+      AllocateFixedArray(elements_kind, length_intptr, parameter_mode);
+  StoreObjectField(result, JSArray::kElementsOffset, elements);
+
+  // Fill in the elements with undefined.
+  FillFixedArrayWithValue(elements_kind, elements, zero, length_intptr,
+                          Heap::kUndefinedValueRootIndex, parameter_mode);
+
+  return result;
+}
+
 Node* CodeStubAssembler::AllocateUninitializedJSArrayWithoutElements(
     ElementsKind kind, Node* array_map, Node* length, Node* allocation_site) {
   Comment("begin allocation of JSArray without elements");
@@ -1408,7 +1471,7 @@ Node* CodeStubAssembler::AllocateFixedArray(ElementsKind kind,
                                             Node* capacity_node,
                                             ParameterMode mode,
                                             AllocationFlags flags) {
-  Node* total_size = GetFixedAarrayAllocationSize(capacity_node, kind, mode);
+  Node* total_size = GetFixedArrayAllocationSize(capacity_node, kind, mode);
 
   // Allocate both array and elements object, and initialize the JSArray.
   Node* array = Allocate(total_size, flags);
@@ -2083,9 +2146,8 @@ Node* CodeStubAssembler::ToThisString(Node* context, Node* value,
 
     // Check if the {value} is already String.
     Label if_valueisnotstring(this, Label::kDeferred);
-    Branch(
-        Int32LessThan(value_instance_type, Int32Constant(FIRST_NONSTRING_TYPE)),
-        &if_valueisstring, &if_valueisnotstring);
+    Branch(IsStringInstanceType(value_instance_type), &if_valueisstring,
+           &if_valueisnotstring);
     Bind(&if_valueisnotstring);
     {
       // Check if the {value} is null.
@@ -2178,9 +2240,7 @@ Node* CodeStubAssembler::ToThisValue(Node* context, Node* value,
               &done_loop);
           break;
         case PrimitiveType::kString:
-          GotoIf(Int32LessThan(value_instance_type,
-                               Int32Constant(FIRST_NONSTRING_TYPE)),
-                 &done_loop);
+          GotoIf(IsStringInstanceType(value_instance_type), &done_loop);
           break;
         case PrimitiveType::kSymbol:
           GotoIf(Word32Equal(value_instance_type, Int32Constant(SYMBOL_TYPE)),
@@ -2230,6 +2290,17 @@ Node* CodeStubAssembler::ThrowIfNotInstanceType(Node* context, Node* value,
 
   Bind(&out);
   return var_value_map.value();
+}
+
+Node* CodeStubAssembler::IsStringInstanceType(Node* instance_type) {
+  STATIC_ASSERT(INTERNALIZED_STRING_TYPE == FIRST_TYPE);
+  return Int32LessThan(instance_type, Int32Constant(FIRST_NONSTRING_TYPE));
+}
+
+Node* CodeStubAssembler::IsJSReceiverInstanceType(Node* instance_type) {
+  STATIC_ASSERT(LAST_JS_RECEIVER_TYPE == LAST_TYPE);
+  return Int32GreaterThanOrEqual(instance_type,
+                                 Int32Constant(FIRST_JS_RECEIVER_TYPE));
 }
 
 Node* CodeStubAssembler::StringCharCodeAt(Node* string, Node* index) {
@@ -2537,9 +2608,7 @@ Node* CodeStubAssembler::SubString(Node* context, Node* string, Node* from,
   var_instance_type.Bind(instance_type);
 
   // Check if {string} is a String.
-  GotoIf(Int32GreaterThanOrEqual(instance_type,
-                                 Int32Constant(FIRST_NONSTRING_TYPE)),
-         &runtime);
+  GotoUnless(IsStringInstanceType(instance_type), &runtime);
 
   // Make sure that both from and to are non-negative smis.
 
@@ -2885,15 +2954,11 @@ Node* CodeStubAssembler::NonNumberToNumber(Node* context, Node* input) {
     Label if_inputisstring(this), if_inputisoddball(this),
         if_inputisreceiver(this, Label::kDeferred),
         if_inputisother(this, Label::kDeferred);
-    GotoIf(
-        Int32LessThan(input_instance_type, Int32Constant(FIRST_NONSTRING_TYPE)),
-        &if_inputisstring);
+    GotoIf(IsStringInstanceType(input_instance_type), &if_inputisstring);
     GotoIf(Word32Equal(input_instance_type, Int32Constant(ODDBALL_TYPE)),
            &if_inputisoddball);
-    STATIC_ASSERT(LAST_JS_RECEIVER_TYPE == LAST_TYPE);
-    Branch(Int32GreaterThanOrEqual(input_instance_type,
-                                   Int32Constant(FIRST_JS_RECEIVER_TYPE)),
-           &if_inputisreceiver, &if_inputisother);
+    Branch(IsJSReceiverInstanceType(input_instance_type), &if_inputisreceiver,
+           &if_inputisother);
 
     Bind(&if_inputisstring);
     {
@@ -3103,9 +3168,7 @@ void CodeStubAssembler::TryToName(Node* key, Label* if_keyisindex,
          if_keyisunique);
   // Miss if |key| is not a String.
   STATIC_ASSERT(FIRST_NAME_TYPE == FIRST_TYPE);
-  GotoIf(
-      Int32GreaterThan(key_instance_type, Int32Constant(FIRST_NONSTRING_TYPE)),
-      if_bailout);
+  GotoUnless(IsStringInstanceType(key_instance_type), if_bailout);
   // |key| is a String. Check if it has a cached array index.
   Node* hash = LoadNameHashField(key);
   Node* contains_index =
@@ -3752,8 +3815,7 @@ void CodeStubAssembler::TryLookupElement(Node* object, Node* map,
   {
     AssertInstanceType(object, JS_VALUE_TYPE);
     Node* string = LoadJSValueValue(object);
-    Assert(Int32LessThan(LoadInstanceType(string),
-                         Int32Constant(FIRST_NONSTRING_TYPE)));
+    Assert(IsStringInstanceType(LoadInstanceType(string)));
     Node* length = LoadStringLength(string);
     GotoIf(UintPtrLessThan(intptr_index, SmiUntag(length)), if_found);
     Goto(&if_isobjectorsmi);
@@ -3762,8 +3824,7 @@ void CodeStubAssembler::TryLookupElement(Node* object, Node* map,
   {
     AssertInstanceType(object, JS_VALUE_TYPE);
     Node* string = LoadJSValueValue(object);
-    Assert(Int32LessThan(LoadInstanceType(string),
-                         Int32Constant(FIRST_NONSTRING_TYPE)));
+    Assert(IsStringInstanceType(LoadInstanceType(string)));
     Node* length = LoadStringLength(string);
     GotoIf(UintPtrLessThan(intptr_index, SmiUntag(length)), if_found);
     Goto(&if_isdictionary);
@@ -5080,15 +5141,22 @@ void CodeStubAssembler::StoreNamedField(Node* object, FieldIndex index,
                                         Node* value, bool transition_to_field) {
   DCHECK_EQ(index.is_double(), representation.IsDouble());
 
+  StoreNamedField(object, IntPtrConstant(index.offset()), index.is_inobject(),
+                  representation, value, transition_to_field);
+}
+
+void CodeStubAssembler::StoreNamedField(Node* object, Node* offset,
+                                        bool is_inobject,
+                                        Representation representation,
+                                        Node* value, bool transition_to_field) {
   bool store_value_as_double = representation.IsDouble();
-  int offset = index.offset();
   Node* property_storage = object;
-  if (!index.is_inobject()) {
+  if (!is_inobject) {
     property_storage = LoadProperties(object);
   }
 
   if (representation.IsDouble()) {
-    if (!FLAG_unbox_double_fields || !index.is_inobject()) {
+    if (!FLAG_unbox_double_fields || !is_inobject) {
       if (transition_to_field) {
         Node* heap_number = AllocateHeapNumberWithValue(value, MUTABLE);
         // Store the new mutable heap number into the object.
@@ -5098,7 +5166,7 @@ void CodeStubAssembler::StoreNamedField(Node* object, FieldIndex index,
         // Load the heap number.
         property_storage = LoadObjectField(property_storage, offset);
         // Store the double value into it.
-        offset = HeapNumber::kValueOffset;
+        offset = IntPtrConstant(HeapNumber::kValueOffset);
       }
     }
   }

@@ -1094,6 +1094,8 @@ v8_source_set("v8_base") {
     "src/compiler/loop-peeling.h",
     "src/compiler/loop-variable-optimizer.cc",
     "src/compiler/loop-variable-optimizer.h",
+    "src/compiler/machine-graph-verifier.cc",
+    "src/compiler/machine-graph-verifier.h",
     "src/compiler/machine-operator-reducer.cc",
     "src/compiler/machine-operator-reducer.h",
     "src/compiler/machine-operator.cc",
@@ -1706,6 +1708,7 @@ v8_source_set("v8_base") {
     "src/zone/zone-allocator.h",
     "src/zone/zone-allocator.h",
     "src/zone/zone-containers.h",
+    "src/zone/zone-segment.cc",
     "src/zone/zone-segment.h",
     "src/zone/zone.cc",
     "src/zone/zone.h",
@@ -2732,6 +2735,17 @@ v8_source_set("wasm_module_runner") {
   ]
 }
 
+v8_source_set("wasm_test_signatures") {
+  sources = [
+    "test/common/wasm/test-signatures.h",
+  ]
+
+  configs = [
+    ":external_config",
+    ":internal_config_base",
+  ]
+}
+
 v8_source_set("wasm_fuzzer") {
   sources = [
     "test/fuzzer/wasm.cc",
@@ -2778,6 +2792,7 @@ v8_source_set("wasm_code_fuzzer") {
   deps = [
     ":fuzzer_support",
     ":wasm_module_runner",
+    ":wasm_test_signatures",
   ]
 
   configs = [

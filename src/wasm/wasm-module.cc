@@ -28,6 +28,16 @@ namespace v8 {
 namespace internal {
 namespace wasm {
 
+#define TRACE(...)                                      \
+  do {                                                  \
+    if (FLAG_trace_wasm_instances) PrintF(__VA_ARGS__); \
+  } while (false)
+
+#define TRACE_CHAIN(instance)        \
+  do {                               \
+    instance->PrintInstancesChain(); \
+  } while (false)
+
 namespace {
 
 static const int kPlaceholderMarker = 1000000000;
@@ -728,6 +738,7 @@ void PatchDirectCalls(Handle<FixedArray> old_functions,
 
 static void ResetCompiledModule(Isolate* isolate, JSObject* owner,
                                 WasmCompiledModule* compiled_module) {
+  TRACE("Resetting %d\n", compiled_module->instance_id());
   Object* undefined = *isolate->factory()->undefined_value();
   uint32_t old_mem_size = compiled_module->has_heap()
                               ? compiled_module->mem_size()
@@ -773,7 +784,6 @@ static void ResetCompiledModule(Isolate* isolate, JSObject* owner,
       }
     }
   }
-  compiled_module->reset_weak_owning_instance();
   compiled_module->reset_heap();
 }
 
@@ -782,6 +792,7 @@ static void InstanceFinalizer(const v8::WeakCallbackInfo<void>& data) {
   JSObject* owner = *p;
   WasmCompiledModule* compiled_module =
       WasmCompiledModule::cast(owner->GetInternalField(kWasmCompiledModule));
+  TRACE("Finalizing %d {\n", compiled_module->instance_id());
   Isolate* isolate = reinterpret_cast<Isolate*>(data.GetIsolate());
   DCHECK(compiled_module->has_weak_module_object());
   WeakCell* weak_module_obj = compiled_module->ptr_to_weak_module_object();
@@ -793,6 +804,11 @@ static void InstanceFinalizer(const v8::WeakCallbackInfo<void>& data) {
     JSObject* module_obj = JSObject::cast(weak_module_obj->value());
     WasmCompiledModule* current_template =
         WasmCompiledModule::cast(module_obj->GetInternalField(0));
+
+    TRACE("chain before {\n");
+    TRACE_CHAIN(current_template);
+    TRACE("}\n");
+
     DCHECK(!current_template->has_weak_prev_instance());
     WeakCell* next = compiled_module->ptr_to_weak_next_instance();
     WeakCell* prev = compiled_module->ptr_to_weak_prev_instance();
@@ -830,8 +846,13 @@ static void InstanceFinalizer(const v8::WeakCallbackInfo<void>& data) {
         }
       }
     }
+    TRACE("chain after {\n");
+    TRACE_CHAIN(WasmCompiledModule::cast(module_obj->GetInternalField(0)));
+    TRACE("}\n");
   }
+  compiled_module->reset_weak_owning_instance();
   GlobalHandles::Destroy(reinterpret_cast<Object**>(p));
+  TRACE("}\n");
 }
 
 Handle<FixedArray> SetupIndirectFunctionTable(
@@ -1186,6 +1207,7 @@ MaybeHandle<JSObject> WasmModule::Instantiate(Isolate* isolate,
   // this will be a cleared. We'll link the instances chain last.
   MaybeHandle<WeakCell> link_to_original;
 
+  TRACE("Starting new module instantiation\n");
   {
     Handle<WasmCompiledModule> original(
         WasmCompiledModule::cast(module_object->GetInternalField(0)), isolate);
@@ -1200,6 +1222,7 @@ MaybeHandle<JSObject> WasmModule::Instantiate(Isolate* isolate,
       // There is already an owner, clone everything.
       owner = Handle<JSObject>(JSObject::cast(tmp->value()), isolate);
       // Insert the latest clone in front.
+      TRACE("Cloning from %d\n", original->instance_id());
       compiled_module = WasmCompiledModule::Clone(isolate, original);
       // Replace the strong reference to point to the new instance here.
       // This allows any of the other instances, including the original,
@@ -1233,6 +1256,7 @@ MaybeHandle<JSObject> WasmModule::Instantiate(Isolate* isolate,
     } else {
       // There was no owner, so we can reuse the original.
       compiled_module = original;
+      TRACE("Reusing existing instance %d\n", compiled_module->instance_id());
     }
     compiled_module->set_code_table(code_table);
   }
@@ -1381,7 +1405,7 @@ MaybeHandle<JSObject> WasmModule::Instantiate(Isolate* isolate,
         uint32_t size = Smi::cast(metadata->get(kSize))->value();
         Handle<FixedArray> table =
             metadata->GetValueChecked<FixedArray>(isolate, kTable);
-        wasm::PopulateFunctionTable(table, size, &functions);
+        PopulateFunctionTable(table, size, &functions);
       }
       instance->SetInternalField(kWasmModuleFunctionTable, *indirect_tables);
     }
@@ -1490,8 +1514,7 @@ MaybeHandle<JSObject> WasmModule::Instantiate(Isolate* isolate,
 
   DCHECK(wasm::IsWasmObject(*instance));
 
-  if (compiled_module->has_weak_module_object()) {
-    instance->SetInternalField(kWasmCompiledModule, *compiled_module);
+  {
     Handle<WeakCell> link_to_owner = factory->NewWeakCell(instance);
 
     Handle<Object> global_handle = isolate->global_handles()->Create(*instance);
@@ -1507,14 +1530,22 @@ MaybeHandle<JSObject> WasmModule::Instantiate(Isolate* isolate,
         compiled_module->set_weak_next_instance(next);
         original->set_weak_prev_instance(link_to_clone);
       }
+
+      compiled_module->set_weak_owning_instance(link_to_owner);
+      instance->SetInternalField(kWasmCompiledModule, *compiled_module);
       GlobalHandles::MakeWeak(global_handle.location(),
                               global_handle.location(), &InstanceFinalizer,
                               v8::WeakCallbackType::kFinalizer);
     }
   }
-
+  TRACE("Finishing instance %d\n", compiled_module->instance_id());
+  TRACE_CHAIN(WasmCompiledModule::cast(module_object->GetInternalField(0)));
   return instance;
 }
+
+#if DEBUG
+uint32_t WasmCompiledModule::instance_id_counter_ = 0;
+#endif
 
 Handle<WasmCompiledModule> WasmCompiledModule::New(Isolate* isolate,
                                                    uint32_t min_memory_pages,
@@ -1533,7 +1564,29 @@ Handle<WasmCompiledModule> WasmCompiledModule::New(Isolate* isolate,
   ret->set(kID_globals_size, Smi::FromInt(static_cast<int>(globals_size)));
   ret->set(kID_export_memory, Smi::FromInt(static_cast<int>(export_memory)));
   ret->set(kID_origin, Smi::FromInt(static_cast<int>(origin)));
+  WasmCompiledModule::cast(*ret)->Init();
   return handle(WasmCompiledModule::cast(*ret));
+}
+
+void WasmCompiledModule::Init() {
+#if DEBUG
+  set(kID_instance_id, Smi::FromInt(instance_id_counter_++));
+  TRACE("New compiled module id: %d\n", instance_id());
+#endif
+}
+
+void WasmCompiledModule::PrintInstancesChain() {
+#if DEBUG
+  if (!FLAG_trace_wasm_instances) return;
+  for (WasmCompiledModule* current = this; current != nullptr;) {
+    PrintF("->%d", current->instance_id());
+    if (current->ptr_to_weak_next_instance() == nullptr) break;
+    CHECK(!current->ptr_to_weak_next_instance()->cleared());
+    current =
+        WasmCompiledModule::cast(current->ptr_to_weak_next_instance()->value());
+  }
+  PrintF("\n");
+#endif
 }
 
 Handle<Object> GetWasmFunctionNameOrNull(Isolate* isolate, Handle<Object> wasm,
@@ -1754,6 +1807,63 @@ void SetInstanceMemory(Handle<JSObject> instance, JSArrayBuffer* buffer) {
   WasmCompiledModule* module =
       WasmCompiledModule::cast(instance->GetInternalField(kWasmCompiledModule));
   module->set_ptr_to_heap(buffer);
+}
+
+int32_t GetInstanceMemorySize(Isolate* isolate, Handle<JSObject> instance) {
+  MaybeHandle<JSArrayBuffer> maybe_mem_buffer =
+      GetInstanceMemory(isolate, instance);
+  Handle<JSArrayBuffer> buffer;
+  if (!maybe_mem_buffer.ToHandle(&buffer)) {
+    return 0;
+  } else {
+    return buffer->byte_length()->Number() / WasmModule::kPageSize;
+  }
+}
+
+int32_t GrowInstanceMemory(Isolate* isolate, Handle<JSObject> instance,
+                           uint32_t pages) {
+  Address old_mem_start = nullptr;
+  uint32_t old_size = 0, new_size = 0;
+
+  MaybeHandle<JSArrayBuffer> maybe_mem_buffer =
+      GetInstanceMemory(isolate, instance);
+  Handle<JSArrayBuffer> old_buffer;
+  if (!maybe_mem_buffer.ToHandle(&old_buffer)) {
+    // If module object does not have linear memory associated with it,
+    // Allocate new array buffer of given size.
+    // TODO(gdeepti): Fix bounds check to take into account size of memtype.
+    new_size = pages * WasmModule::kPageSize;
+    // The code generated in the wasm compiler guarantees this precondition.
+    DCHECK(pages <= WasmModule::kMaxMemPages);
+  } else {
+    old_mem_start = static_cast<Address>(old_buffer->backing_store());
+    old_size = old_buffer->byte_length()->Number();
+    // If the old memory was zero-sized, we should have been in the
+    // "undefined" case above.
+    DCHECK_NOT_NULL(old_mem_start);
+    DCHECK_NE(0, old_size);
+    DCHECK(old_size + pages * WasmModule::kPageSize <=
+           std::numeric_limits<uint32_t>::max());
+    new_size = old_size + pages * WasmModule::kPageSize;
+  }
+
+  if (new_size <= old_size ||
+      WasmModule::kMaxMemPages * WasmModule::kPageSize <= new_size) {
+    return -1;
+  }
+  Handle<JSArrayBuffer> buffer = NewArrayBuffer(isolate, new_size);
+  if (buffer.is_null()) return -1;
+  Address new_mem_start = static_cast<Address>(buffer->backing_store());
+  if (old_size != 0) {
+    memcpy(new_mem_start, old_mem_start, old_size);
+  }
+  SetInstanceMemory(instance, *buffer);
+  if (!UpdateWasmModuleMemory(instance, old_mem_start, new_mem_start, old_size,
+                              new_size)) {
+    return -1;
+  }
+  DCHECK(old_size % WasmModule::kPageSize == 0);
+  return (old_size / WasmModule::kPageSize);
 }
 
 namespace testing {

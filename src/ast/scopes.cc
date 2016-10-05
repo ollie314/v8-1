@@ -997,6 +997,25 @@ bool Scope::RemoveUnresolved(VariableProxy* var) {
   return false;
 }
 
+bool Scope::RemoveUnresolved(const AstRawString* name) {
+  if (unresolved_->raw_name() == name) {
+    VariableProxy* removed = unresolved_;
+    unresolved_ = unresolved_->next_unresolved();
+    removed->set_next_unresolved(nullptr);
+    return true;
+  }
+  VariableProxy* current = unresolved_;
+  while (current != nullptr) {
+    VariableProxy* next = current->next_unresolved();
+    if (next->raw_name() == name) {
+      current->set_next_unresolved(next->next_unresolved());
+      next->set_next_unresolved(nullptr);
+      return true;
+    }
+    current = next;
+  }
+  return false;
+}
 
 Variable* Scope::NewTemporary(const AstRawString* name) {
   DeclarationScope* scope = GetClosureScope();
@@ -1195,8 +1214,8 @@ void DeclarationScope::ResetAfterPreparsing(AstValueFactory* ast_value_factory,
   DCHECK(is_function_scope());
 
   // Reset all non-trivial members.
-  decls_.Clear();
-  locals_.Clear();
+  decls_.Rewind(0);
+  locals_.Rewind(0);
   sloppy_block_function_map_.Clear();
   variables_.Clear();
   // Make sure we won't walk the scope tree from here on.
@@ -1220,7 +1239,7 @@ void DeclarationScope::ResetAfterPreparsing(AstValueFactory* ast_value_factory,
       }
     }
   } else {
-    params_.Clear();
+    params_.Rewind(0);
   }
 
 #ifdef DEBUG

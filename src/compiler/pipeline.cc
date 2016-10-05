@@ -48,6 +48,7 @@
 #include "src/compiler/loop-analysis.h"
 #include "src/compiler/loop-peeling.h"
 #include "src/compiler/loop-variable-optimizer.h"
+#include "src/compiler/machine-graph-verifier.h"
 #include "src/compiler/machine-operator-reducer.h"
 #include "src/compiler/memory-optimizer.h"
 #include "src/compiler/move-optimizer.h"
@@ -914,7 +915,7 @@ struct TypedLoweringPhase {
             : MaybeHandle<LiteralsArray>();
     JSCreateLowering create_lowering(
         &graph_reducer, data->info()->dependencies(), data->jsgraph(),
-        literals_array, temp_zone);
+        literals_array, data->native_context(), temp_zone);
     JSTypedLowering::Flags typed_lowering_flags = JSTypedLowering::kNoFlags;
     if (data->info()->is_deoptimization_enabled()) {
       typed_lowering_flags |= JSTypedLowering::kDeoptimizationEnabled;
@@ -1232,8 +1233,17 @@ struct InstructionSelectionPhase {
         data->schedule(), data->source_positions(), data->frame(),
         data->info()->is_source_positions_enabled()
             ? InstructionSelector::kAllSourcePositions
-            : InstructionSelector::kCallSourcePositions);
-    selector.SelectInstructions();
+            : InstructionSelector::kCallSourcePositions,
+        InstructionSelector::SupportedFeatures(),
+        FLAG_turbo_instruction_scheduling
+            ? InstructionSelector::kEnableScheduling
+            : InstructionSelector::kDisableScheduling,
+        data->info()->will_serialize()
+            ? InstructionSelector::kEnableSerialization
+            : InstructionSelector::kDisableSerialization);
+    if (!selector.SelectInstructions()) {
+      data->set_compilation_failed();
+    }
   }
 };
 
@@ -1632,6 +1642,7 @@ Handle<Code> Pipeline::GenerateCodeForCodeStub(Isolate* isolate,
                                                Code::Flags flags,
                                                const char* debug_name) {
   CompilationInfo info(CStrVector(debug_name), isolate, graph->zone(), flags);
+  if (isolate->serializer_enabled()) info.PrepareForSerializing();
 
   // Construct a pipeline for scheduling and code generation.
   ZonePool zone_pool(isolate->allocator());
@@ -1749,11 +1760,22 @@ bool PipelineImpl::ScheduleAndSelectInstructions(Linkage* linkage) {
         info(), data->graph(), data->schedule()));
   }
 
+  if (FLAG_turbo_verify_machine_graph) {
+    Zone temp_zone(data->isolate()->allocator());
+    MachineGraphVerifier::Run(data->graph(), data->schedule(), linkage,
+                              &temp_zone);
+  }
+
   data->InitializeInstructionSequence(call_descriptor);
 
   data->InitializeFrameData(call_descriptor);
   // Select and schedule instructions covering the scheduled graph.
   Run<InstructionSelectionPhase>(linkage);
+  if (data->compilation_failed()) {
+    info()->AbortOptimization(kCodeGenerationFailed);
+    data->EndPhaseKind();
+    return false;
+  }
 
   if (FLAG_trace_turbo && !data->MayHaveUnverifiableGraph()) {
     AllowHandleDereference allow_deref;

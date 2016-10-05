@@ -217,10 +217,10 @@ class BytecodeGenerator::ControlScopeForTopLevel final
       case CMD_CONTINUE:
         UNREACHABLE();
       case CMD_RETURN:
-        generator()->builder()->Return();
+        generator()->BuildReturn();
         return true;
       case CMD_RETHROW:
-        generator()->builder()->ReThrow();
+        generator()->BuildReThrow();
         return true;
     }
     return false;
@@ -311,7 +311,7 @@ class BytecodeGenerator::ControlScopeForTryCatch final
       case CMD_RETURN:
         break;
       case CMD_RETHROW:
-        generator()->builder()->ReThrow();
+        generator()->BuildReThrow();
         return true;
     }
     return false;
@@ -649,7 +649,13 @@ void BytecodeGenerator::GenerateBytecode(uintptr_t stack_limit) {
     if (!label.is_bound()) builder()->Bind(&label);
   }
 
-  builder()->EnsureReturn();
+  // Emit an implicit return instruction in case control flow can fall off the
+  // end of the function without an explicit return being present on all paths.
+  if (builder()->RequiresImplicitReturn()) {
+    builder()->LoadUndefined();
+    BuildReturn();
+  }
+  DCHECK(!builder()->RequiresImplicitReturn());
 }
 
 void BytecodeGenerator::GenerateBytecodeBody() {
@@ -666,10 +672,8 @@ void BytecodeGenerator::GenerateBytecodeBody() {
   // Build assignment to {new.target} variable if it is used.
   VisitNewTargetVariable(scope()->new_target_var());
 
-  // TODO(rmcilroy): Emit tracing call if requested to do so.
-  if (FLAG_trace) {
-    UNIMPLEMENTED();
-  }
+  // Emit tracing call if requested to do so.
+  if (FLAG_trace) builder()->CallRuntime(Runtime::kTraceEnter);
 
   // Visit declarations within the function scope.
   VisitDeclarations(scope()->declarations());
@@ -1198,7 +1202,7 @@ void BytecodeGenerator::VisitForInStatement(ForInStatement* stmt) {
   // Used as kRegTriple and kRegPair in ForInPrepare and ForInNext.
   RegisterList triple = register_allocator()->NewRegisterList(3);
   Register cache_length = triple[2];
-  builder()->ForInPrepare(receiver, triple.first_register());
+  builder()->ForInPrepare(receiver, triple);
 
   // Set up loop counter
   Register index = register_allocator()->NewRegister();
@@ -1211,7 +1215,7 @@ void BytecodeGenerator::VisitForInStatement(ForInStatement* stmt) {
   builder()->ForInContinue(index, cache_length);
   loop_builder.BreakIfFalse();
   FeedbackVectorSlot slot = stmt->ForInFeedbackSlot();
-  builder()->ForInNext(receiver, index, triple.first_register(),
+  builder()->ForInNext(receiver, index, triple.Truncate(2),
                        feedback_index(slot));
   loop_builder.ContinueIfUndefined();
   VisitForInAssignment(stmt->each(), stmt->EachFeedbackSlot());
@@ -1855,6 +1859,19 @@ void BytecodeGenerator::VisitVariableLoadForAccumulatorValue(
   VisitVariableLoad(variable, slot, typeof_mode);
 }
 
+void BytecodeGenerator::BuildReturn() {
+  if (FLAG_trace) {
+    RegisterAllocationScope register_scope(this);
+    Register result = register_allocator()->NewRegister();
+    // Runtime returns {result} value, preserving accumulator.
+    builder()->StoreAccumulatorInRegister(result).CallRuntime(
+        Runtime::kTraceExit, result);
+  }
+  builder()->Return();
+}
+
+void BytecodeGenerator::BuildReThrow() { builder()->ReThrow(); }
+
 void BytecodeGenerator::BuildAbort(BailoutReason bailout_reason) {
   RegisterAllocationScope register_scope(this);
   Register reason = register_allocator()->NewRegister();
@@ -2361,11 +2378,13 @@ void BytecodeGenerator::VisitCall(Call* expr) {
 
         // Call %LoadLookupSlotForCall to get the callee and receiver.
         DCHECK(Register::AreContiguous(callee, receiver));
+        RegisterList result_pair(callee.index(), 2);
         Variable* variable = callee_expr->AsVariableProxy()->var();
         builder()
             ->LoadLiteral(variable->name())
             .StoreAccumulatorInRegister(name)
-            .CallRuntimeForPair(Runtime::kLoadLookupSlotForCall, name, callee);
+            .CallRuntimeForPair(Runtime::kLoadLookupSlotForCall, name,
+                                result_pair);
         break;
       }
       // Fall through.

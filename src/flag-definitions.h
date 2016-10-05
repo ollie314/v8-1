@@ -453,6 +453,8 @@ DEFINE_BOOL(turbo_asm, true, "enable TurboFan for asm.js code")
 DEFINE_BOOL(turbo_asm_deoptimization, false,
             "enable deoptimization in TurboFan for asm.js code")
 DEFINE_BOOL(turbo_verify, DEBUG_BOOL, "verify TurboFan graphs at each phase")
+DEFINE_BOOL(turbo_verify_machine_graph, false,
+            "verify TurboFan machine graph before instruction selection")
 DEFINE_BOOL(turbo_stats, false, "print TurboFan statistics")
 DEFINE_BOOL(turbo_stats_nvp, false,
             "print TurboFan statistics in machine-readable format")
@@ -588,6 +590,9 @@ DEFINE_MAYBE_BOOL(enable_armv8, "deprecated (use --arm_arch instead)")
 // regexp-macro-assembler-*.cc
 DEFINE_BOOL(enable_regexp_unaligned_accesses, true,
             "enable unaligned accesses for the regexp engine")
+
+// api.cc
+DEFINE_BOOL(script_streaming, true, "enable parsing on background")
 
 // bootstrapper.cc
 DEFINE_STRING(expose_natives_as, NULL, "expose natives in global object")
@@ -1034,6 +1039,10 @@ DEFINE_BOOL(trace_regexp_parser, false, "trace regexp parsing")
 
 // Debugger
 DEFINE_BOOL(print_break_location, false, "print source location on debug break")
+
+// wasm instance management
+DEFINE_BOOL(trace_wasm_instances, false,
+            "trace creation and collection of wasm instances")
 
 //
 // Logging and profiling flags

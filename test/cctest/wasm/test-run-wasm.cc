@@ -12,8 +12,8 @@
 
 #include "test/cctest/cctest.h"
 #include "test/cctest/compiler/value-helper.h"
-#include "test/cctest/wasm/test-signatures.h"
 #include "test/cctest/wasm/wasm-run-utils.h"
+#include "test/common/wasm/test-signatures.h"
 
 using namespace v8::base;
 using namespace v8::internal;
@@ -77,22 +77,6 @@ WASM_EXEC_TEST(Int32Const_many) {
     BUILD(r, WASM_I32V(kExpectedValue));
     CHECK_EQ(kExpectedValue, r.Call());
   }
-}
-
-WASM_EXEC_TEST(MemorySize1) {
-  TestingModule module(execution_mode);
-  WasmRunner<int32_t> r(&module);
-  module.AddMemory(WasmModule::kPageSize * 1);
-  BUILD(r, kExprMemorySize);
-  CHECK_EQ(1, r.Call());
-}
-
-WASM_EXEC_TEST(MemorySize2) {
-  TestingModule module(execution_mode);
-  WasmRunner<int32_t> r(&module);
-  module.AddMemory(WasmModule::kPageSize * 3);
-  BUILD(r, kExprMemorySize);
-  CHECK_EQ(3, r.Call());
 }
 
 WASM_EXEC_TEST(Int32Param0) {

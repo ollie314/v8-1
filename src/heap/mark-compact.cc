@@ -2246,6 +2246,13 @@ void MarkCompactCollector::RecordObjectStats() {
     ObjectStatsVisitor visitor(heap(), heap()->live_object_stats_,
                                heap()->dead_object_stats_);
     VisitAllObjects(&visitor);
+    std::stringstream live, dead;
+    heap()->live_object_stats_->Dump(live);
+    heap()->dead_object_stats_->Dump(dead);
+    TRACE_EVENT_INSTANT2(TRACE_DISABLED_BY_DEFAULT("v8.gc_stats"),
+                         "V8.GC_Objects_Stats", TRACE_EVENT_SCOPE_THREAD,
+                         "live", TRACE_STR_COPY(live.str().c_str()), "dead",
+                         TRACE_STR_COPY(dead.str().c_str()));
     if (FLAG_trace_gc_object_stats) {
       heap()->live_object_stats_->PrintJSON("live");
       heap()->dead_object_stats_->PrintJSON("dead");
@@ -3828,6 +3835,9 @@ int MarkCompactCollector::Sweeper::ParallelSweepPage(Page* page,
     // After finishing sweeping of a page we clean up its remembered set.
     if (page->typed_old_to_new_slots()) {
       page->typed_old_to_new_slots()->FreeToBeFreedChunks();
+    }
+    if (page->old_to_new_slots()) {
+      page->old_to_new_slots()->FreeToBeFreedBuckets();
     }
 
     {

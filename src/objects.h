@@ -7106,6 +7106,7 @@ enum BuiltinFunctionId {
   kTypedArrayByteOffset,
   kTypedArrayLength,
   kSharedArrayBufferByteLength,
+  kStringIteratorNext,
 };
 
 
@@ -7543,9 +7544,9 @@ class SharedFunctionInfo: public HeapObject {
 
   // Layout description.
   // Pointer fields.
-  static const int kNameOffset = HeapObject::kHeaderSize;
-  static const int kCodeOffset = kNameOffset + kPointerSize;
-  static const int kOptimizedCodeMapOffset = kCodeOffset + kPointerSize;
+  static const int kCodeOffset = HeapObject::kHeaderSize;
+  static const int kNameOffset = kCodeOffset + kPointerSize;
+  static const int kOptimizedCodeMapOffset = kNameOffset + kPointerSize;
   static const int kScopeInfoOffset = kOptimizedCodeMapOffset + kPointerSize;
   static const int kOuterScopeInfoOffset = kScopeInfoOffset + kPointerSize;
   static const int kConstructStubOffset = kOuterScopeInfoOffset + kPointerSize;
@@ -7670,9 +7671,12 @@ class SharedFunctionInfo: public HeapObject {
 
   static const int kAlignedSize = POINTER_SIZE_ALIGN(kSize);
 
+  typedef FixedBodyDescriptor<kCodeOffset,
+                              kLastPointerFieldOffset + kPointerSize, kSize>
+      BodyDescriptor;
   typedef FixedBodyDescriptor<kNameOffset,
-                              kLastPointerFieldOffset + kPointerSize,
-                              kSize> BodyDescriptor;
+                              kLastPointerFieldOffset + kPointerSize, kSize>
+      BodyDescriptorWeakCode;
 
   // Bit positions in start_position_and_type.
   // The source code start position is in the 30 most significant bits of
@@ -7704,18 +7708,9 @@ class SharedFunctionInfo: public HeapObject {
     kDontFlush,
     // byte 2
     kFunctionKind,
-    kIsArrow = kFunctionKind,
-    kIsGenerator,
-    kIsConciseMethod,
-    kIsDefaultConstructor,
-    kIsSubclassConstructor,
-    kIsBaseConstructor,
-    kIsGetterFunction,
-    kIsSetterFunction,
+    // rest of byte 2 and first two bits of byte 3 are used by FunctionKind
     // byte 3
-    kIsAsyncFunction,
-    kIsModule,
-    kDeserialized,
+    kDeserialized = kFunctionKind + 10,
     kIsDeclaration,
     kIsAsmWasmBroken,
     kRequiresClassFieldInit,
@@ -7724,23 +7719,8 @@ class SharedFunctionInfo: public HeapObject {
   };
   // kFunctionKind has to be byte-aligned
   STATIC_ASSERT((kFunctionKind % kBitsPerByte) == 0);
-// Make sure that FunctionKind and byte 2 are in sync:
-#define ASSERT_FUNCTION_KIND_ORDER(functionKind, compilerFunctionKind) \
-  STATIC_ASSERT(FunctionKind::functionKind ==                          \
-                1 << (compilerFunctionKind - kFunctionKind))
-  ASSERT_FUNCTION_KIND_ORDER(kArrowFunction, kIsArrow);
-  ASSERT_FUNCTION_KIND_ORDER(kGeneratorFunction, kIsGenerator);
-  ASSERT_FUNCTION_KIND_ORDER(kConciseMethod, kIsConciseMethod);
-  ASSERT_FUNCTION_KIND_ORDER(kDefaultConstructor, kIsDefaultConstructor);
-  ASSERT_FUNCTION_KIND_ORDER(kSubclassConstructor, kIsSubclassConstructor);
-  ASSERT_FUNCTION_KIND_ORDER(kBaseConstructor, kIsBaseConstructor);
-  ASSERT_FUNCTION_KIND_ORDER(kGetterFunction, kIsGetterFunction);
-  ASSERT_FUNCTION_KIND_ORDER(kSetterFunction, kIsSetterFunction);
-  ASSERT_FUNCTION_KIND_ORDER(kAsyncFunction, kIsAsyncFunction);
-  ASSERT_FUNCTION_KIND_ORDER(kModule, kIsModule);
-#undef ASSERT_FUNCTION_KIND_ORDER
 
-  class FunctionKindBits : public BitField<FunctionKind, kIsArrow, 10> {};
+  class FunctionKindBits : public BitField<FunctionKind, kFunctionKind, 10> {};
 
   class DeoptCountBits : public BitField<int, 0, 4> {};
   class OptReenableTriesBits : public BitField<int, 4, 18> {};
@@ -7772,21 +7752,10 @@ class SharedFunctionInfo: public HeapObject {
   static const int kHasDuplicateParametersBit =
       kHasDuplicateParameters + kCompilerHintsSmiTagSize;
 
-  static const int kIsArrowBit = kIsArrow + kCompilerHintsSmiTagSize;
-  static const int kIsGeneratorBit = kIsGenerator + kCompilerHintsSmiTagSize;
-  static const int kIsConciseMethodBit =
-      kIsConciseMethod + kCompilerHintsSmiTagSize;
-  static const int kIsAsyncFunctionBit =
-      kIsAsyncFunction + kCompilerHintsSmiTagSize;
-
-  static const int kAccessorFunctionBits =
-      FunctionKind::kAccessorFunction
-      << (kFunctionKind + kCompilerHintsSmiTagSize);
-  static const int kClassConstructorBits =
-      FunctionKind::kClassConstructor
-      << (kFunctionKind + kCompilerHintsSmiTagSize);
-  static const int kFunctionKindMaskBits = FunctionKindBits::kMask
-                                           << kCompilerHintsSmiTagSize;
+  static const int kFunctionKindShift =
+      kFunctionKind + kCompilerHintsSmiTagSize;
+  static const int kAllFunctionKindBitsMask = FunctionKindBits::kMask
+                                              << kCompilerHintsSmiTagSize;
 
   // Constants for optimizing codegen for strict mode function and
   // native tests.

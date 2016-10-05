@@ -652,9 +652,10 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::Debugger() {
 }
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::ForInPrepare(
-    Register receiver, Register cache_info_triple) {
+    Register receiver, RegisterList cache_info_triple) {
+  DCHECK_EQ(3, cache_info_triple.register_count());
   Output(Bytecode::kForInPrepare, RegisterOperand(receiver),
-         RegisterOperand(cache_info_triple));
+         RegisterOperand(cache_info_triple.first_register()));
   return *this;
 }
 
@@ -666,10 +667,12 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::ForInContinue(
 }
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::ForInNext(
-    Register receiver, Register index, Register cache_type_array_pair,
+    Register receiver, Register index, RegisterList cache_type_array_pair,
     int feedback_slot) {
+  DCHECK_EQ(2, cache_type_array_pair.register_count());
   Output(Bytecode::kForInNext, RegisterOperand(receiver),
-         RegisterOperand(index), RegisterOperand(cache_type_array_pair),
+         RegisterOperand(index),
+         RegisterOperand(cache_type_array_pair.first_register()),
          UnsignedOperand(feedback_slot));
   return *this;
 }
@@ -714,14 +717,6 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::MarkTryEnd(int handler_id) {
   Bind(&try_end);
   handler_table_builder()->SetTryRegionEnd(handler_id, try_end.offset());
   return *this;
-}
-
-void BytecodeArrayBuilder::EnsureReturn() {
-  if (!return_seen_in_block_) {
-    LoadUndefined();
-    Return();
-  }
-  DCHECK(return_seen_in_block_);
 }
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::Call(Register callable,
@@ -782,19 +777,22 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::CallRuntime(
 }
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::CallRuntimeForPair(
-    Runtime::FunctionId function_id, RegisterList args, Register first_return) {
+    Runtime::FunctionId function_id, RegisterList args,
+    RegisterList return_pair) {
   DCHECK_EQ(2, Runtime::FunctionForId(function_id)->result_size);
   DCHECK(Bytecodes::SizeForUnsignedOperand(function_id) <= OperandSize::kShort);
+  DCHECK_EQ(2, return_pair.register_count());
   Output(Bytecode::kCallRuntimeForPair, static_cast<uint16_t>(function_id),
          RegisterOperand(args.first_register()),
-         UnsignedOperand(args.register_count()), RegisterOperand(first_return));
+         UnsignedOperand(args.register_count()),
+         RegisterOperand(return_pair.first_register()));
   return *this;
 }
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::CallRuntimeForPair(
-    Runtime::FunctionId function_id, Register arg, Register first_return) {
+    Runtime::FunctionId function_id, Register arg, RegisterList return_pair) {
   return CallRuntimeForPair(function_id, RegisterList(arg.index(), 1),
-                            first_return);
+                            return_pair);
 }
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::CallJSRuntime(int context_index,
@@ -865,19 +863,6 @@ bool BytecodeArrayBuilder::OperandsAreValid(
     switch (operand_types[i]) {
       case OperandType::kNone:
         return false;
-      case OperandType::kRegCount: {
-        CHECK_NE(i, 0);
-        CHECK(operand_types[i - 1] == OperandType::kMaybeReg ||
-              operand_types[i - 1] == OperandType::kReg);
-        if (i > 0 && operands[i] > 0) {
-          Register start = Register::FromOperand(operands[i - 1]);
-          Register end(start.index() + static_cast<int>(operands[i]) - 1);
-          if (!RegisterIsValid(start) || !RegisterIsValid(end) || start > end) {
-            return false;
-          }
-        }
-        break;
-      }
       case OperandType::kFlag8:
       case OperandType::kIntrinsicId:
         if (Bytecodes::SizeForUnsignedOperand(operands[i]) >
@@ -898,11 +883,22 @@ bool BytecodeArrayBuilder::OperandsAreValid(
       case OperandType::kUImm:
       case OperandType::kImm:
         break;
-      case OperandType::kMaybeReg:
-        if (Register::FromOperand(operands[i]) == Register(0)) {
-          break;
+      case OperandType::kRegList: {
+        CHECK_LT(i, operand_count - 1);
+        CHECK(operand_types[i + 1] == OperandType::kRegCount);
+        int reg_count = static_cast<int>(operands[i + 1]);
+        if (reg_count == 0) {
+          return Register::FromOperand(operands[i]) == Register(0);
+        } else {
+          Register start = Register::FromOperand(operands[i]);
+          Register end(start.index() + reg_count - 1);
+          if (!RegisterIsValid(start) || !RegisterIsValid(end) || start > end) {
+            return false;
+          }
         }
-      // Fall-through to kReg case.
+        i++;  // Skip past kRegCount operand.
+        break;
+      }
       case OperandType::kReg:
       case OperandType::kRegOut: {
         Register reg = Register::FromOperand(operands[i]);
@@ -930,6 +926,8 @@ bool BytecodeArrayBuilder::OperandsAreValid(
         }
         break;
       }
+      case OperandType::kRegCount:
+        UNREACHABLE();  // Dealt with in kRegList above.
     }
   }
 

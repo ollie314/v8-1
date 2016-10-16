@@ -32,6 +32,9 @@ namespace wasm {
 #endif
 
 #define CHECK_PROTOTYPE_OPCODE(flag)                   \
+  if (module_ && module_->origin == kAsmJsOrigin) {    \
+    error("Opcode not supported for asmjs modules");   \
+  }                                                    \
   if (!FLAG_##flag) {                                  \
     error("Invalid opcode (enable with --" #flag ")"); \
     break;                                             \
@@ -500,7 +503,7 @@ class WasmFullDecoder : public WasmDecoder {
       case kAstF64:
         return builder_->Float64Constant(0);
       case kAstS128:
-        return builder_->DefaultS128Value();
+        return builder_->CreateS128Value(0);
       default:
         UNREACHABLE();
         return nullptr;
@@ -681,8 +684,8 @@ class WasmFullDecoder : public WasmDecoder {
             BlockTypeOperand operand(this, pc_);
             SsaEnv* finish_try_env = Steal(ssa_env_);
             // The continue environment is the inner environment.
-            PrepareForLoop(pc_, finish_try_env);
-            SetEnv("loop:start", Split(finish_try_env));
+            SsaEnv* loop_body_env = PrepareForLoop(pc_, finish_try_env);
+            SetEnv("loop:start", loop_body_env);
             ssa_env_->SetNotMerged();
             PushLoop(finish_try_env);
             SetBlockType(&control_.back(), operand);
@@ -862,7 +865,7 @@ class WasmFullDecoder : public WasmDecoder {
 
                 SsaEnv* copy = Steal(break_env);
                 ssa_env_ = copy;
-                while (iterator.has_next()) {
+                while (ok() && iterator.has_next()) {
                   uint32_t i = iterator.cur_index();
                   const byte* pos = iterator.pc();
                   uint32_t target = iterator.next();
@@ -876,6 +879,7 @@ class WasmFullDecoder : public WasmDecoder {
                                           : BUILD(IfValue, i, sw);
                   BreakTo(target);
                 }
+                if (failed()) break;
               } else {
                 // Only a default target. Do the equivalent of br.
                 const byte* pos = iterator.pc();
@@ -1437,9 +1441,13 @@ class WasmFullDecoder : public WasmDecoder {
               WasmOpcodes::TypeName(old.type), WasmOpcodes::TypeName(val.type));
         return;
       }
-      old.node =
-          first ? val.node : CreateOrMergeIntoPhi(old.type, target->control,
-                                                  old.node, val.node);
+      if (builder_) {
+        old.node =
+            first ? val.node : CreateOrMergeIntoPhi(old.type, target->control,
+                                                    old.node, val.node);
+      } else {
+        old.node = nullptr;
+      }
     }
   }
 
@@ -1596,6 +1604,7 @@ class WasmFullDecoder : public WasmDecoder {
 
   TFNode* CreateOrMergeIntoPhi(LocalType type, TFNode* merge, TFNode* tnode,
                                TFNode* fnode) {
+    DCHECK_NOT_NULL(builder_);
     if (builder_->IsPhiWithMerge(tnode, merge)) {
       builder_->AppendToPhi(tnode, fnode);
     } else if (tnode != fnode) {
@@ -1608,16 +1617,17 @@ class WasmFullDecoder : public WasmDecoder {
     return tnode;
   }
 
-  void PrepareForLoop(const byte* pc, SsaEnv* env) {
-    if (!env->go()) return;
+  SsaEnv* PrepareForLoop(const byte* pc, SsaEnv* env) {
+    if (!builder_) return Split(env);
+    if (!env->go()) return Split(env);
     env->state = SsaEnv::kMerged;
-    if (!builder_) return;
 
     env->control = builder_->Loop(env->control);
     env->effect = builder_->EffectPhi(1, &env->effect, env->control);
     builder_->Terminate(env->effect, env->control);
     if (FLAG_wasm_loop_assignment_analysis) {
       BitVector* assigned = AnalyzeLoopAssignment(pc);
+      if (failed()) return env;
       if (assigned != nullptr) {
         // Only introduce phis for variables assigned in this loop.
         for (int i = EnvironmentCount() - 1; i >= 0; i--) {
@@ -1625,7 +1635,10 @@ class WasmFullDecoder : public WasmDecoder {
           env->locals[i] = builder_->Phi(local_type_vec_[i], 1, &env->locals[i],
                                          env->control);
         }
-        return;
+        SsaEnv* loop_body_env = Split(env);
+        builder_->StackCheck(position(), &(loop_body_env->effect),
+                             &(loop_body_env->control));
+        return loop_body_env;
       }
     }
 
@@ -1634,6 +1647,11 @@ class WasmFullDecoder : public WasmDecoder {
       env->locals[i] =
           builder_->Phi(local_type_vec_[i], 1, &env->locals[i], env->control);
     }
+
+    SsaEnv* loop_body_env = Split(env);
+    builder_->StackCheck(position(), &(loop_body_env->effect),
+                         &(loop_body_env->control));
+    return loop_body_env;
   }
 
   // Create a complete copy of the {from}.

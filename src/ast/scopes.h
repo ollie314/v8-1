@@ -346,7 +346,7 @@ class Scope: public ZoneObject {
 
   // Determine if we can parse a function literal in this scope lazily without
   // caring about the unresolved variables within.
-  bool AllowsLazyParsingWithoutUnresolvedVariables() const;
+  bool AllowsLazyParsingWithoutUnresolvedVariables(const Scope* outer) const;
 
   // The number of contexts between this and scope; zero if this == scope.
   int ContextChainLength(Scope* scope) const;
@@ -419,6 +419,12 @@ class Scope: public ZoneObject {
 
   bool is_lazily_parsed() const { return is_lazily_parsed_; }
 
+  bool ShouldEagerCompile() const;
+
+  // Marks this scope and all inner scopes (except for inner function scopes)
+  // such that they get eagerly compiled.
+  void SetShouldEagerCompile();
+
  protected:
   explicit Scope(Zone* zone);
 
@@ -447,7 +453,7 @@ class Scope: public ZoneObject {
     DCHECK(!already_resolved_);
     // A lazily parsed scope doesn't contain enough information to create a
     // ScopeInfo from it.
-    if (is_lazily_parsed_) return false;
+    if (!ShouldEagerCompile()) return false;
     // The debugger expects all functions to have scope infos.
     // TODO(jochen|yangguo): Remove this requirement.
     if (is_function_scope()) return true;
@@ -523,6 +529,7 @@ class Scope: public ZoneObject {
   bool is_declaration_scope_ : 1;
 
   bool is_lazily_parsed_ : 1;
+  bool should_eager_compile_ : 1;
 
   // Create a non-local variable with a given name.
   // These variables are looked up dynamically at runtime.
@@ -699,16 +706,6 @@ class DeclarationScope : public Scope {
     return params_[index];
   }
 
-  // Returns the default function arity excluding default or rest parameters.
-  // This will be used to set the length of the function, by default.
-  // Class field initializers use this property to indicate the number of
-  // fields being initialized.
-  int arity() const { return arity_; }
-
-  // Normal code should not need to call this. Class field initializers use this
-  // property to indicate the number of fields being initialized.
-  void set_arity(int arity) { arity_ = arity; }
-
   // Returns the number of formal parameters, excluding a possible rest
   // parameter.  Examples:
   //   function foo(a, b) {}         ==> 2
@@ -791,9 +788,6 @@ class DeclarationScope : public Scope {
   // Determine if we can use lazy compilation for this scope.
   bool AllowsLazyCompilation() const;
 
-  // Determine if we can use lazy compilation for this scope without a context.
-  bool AllowsLazyCompilationWithoutContext() const;
-
   // Make sure this closure and all outer closures are eagerly compiled.
   void ForceEagerCompilation() {
     DCHECK_EQ(this, GetClosureScope());
@@ -844,8 +838,6 @@ class DeclarationScope : public Scope {
   // This scope uses "super" property ('super.foo').
   bool scope_uses_super_property_ : 1;
 
-  // Info about the parameter list of a function.
-  int arity_;
   // Parameter list in source order.
   ZoneList<Variable*> params_;
   // Map of function names to lists of functions defined in sloppy blocks

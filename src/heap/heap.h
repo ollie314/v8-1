@@ -63,7 +63,6 @@ using v8::MemoryPressureLevel;
   V(FixedArray, empty_type_feedback_vector, EmptyTypeFeedbackVector)           \
   V(FixedArray, empty_fixed_array, EmptyFixedArray)                            \
   V(ScopeInfo, empty_scope_info, EmptyScopeInfo)                               \
-  V(FixedArray, cleared_optimized_code_map, ClearedOptimizedCodeMap)           \
   V(DescriptorArray, empty_descriptor_array, EmptyDescriptorArray)             \
   /* Entries beyond the first 32                                            */ \
   /* The roots above this line should be boring from a GC point of view.    */ \
@@ -341,8 +340,6 @@ class TracePossibleWrapperReporter;
 class WeakObjectRetainer;
 
 typedef void (*ObjectSlotCallback)(HeapObject** from, HeapObject* to);
-
-enum PromotionMode { PROMOTE_MARKED, DEFAULT_PROMOTION };
 
 enum ArrayStorageAllocationMode {
   DONT_INITIALIZE_ARRAY_ELEMENTS,
@@ -835,10 +832,7 @@ class Heap {
 
   // An object should be promoted if the object has survived a
   // scavenge operation.
-  template <PromotionMode promotion_mode>
   inline bool ShouldBePromoted(Address old_address, int object_size);
-
-  inline PromotionMode CurrentPromotionMode();
 
   void ClearNormalizedMapCaches();
 
@@ -1022,6 +1016,14 @@ class Heap {
   Object* root(RootListIndex index) { return roots_[index]; }
   Handle<Object> root_handle(RootListIndex index) {
     return Handle<Object>(&roots_[index]);
+  }
+  template <typename T>
+  bool IsRootHandle(Handle<T> handle, RootListIndex* index) const {
+    Object** const handle_location = bit_cast<Object**>(handle.address());
+    if (handle_location >= &roots_[kRootListLength]) return false;
+    if (handle_location < &roots_[0]) return false;
+    *index = static_cast<RootListIndex>(handle_location - &roots_[0]);
+    return true;
   }
 
   // Generated code can embed this address to get access to the roots.
@@ -1778,8 +1780,7 @@ class Heap {
   // Performs a minor collection in new generation.
   void Scavenge();
 
-  Address DoScavenge(ObjectVisitor* scavenge_visitor, Address new_space_front,
-                     PromotionMode promotion_mode);
+  Address DoScavenge(ObjectVisitor* scavenge_visitor, Address new_space_front);
 
   void UpdateNewSpaceReferencesInExternalStringTable(
       ExternalStringTableUpdaterCallback updater_func);

@@ -40,7 +40,6 @@ v8_executable("cctest") {
     "compiler/test-multiple-return.cc",
     "compiler/test-node.cc",
     "compiler/test-operator.cc",
-    "compiler/test-osr.cc",
     "compiler/test-representation-change.cc",
     "compiler/test-run-bytecode-graph-builder.cc",
     "compiler/test-run-calls-to-external-references.cc",
@@ -167,6 +166,7 @@ v8_executable("cctest") {
     "test-thread-termination.cc",
     "test-threads.cc",
     "test-trace-event.cc",
+    "test-traced-value.cc",
     "test-transitions.cc",
     "test-typedarrays.cc",
     "test-types.cc",
@@ -324,6 +324,7 @@ v8_executable("cctest") {
 
   deps = [
     ":resources",
+    "../..:v8_libbase",
     "../..:v8_libplatform",
     "../..:wasm_module_runner",
     "../..:wasm_test_signatures",
@@ -331,10 +332,13 @@ v8_executable("cctest") {
     "//build/win:default_exe_manifest",
   ]
 
+  defines = []
+
   if (is_component_build) {
     # cctest can't be built against a shared library, so we
     # need to depend on the underlying static target in that case.
     deps += [ "../..:v8_maybe_snapshot" ]
+    defines += [ "BUILDING_V8_SHARED" ]
   } else {
     deps += [ "../..:v8" ]
   }
@@ -358,14 +362,6 @@ v8_executable("cctest") {
 
     # MSVS wants this for gay-{precision,shortest}.cc.
     cflags += [ "/bigobj" ]
-
-    # Suppress warnings about importing locally defined symbols.
-    if (is_component_build) {
-      ldflags += [
-        "/ignore:4049",
-        "/ignore:4217",
-      ]
-    }
   }
 }
 
@@ -416,25 +412,10 @@ v8_executable("generate-bytecode-expectations") {
   ]
 
   deps = [
+    "../..:v8",
+    "../..:v8_libbase",
     "../..:v8_libplatform",
     "//build/config/sanitizers:deps",
     "//build/win:default_exe_manifest",
   ]
-
-  if (is_component_build) {
-    # Same as cctest, we need to depend on the underlying static target.
-    deps += [ "../..:v8_maybe_snapshot" ]
-  } else {
-    deps += [ "../..:v8" ]
-  }
-
-  if (is_win) {
-    # Suppress warnings about importing locally defined symbols.
-    if (is_component_build) {
-      ldflags = [
-        "/ignore:4049",
-        "/ignore:4217",
-      ]
-    }
-  }
 }

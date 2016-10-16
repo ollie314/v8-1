@@ -2237,7 +2237,7 @@ HValue* HGraphBuilder::BuildToNumber(HValue* input) {
   }
   Callable callable = CodeFactory::ToNumber(isolate());
   HValue* stub = Add<HConstant>(callable.code());
-  HValue* values[] = {context(), input};
+  HValue* values[] = {input};
   HCallWithDescriptor* instr = Add<HCallWithDescriptor>(
       stub, 0, callable.descriptor(), ArrayVector(values));
   instr->set_type(HType::TaggedNumber());
@@ -5261,11 +5261,10 @@ void HOptimizedGraphBuilder::BuildForInBody(ForInStatement* stmt,
     }
     set_current_block(if_slow);
     {
-      ForInFilterStub stub(isolate());
-      HValue* values[] = {context(), key, enumerable};
-      HConstant* stub_value = Add<HConstant>(stub.GetCode());
-      Push(Add<HCallWithDescriptor>(stub_value, 0,
-                                    stub.GetCallInterfaceDescriptor(),
+      Callable callable = CodeFactory::ForInFilter(isolate());
+      HValue* values[] = {key, enumerable};
+      HConstant* stub_value = Add<HConstant>(callable.code());
+      Push(Add<HCallWithDescriptor>(stub_value, 0, callable.descriptor(),
                                     ArrayVector(values)));
       Add<HSimulate>(stmt->FilterId());
       FinishCurrentBlock(New<HCompareObjectEqAndBranch>(
@@ -5371,7 +5370,7 @@ void HOptimizedGraphBuilder::VisitFunctionLiteral(FunctionLiteral* expr) {
   if (!expr->pretenure()) {
     FastNewClosureStub stub(isolate());
     FastNewClosureDescriptor descriptor(isolate());
-    HValue* values[] = {context(), shared_info_value};
+    HValue* values[] = {shared_info_value};
     HConstant* stub_value = Add<HConstant>(stub.GetCode());
     instr = New<HCallWithDescriptor>(stub_value, 0, descriptor,
                                      ArrayVector(values));
@@ -5590,9 +5589,17 @@ void HOptimizedGraphBuilder::VisitVariableProxy(VariableProxy* expr) {
         }
       } else {
         Handle<TypeFeedbackVector> vector(current_feedback_vector(), isolate());
-        HLoadGlobalGeneric* instr = New<HLoadGlobalGeneric>(
-            variable->name(), ast_context()->typeof_mode(), vector,
-            expr->VariableFeedbackSlot());
+
+        HValue* vector_value = Add<HConstant>(vector);
+        HValue* slot_value =
+            Add<HConstant>(vector->GetIndex(expr->VariableFeedbackSlot()));
+        Callable callable = CodeFactory::LoadGlobalICInOptimizedCode(
+            isolate(), ast_context()->typeof_mode());
+        HValue* stub = Add<HConstant>(callable.code());
+        HValue* values[] = {slot_value, vector_value};
+        HCallWithDescriptor* instr = New<HCallWithDescriptor>(
+            Code::LOAD_GLOBAL_IC, stub, 0, callable.descriptor(),
+            ArrayVector(values));
         return ast_context()->ReturnInstruction(instr, expr->id());
       }
     }
@@ -5648,9 +5655,9 @@ void HOptimizedGraphBuilder::VisitRegExpLiteral(RegExpLiteral* expr) {
   DCHECK(current_block() != NULL);
   DCHECK(current_block()->HasPredecessor());
   Callable callable = CodeFactory::FastCloneRegExp(isolate());
-  HValue* values[] = {
-      context(), AddThisFunction(), Add<HConstant>(expr->literal_index()),
-      Add<HConstant>(expr->pattern()), Add<HConstant>(expr->flags())};
+  HValue* values[] = {AddThisFunction(), Add<HConstant>(expr->literal_index()),
+                      Add<HConstant>(expr->pattern()),
+                      Add<HConstant>(expr->flags())};
   HConstant* stub_value = Add<HConstant>(callable.code());
   HInstruction* instr = New<HCallWithDescriptor>(
       stub_value, 0, callable.descriptor(), ArrayVector(values));
@@ -6216,7 +6223,7 @@ bool HOptimizedGraphBuilder::PropertyAccessInfo::LoadFieldMaps(
   DCHECK(field_type_.IsHeapObject());
 
   // Add dependency on the map that introduced the field.
-  top_info()->dependencies()->AssumeFieldType(GetFieldOwnerFromMap(map));
+  top_info()->dependencies()->AssumeFieldOwner(GetFieldOwnerFromMap(map));
   return true;
 }
 
@@ -6788,10 +6795,9 @@ void HOptimizedGraphBuilder::HandleGlobalVariableAssignment(
     Callable callable = CodeFactory::StoreICInOptimizedCode(
         isolate(), function_language_mode());
     HValue* stub = Add<HConstant>(callable.code());
-    HValue* values[] = {context(), global_object, name,
-                        value,     slot_value,    vector_value};
+    HValue* values[] = {global_object, name, value, slot_value, vector_value};
     HCallWithDescriptor* instr = Add<HCallWithDescriptor>(
-        stub, 0, callable.descriptor(), ArrayVector(values));
+        Code::STORE_IC, stub, 0, callable.descriptor(), ArrayVector(values));
     USE(instr);
     DCHECK(instr->HasObservableSideEffects());
     Add<HSimulate>(ast_id, REMOVABLE_SIMULATE);
@@ -7090,36 +7096,35 @@ HInstruction* HOptimizedGraphBuilder::BuildNamedGeneric(
         DeoptimizeReason::kInsufficientTypeFeedbackForGenericNamedAccess,
         Deoptimizer::SOFT);
   }
-  if (access_type == LOAD) {
-    Handle<TypeFeedbackVector> vector =
-        handle(current_feedback_vector(), isolate());
+  Handle<TypeFeedbackVector> vector(current_feedback_vector(), isolate());
 
+  HValue* key = Add<HConstant>(name);
+  HValue* vector_value = Add<HConstant>(vector);
+  HValue* slot_value = Add<HConstant>(vector->GetIndex(slot));
+
+  if (access_type == LOAD) {
+    HValue* values[] = {object, key, slot_value, vector_value};
     if (!expr->AsProperty()->key()->IsPropertyName()) {
       // It's possible that a keyed load of a constant string was converted
       // to a named load. Here, at the last minute, we need to make sure to
       // use a generic Keyed Load if we are using the type vector, because
       // it has to share information with full code.
-      HConstant* key = Add<HConstant>(name);
-      HLoadKeyedGeneric* result =
-          New<HLoadKeyedGeneric>(object, key, vector, slot);
+      Callable callable = CodeFactory::KeyedLoadICInOptimizedCode(isolate());
+      HValue* stub = Add<HConstant>(callable.code());
+      HCallWithDescriptor* result =
+          New<HCallWithDescriptor>(Code::KEYED_LOAD_IC, stub, 0,
+                                   callable.descriptor(), ArrayVector(values));
       return result;
     }
-
-    HLoadNamedGeneric* result =
-        New<HLoadNamedGeneric>(object, name, vector, slot);
+    Callable callable = CodeFactory::LoadICInOptimizedCode(isolate());
+    HValue* stub = Add<HConstant>(callable.code());
+    HCallWithDescriptor* result = New<HCallWithDescriptor>(
+        Code::LOAD_IC, stub, 0, callable.descriptor(), ArrayVector(values));
     return result;
+
   } else {
-    Handle<TypeFeedbackVector> vector =
-        handle(current_feedback_vector(), isolate());
-
-    HValue* key = Add<HConstant>(name);
-    HValue* vector_value = Add<HConstant>(vector);
-    HValue* slot_value = Add<HConstant>(vector->GetIndex(slot));
-    HValue* values[] = {context(), object,     key,
-                        value,     slot_value, vector_value};
-
-    if (current_feedback_vector()->GetKind(slot) ==
-        FeedbackVectorSlotKind::KEYED_STORE_IC) {
+    HValue* values[] = {object, key, value, slot_value, vector_value};
+    if (vector->GetKind(slot) == FeedbackVectorSlotKind::KEYED_STORE_IC) {
       // It's possible that a keyed store of a constant string was converted
       // to a named store. Here, at the last minute, we need to make sure to
       // use a generic Keyed Store if we are using the type vector, because
@@ -7127,15 +7132,16 @@ HInstruction* HOptimizedGraphBuilder::BuildNamedGeneric(
       Callable callable = CodeFactory::KeyedStoreICInOptimizedCode(
           isolate(), function_language_mode());
       HValue* stub = Add<HConstant>(callable.code());
-      HCallWithDescriptor* result = New<HCallWithDescriptor>(
-          stub, 0, callable.descriptor(), ArrayVector(values));
+      HCallWithDescriptor* result =
+          New<HCallWithDescriptor>(Code::KEYED_STORE_IC, stub, 0,
+                                   callable.descriptor(), ArrayVector(values));
       return result;
     }
     Callable callable = CodeFactory::StoreICInOptimizedCode(
         isolate(), function_language_mode());
     HValue* stub = Add<HConstant>(callable.code());
     HCallWithDescriptor* result = New<HCallWithDescriptor>(
-        stub, 0, callable.descriptor(), ArrayVector(values));
+        Code::STORE_IC, stub, 0, callable.descriptor(), ArrayVector(values));
     return result;
   }
 }
@@ -7144,23 +7150,28 @@ HInstruction* HOptimizedGraphBuilder::BuildNamedGeneric(
 HInstruction* HOptimizedGraphBuilder::BuildKeyedGeneric(
     PropertyAccessType access_type, Expression* expr, FeedbackVectorSlot slot,
     HValue* object, HValue* key, HValue* value) {
-  Handle<TypeFeedbackVector> vector =
-      handle(current_feedback_vector(), isolate());
+  Handle<TypeFeedbackVector> vector(current_feedback_vector(), isolate());
+  HValue* vector_value = Add<HConstant>(vector);
+  HValue* slot_value = Add<HConstant>(vector->GetIndex(slot));
+
   if (access_type == LOAD) {
-    HLoadKeyedGeneric* result =
-        New<HLoadKeyedGeneric>(object, key, vector, slot);
+    HValue* values[] = {object, key, slot_value, vector_value};
+
+    Callable callable = CodeFactory::KeyedLoadICInOptimizedCode(isolate());
+    HValue* stub = Add<HConstant>(callable.code());
+    HCallWithDescriptor* result =
+        New<HCallWithDescriptor>(Code::KEYED_LOAD_IC, stub, 0,
+                                 callable.descriptor(), ArrayVector(values));
     return result;
   } else {
-    HValue* vector_value = Add<HConstant>(vector);
-    HValue* slot_value = Add<HConstant>(vector->GetIndex(slot));
-    HValue* values[] = {context(), object,     key,
-                        value,     slot_value, vector_value};
+    HValue* values[] = {object, key, value, slot_value, vector_value};
 
     Callable callable = CodeFactory::KeyedStoreICInOptimizedCode(
         isolate(), function_language_mode());
     HValue* stub = Add<HConstant>(callable.code());
-    HCallWithDescriptor* result = New<HCallWithDescriptor>(
-        stub, 0, callable.descriptor(), ArrayVector(values));
+    HCallWithDescriptor* result =
+        New<HCallWithDescriptor>(Code::KEYED_STORE_IC, stub, 0,
+                                 callable.descriptor(), ArrayVector(values));
     return result;
   }
 }
@@ -7853,7 +7864,7 @@ HInstruction* HOptimizedGraphBuilder::NewCallFunction(
   }
   HValue* arity = Add<HConstant>(argument_count - 1);
 
-  HValue* op_vals[] = {context(), function, arity};
+  HValue* op_vals[] = {function, arity};
 
   Callable callable =
       CodeFactory::Call(isolate(), convert_mode, tail_call_mode);
@@ -7875,13 +7886,13 @@ HInstruction* HOptimizedGraphBuilder::NewCallFunctionViaIC(
   }
   int arity = argument_count - 1;
   Handle<TypeFeedbackVector> vector(current_feedback_vector(), isolate());
+  HValue* arity_val = Add<HConstant>(arity);
   HValue* index_val = Add<HConstant>(vector->GetIndex(slot));
   HValue* vector_val = Add<HConstant>(vector);
 
-  HValue* op_vals[] = {context(), function, index_val, vector_val};
-
+  HValue* op_vals[] = {function, arity_val, index_val, vector_val};
   Callable callable = CodeFactory::CallICInOptimizedCode(
-      isolate(), arity, convert_mode, tail_call_mode);
+      isolate(), convert_mode, tail_call_mode);
   HConstant* stub = Add<HConstant>(callable.code());
 
   return New<HCallWithDescriptor>(stub, argument_count, callable.descriptor(),
@@ -9228,7 +9239,7 @@ bool HOptimizedGraphBuilder::TryInlineApiCall(
                                             isolate());
   HValue* api_function_address = Add<HConstant>(ExternalReference(ref));
 
-  HValue* op_vals[] = {context(), Add<HConstant>(function), call_data, holder,
+  HValue* op_vals[] = {Add<HConstant>(function), call_data, holder,
                        api_function_address};
 
   HInstruction* call = nullptr;
@@ -9967,7 +9978,7 @@ void HOptimizedGraphBuilder::VisitCallNew(CallNew* expr) {
   }
 
   HValue* arity = Add<HConstant>(argument_count - 1);
-  HValue* op_vals[] = {context(), function, function, arity};
+  HValue* op_vals[] = {function, function, arity};
   Callable callable = CodeFactory::Construct(isolate());
   HConstant* stub = Add<HConstant>(callable.code());
   PushArgumentsFromEnvironment(argument_count);
@@ -10224,9 +10235,9 @@ void HOptimizedGraphBuilder::GenerateTypedArrayInitialize(
   HValue* byte_offset;
   bool is_zero_byte_offset;
 
-  if (arguments->at(kByteOffsetArg)->IsLiteral()
-      && Smi::FromInt(0) ==
-      *static_cast<Literal*>(arguments->at(kByteOffsetArg))->value()) {
+  if (arguments->at(kByteOffsetArg)->IsLiteral() &&
+      Smi::kZero ==
+          *static_cast<Literal*>(arguments->at(kByteOffsetArg))->value()) {
     byte_offset = Add<HConstant>(static_cast<int32_t>(0));
     is_zero_byte_offset = true;
   } else {
@@ -11033,7 +11044,7 @@ HValue* HGraphBuilder::BuildBinaryOperation(
   // inline several instructions (including the two pushes) for every tagged
   // operation in optimized code, which is more expensive, than a stub call.
   if (graph()->info()->IsStub() && is_non_primitive) {
-    HValue* values[] = {context(), left, right};
+    HValue* values[] = {left, right};
 #define GET_STUB(Name)                                                       \
   do {                                                                       \
     Callable callable = CodeFactory::Name(isolate());                        \
@@ -11433,7 +11444,7 @@ void HOptimizedGraphBuilder::VisitCompareOperation(CompareOperation* expr) {
 
     Callable callable = CodeFactory::InstanceOf(isolate());
     HValue* stub = Add<HConstant>(callable.code());
-    HValue* values[] = {context(), left, right};
+    HValue* values[] = {left, right};
     HCallWithDescriptor* result = New<HCallWithDescriptor>(
         stub, 0, callable.descriptor(), ArrayVector(values));
     result->set_type(HType::Boolean());
@@ -11442,7 +11453,7 @@ void HOptimizedGraphBuilder::VisitCompareOperation(CompareOperation* expr) {
   } else if (op == Token::IN) {
     Callable callable = CodeFactory::HasProperty(isolate());
     HValue* stub = Add<HConstant>(callable.code());
-    HValue* values[] = {context(), left, right};
+    HValue* values[] = {left, right};
     HInstruction* result =
         New<HCallWithDescriptor>(stub, 0, callable.descriptor(),
                                  Vector<HValue*>(values, arraysize(values)));
@@ -12183,7 +12194,7 @@ void HOptimizedGraphBuilder::GenerateToInteger(CallRuntime* call) {
   } else {
     Callable callable = CodeFactory::ToInteger(isolate());
     HValue* stub = Add<HConstant>(callable.code());
-    HValue* values[] = {context(), input};
+    HValue* values[] = {input};
     HInstruction* result = New<HCallWithDescriptor>(
         stub, 0, callable.descriptor(), ArrayVector(values));
     return ast_context()->ReturnInstruction(result, call->id());
@@ -12209,7 +12220,7 @@ void HOptimizedGraphBuilder::GenerateToString(CallRuntime* call) {
   } else {
     Callable callable = CodeFactory::ToString(isolate());
     HValue* stub = Add<HConstant>(callable.code());
-    HValue* values[] = {context(), input};
+    HValue* values[] = {input};
     HInstruction* result = New<HCallWithDescriptor>(
         stub, 0, callable.descriptor(), ArrayVector(values));
     return ast_context()->ReturnInstruction(result, call->id());
@@ -12223,7 +12234,7 @@ void HOptimizedGraphBuilder::GenerateToLength(CallRuntime* call) {
   Callable callable = CodeFactory::ToLength(isolate());
   HValue* input = Pop();
   HValue* stub = Add<HConstant>(callable.code());
-  HValue* values[] = {context(), input};
+  HValue* values[] = {input};
   HInstruction* result = New<HCallWithDescriptor>(
       stub, 0, callable.descriptor(), ArrayVector(values));
   return ast_context()->ReturnInstruction(result, call->id());
@@ -12315,7 +12326,7 @@ void HOptimizedGraphBuilder::GenerateSubString(CallRuntime* call) {
   HValue* to = Pop();
   HValue* from = Pop();
   HValue* string = Pop();
-  HValue* values[] = {context(), string, from, to};
+  HValue* values[] = {string, from, to};
   HInstruction* result = New<HCallWithDescriptor>(
       stub, 0, callable.descriptor(), ArrayVector(values));
   result->set_type(HType::String());
@@ -12328,7 +12339,7 @@ void HOptimizedGraphBuilder::GenerateNewObject(CallRuntime* call) {
   CHECK_ALIVE(VisitExpressions(call->arguments()));
   FastNewObjectStub stub(isolate());
   FastNewObjectDescriptor descriptor(isolate());
-  HValue* values[] = {context(), Pop(), Pop()};
+  HValue* values[] = {Pop(), Pop()};
   HConstant* stub_value = Add<HConstant>(stub.GetCode());
   HInstruction* result =
       New<HCallWithDescriptor>(stub_value, 0, descriptor, ArrayVector(values));
@@ -12345,8 +12356,7 @@ void HOptimizedGraphBuilder::GenerateRegExpExec(CallRuntime* call) {
   HValue* subject = Pop();
   HValue* regexp_object = Pop();
   HValue* stub = Add<HConstant>(callable.code());
-  HValue* values[] = {context(), regexp_object, subject, index,
-                      last_match_info};
+  HValue* values[] = {regexp_object, subject, index, last_match_info};
   HInstruction* result = New<HCallWithDescriptor>(
       stub, 0, callable.descriptor(), ArrayVector(values));
   return ast_context()->ReturnInstruction(result, call->id());
@@ -12405,8 +12415,7 @@ void HOptimizedGraphBuilder::GenerateCall(CallRuntime* call) {
   PushArgumentsFromEnvironment(call->arguments()->length() - 1);
   HValue* trampoline = Add<HConstant>(isolate()->builtins()->Call());
   HValue* target = Pop();
-  HValue* values[] = {context(), target,
-                      Add<HConstant>(call->arguments()->length() - 2)};
+  HValue* values[] = {target, Add<HConstant>(call->arguments()->length() - 2)};
   HInstruction* result =
       New<HCallWithDescriptor>(trampoline, call->arguments()->length() - 1,
                                descriptor, ArrayVector(values));

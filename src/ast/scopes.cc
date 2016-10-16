@@ -271,7 +271,6 @@ void DeclarationScope::SetDefaults() {
   function_ = nullptr;
   arguments_ = nullptr;
   this_function_ = nullptr;
-  arity_ = 0;
 }
 
 void Scope::SetDefaults() {
@@ -303,11 +302,28 @@ void Scope::SetDefaults() {
   is_declaration_scope_ = false;
 
   is_lazily_parsed_ = false;
+  should_eager_compile_ = false;
 }
 
 bool Scope::HasSimpleParameters() {
   DeclarationScope* scope = GetClosureScope();
   return !scope->is_function_scope() || scope->has_simple_parameters();
+}
+
+bool Scope::ShouldEagerCompile() const {
+  if (is_declaration_scope() &&
+      !AsDeclarationScope()->AllowsLazyCompilation()) {
+    return true;
+  }
+  return !is_lazily_parsed_ && should_eager_compile_;
+}
+
+void Scope::SetShouldEagerCompile() {
+  should_eager_compile_ = true;
+  for (Scope* inner = inner_scope_; inner != nullptr; inner = inner->sibling_) {
+    if (inner->is_function_scope()) continue;
+    inner->SetShouldEagerCompile();
+  }
 }
 
 void DeclarationScope::set_asm_module() {
@@ -551,6 +567,9 @@ void DeclarationScope::Analyze(ParseInfo* info, AnalyzeMode mode) {
   DCHECK(scope->scope_type() == SCRIPT_SCOPE ||
          scope->outer_scope()->scope_type() == SCRIPT_SCOPE ||
          scope->outer_scope()->already_resolved_);
+
+  // The outer scope is never lazy.
+  scope->SetShouldEagerCompile();
 
   scope->AllocateVariables(info, mode);
 
@@ -820,9 +839,6 @@ Variable* DeclarationScope::DeclareParameter(
     // TODO(wingo): Avoid O(n^2) check.
     *is_duplicate = IsDeclaredParameter(name);
   }
-  if (!is_optional && !is_rest && arity_ == params_.length()) {
-    ++arity_;
-  }
   has_rest_ = is_rest;
   params_.Add(var, zone());
   if (name == ast_value_factory->arguments_string()) {
@@ -998,7 +1014,7 @@ bool Scope::RemoveUnresolved(VariableProxy* var) {
 }
 
 bool Scope::RemoveUnresolved(const AstRawString* name) {
-  if (unresolved_->raw_name() == name) {
+  if (unresolved_ != nullptr && unresolved_->raw_name() == name) {
     VariableProxy* removed = unresolved_;
     unresolved_ = unresolved_->next_unresolved();
     removed->set_next_unresolved(nullptr);
@@ -1007,7 +1023,7 @@ bool Scope::RemoveUnresolved(const AstRawString* name) {
   VariableProxy* current = unresolved_;
   while (current != nullptr) {
     VariableProxy* next = current->next_unresolved();
-    if (next->raw_name() == name) {
+    if (next != nullptr && next->raw_name() == name) {
       current->set_next_unresolved(next->next_unresolved());
       next->set_next_unresolved(nullptr);
       return true;
@@ -1094,31 +1110,35 @@ void DeclarationScope::AllocateVariables(ParseInfo* info, AnalyzeMode mode) {
   }
 }
 
-bool Scope::AllowsLazyParsingWithoutUnresolvedVariables() const {
-  // If we are inside a block scope, we must find unresolved variables in the
-  // inner scopes to find out how to allocate variables on the block scope. At
-  // this point, declarations may not have yet been parsed.
-  for (const Scope* s = this; s != nullptr; s = s->outer_scope_) {
-    if (s->is_block_scope()) return false;
-    // TODO(marja): Refactor parsing modes: also add s->is_function_scope()
-    // here.
+bool Scope::AllowsLazyParsingWithoutUnresolvedVariables(
+    const Scope* outer) const {
+  // If none of the outer scopes need to decide whether to context allocate
+  // specific variables, we can preparse inner functions without unresolved
+  // variables. Otherwise we need to find unresolved variables to force context
+  // allocation of the matching declarations. We can stop at the outer scope for
+  // the parse, since context allocation of those variables is already
+  // guaranteed to be correct.
+  for (const Scope* s = this; s != outer; s = s->outer_scope_) {
+    // Eval forces context allocation on all outer scopes, so we don't need to
+    // look at those scopes. Sloppy eval makes all top-level variables dynamic,
+    // whereas strict-mode requires context allocation.
+    if (s->is_eval_scope()) return !is_strict(s->language_mode());
+    // Catch scopes force context allocation of all variables.
+    if (s->is_catch_scope()) continue;
+    // With scopes do not introduce variables that need allocation.
+    if (s->is_with_scope()) continue;
+    // If everything is guaranteed to be context allocated we can ignore the
+    // scope.
+    if (s->has_forced_context_allocation()) continue;
+    // Only block scopes and function scopes should disallow preparsing.
+    DCHECK(s->is_block_scope() || s->is_function_scope());
+    return false;
   }
   return true;
 }
 
 bool DeclarationScope::AllowsLazyCompilation() const {
   return !force_eager_compilation_;
-}
-
-bool DeclarationScope::AllowsLazyCompilationWithoutContext() const {
-  if (force_eager_compilation_) return false;
-  // Disallow lazy compilation without context if any outer scope needs a
-  // context.
-  for (const Scope* scope = outer_scope_; scope != nullptr;
-       scope = scope->outer_scope_) {
-    if (scope->NeedsContext()) return false;
-  }
-  return true;
 }
 
 int Scope::ContextChainLength(Scope* scope) const {
@@ -1146,6 +1166,7 @@ int Scope::ContextChainLengthUntilOutermostSloppyEval() const {
 int Scope::MaxNestedContextChainLength() {
   int max_context_chain_length = 0;
   for (Scope* scope = inner_scope_; scope != nullptr; scope = scope->sibling_) {
+    if (scope->is_function_scope()) continue;
     max_context_chain_length = std::max(scope->MaxNestedContextChainLength(),
                                         max_context_chain_length);
   }
@@ -1426,6 +1447,7 @@ void Scope::Print(int n) {
   }
   if (inner_scope_calls_eval_) Indent(n1, "// inner scope calls 'eval'\n");
   if (is_lazily_parsed_) Indent(n1, "// lazily parsed\n");
+  if (should_eager_compile_) Indent(n1, "// will be compiled\n");
   if (num_stack_slots_ > 0) {
     Indent(n1, "// ");
     PrintF("%d stack slots\n", num_stack_slots_);
@@ -1462,8 +1484,7 @@ void Scope::Print(int n) {
 }
 
 void Scope::CheckScopePositions() {
-  // A scope is allowed to have invalid positions if it is hidden and has no
-  // inner scopes
+  // Visible leaf scopes must have real positions.
   if (!is_hidden() && inner_scope_ == nullptr) {
     CHECK_NE(kNoSourcePosition, start_position());
     CHECK_NE(kNoSourcePosition, end_position());
@@ -1906,7 +1927,21 @@ void Scope::AllocateScopeInfosRecursively(Isolate* isolate, AnalyzeMode mode,
 
   // Allocate ScopeInfos for inner scopes.
   for (Scope* scope = inner_scope_; scope != nullptr; scope = scope->sibling_) {
-    scope->AllocateScopeInfosRecursively(isolate, mode, next_outer_scope);
+    AnalyzeMode next_mode = mode;
+    bool next_eager = should_eager_compile_;
+    if (scope->is_function_scope()) {
+      // Make sure all inner scopes have are consistently marked: we can't
+      // eager compile inner functions of lazy functions, but if a function
+      // should be eagerly compiled, all its inner scopes are compiled as well.
+      next_eager = should_eager_compile_ ? scope->ShouldEagerCompile() : false;
+
+      // The ScopeIterator which uses the AnalyzeMode::kDebugger only expects
+      // to find ScopeInfos for the current function and all its inner
+      // non-function scopes (see ScopeIterator::GetNestedScopeChain).
+      next_mode = AnalyzeMode::kRegular;
+    }
+    scope->should_eager_compile_ = next_eager;
+    scope->AllocateScopeInfosRecursively(isolate, next_mode, next_outer_scope);
   }
 }
 

@@ -392,9 +392,13 @@ void InstructionSelector::SetEffectLevel(Node* node, int effect_level) {
 }
 
 bool InstructionSelector::CanAddressRelativeToRootsRegister() const {
-  return (enable_serialization_ == kDisableSerialization &&
-          (linkage()->GetIncomingDescriptor()->flags() &
-           CallDescriptor::kCanUseRoots));
+  return enable_serialization_ == kDisableSerialization &&
+         CanUseRootsRegister();
+}
+
+bool InstructionSelector::CanUseRootsRegister() const {
+  return linkage()->GetIncomingDescriptor()->flags() &
+         CallDescriptor::kCanUseRoots;
 }
 
 void InstructionSelector::MarkAsRepresentation(MachineRepresentation rep,
@@ -1741,7 +1745,7 @@ void InstructionSelector::VisitIfException(Node* node) {
 
 void InstructionSelector::VisitOsrValue(Node* node) {
   OperandGenerator g(this);
-  int index = OpParameter<int>(node);
+  int index = OsrValueIndexOf(node->op());
   Emit(kArchNop,
        g.DefineAsLocation(node, linkage()->GetOsrValueLocation(index)));
 }

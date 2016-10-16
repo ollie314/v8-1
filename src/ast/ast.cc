@@ -288,14 +288,17 @@ Token::Value Assignment::binary_op() const {
   return Token::ILLEGAL;
 }
 
+bool FunctionLiteral::ShouldEagerCompile() const {
+  return scope()->ShouldEagerCompile();
+}
+
+void FunctionLiteral::SetShouldEagerCompile() {
+  if (body_ == nullptr) return;
+  scope()->SetShouldEagerCompile();
+}
 
 bool FunctionLiteral::AllowsLazyCompilation() {
   return scope()->AllowsLazyCompilation();
-}
-
-
-bool FunctionLiteral::AllowsLazyCompilationWithoutContext() {
-  return scope()->AllowsLazyCompilationWithoutContext();
 }
 
 
@@ -610,7 +613,7 @@ void ArrayLiteral::BuildConstantElements(Isolate* isolate) {
     }
 
     if (boilerplate_value->IsUninitialized(isolate)) {
-      boilerplate_value = handle(Smi::FromInt(0), isolate);
+      boilerplate_value = handle(Smi::kZero, isolate);
       is_simple = false;
     }
 

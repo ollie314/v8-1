@@ -328,18 +328,6 @@ static Handle<Code> DoGenerateCode(Stub* stub) {
 }
 
 
-template <>
-HValue* CodeStubGraphBuilder<NumberToStringStub>::BuildCodeStub() {
-  info()->MarkAsSavesCallerDoubles();
-  HValue* number = GetParameter(Descriptor::kArgument);
-  return BuildNumberToString(number, AstType::Number());
-}
-
-
-Handle<Code> NumberToStringStub::GenerateCode() {
-  return DoGenerateCode(this);
-}
-
 HValue* CodeStubGraphBuilderBase::BuildPushElement(HValue* object, HValue* argc,
                                                    HValue* argument_elements,
                                                    ElementsKind kind) {
@@ -1043,7 +1031,7 @@ HValue* CodeStubGraphBuilderBase::BuildToString(HValue* input, bool convert) {
       }
       if_inputisprimitive.End();
       // Convert the primitive to a string value.
-      HValue* values[] = {context(), Pop()};
+      HValue* values[] = {Pop()};
       Callable toString = CodeFactory::ToString(isolate());
       Push(AddUncasted<HCallWithDescriptor>(Add<HConstant>(toString.code()), 0,
                                             toString.descriptor(),

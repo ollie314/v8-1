@@ -522,19 +522,6 @@ void CompareIC::Clear(Isolate* isolate, Address address, Code* target,
   PatchInlinedSmiCode(isolate, address, DISABLE_INLINED_SMI_CHECK);
 }
 
-
-// static
-Handle<Code> KeyedLoadIC::ChooseMegamorphicStub(Isolate* isolate,
-                                                ExtraICState extra_state) {
-  // TODO(ishell): remove extra_ic_state
-  if (FLAG_compiled_keyed_generic_loads) {
-    return KeyedLoadGenericStub(isolate).GetCode();
-  } else {
-    return isolate->builtins()->KeyedLoadIC_Megamorphic();
-  }
-}
-
-
 static bool MigrateDeprecated(Handle<Object> object) {
   if (!object->IsJSObject()) return false;
   Handle<JSObject> receiver = Handle<JSObject>::cast(object);
@@ -893,10 +880,10 @@ Handle<Object> LoadIC::SimpleLoadFromPrototype(Handle<Map> receiver_map,
       Map::GetOrCreatePrototypeChainValidityCell(receiver_map, isolate());
   DCHECK(!validity_cell.is_null());
 
-  Factory* factory = isolate()->factory();
-
-  Handle<WeakCell> holder_cell = factory->NewWeakCell(holder);
-  return factory->NewTuple3(validity_cell, holder_cell, smi_handler);
+  Handle<WeakCell> holder_cell =
+      Map::GetOrCreatePrototypeWeakCell(holder, isolate());
+  return isolate()->factory()->NewTuple3(validity_cell, holder_cell,
+                                         smi_handler);
 }
 
 bool IsCompatibleReceiver(LookupIterator* lookup, Handle<Map> receiver_map) {

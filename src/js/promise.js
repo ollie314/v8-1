@@ -48,12 +48,6 @@ const kPending = 0;
 const kFulfilled = +1;
 const kRejected = -1;
 
-var lastMicrotaskId = 0;
-
-function PromiseNextMicrotaskID() {
-  return ++lastMicrotaskId;
-}
-
 // ES#sec-createresolvingfunctions
 // CreateResolvingFunctions ( promise )
 function CreateResolvingFunctions(promise, debugEvent) {
@@ -185,7 +179,7 @@ function PromiseHandle(value, handler, deferred) {
 }
 
 function PromiseEnqueue(value, tasks, deferreds, status) {
-  var id, name, beforeDebug, afterDebug, instrumenting = DEBUG_IS_ACTIVE;
+  var id, name, instrumenting = DEBUG_IS_ACTIVE;
 
   if (instrumenting) {
     // In an async function, reuse the existing stack related to the outer
@@ -202,16 +196,12 @@ function PromiseEnqueue(value, tasks, deferreds, status) {
                        promiseAsyncStackIDSymbol);
       name = "async function";
     } else {
-      id = PromiseNextMicrotaskID();
+      id = %DebugNextMicrotaskId();
       name = status === kFulfilled ? "Promise.resolve" : "Promise.reject";
-      %DebugAsyncTaskEvent({ type: "enqueue", id: id, name: name });
+      %DebugAsyncTaskEvent("enqueue", id, name);
     }
-
-    beforeDebug = { type: "willHandle", id: id, name: name };
-    afterDebug = { type: "didHandle", id: id, name: name };
   }
-
-  %EnqueuePromiseReactionJob(value, tasks, deferreds, beforeDebug, afterDebug);
+  %EnqueuePromiseReactionJob(value, tasks, deferreds, id, name);
 }
 
 function PromiseAttachCallbacks(promise, deferred, onResolve, onReject) {
@@ -305,33 +295,12 @@ function ResolvePromise(promise, resolution) {
 
     if (IS_CALLABLE(then)) {
       var callbacks = CreateResolvingFunctions(promise, false);
-      var id, before_debug_event, after_debug_event;
-      var instrumenting = DEBUG_IS_ACTIVE;
-      if (instrumenting) {
-        if (IsPromise(resolution)) {
+      if (DEBUG_IS_ACTIVE && IsPromise(resolution)) {
           // Mark the dependency of the new promise on the resolution
-          SET_PRIVATE(resolution, promiseHandledBySymbol, promise);
-        }
-        id = PromiseNextMicrotaskID();
-        before_debug_event = {
-          type: "willHandle",
-          id: id,
-          name: "PromiseResolveThenableJob"
-        };
-        after_debug_event = {
-          type: "didHandle",
-          id: id,
-          name: "PromiseResolveThenableJob"
-        };
-        %DebugAsyncTaskEvent({
-          type: "enqueue",
-          id: id,
-          name: "PromiseResolveThenableJob"
-        });
+        SET_PRIVATE(resolution, promiseHandledBySymbol, promise);
       }
       %EnqueuePromiseResolveThenableJob(
-          resolution, then, callbacks.resolve, callbacks.reject,
-          before_debug_event, after_debug_event);
+          resolution, then, callbacks.resolve, callbacks.reject);
       return;
     }
   }
@@ -706,7 +675,6 @@ utils.Export(function(to) {
   to.IsPromise = IsPromise;
   to.PromiseCreate = PromiseCreate;
   to.PromiseThen = PromiseThen;
-  to.PromiseNextMicrotaskID = PromiseNextMicrotaskID;
 
   to.GlobalPromise = GlobalPromise;
   to.NewPromiseCapability = NewPromiseCapability;

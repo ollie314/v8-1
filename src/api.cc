@@ -274,10 +274,23 @@ void i::V8::FatalProcessOutOfMemory(const char* location, bool is_heap_oom) {
   i::Isolate* isolate = i::Isolate::Current();
   char last_few_messages[Heap::kTraceRingBufferSize + 1];
   char js_stacktrace[Heap::kStacktraceBufferSize + 1];
+  i::HeapStats heap_stats;
+
+  if (isolate == nullptr) {
+    // On a background thread -> we cannot retrieve memory information from the
+    // Isolate. Write easy-to-recognize values on the stack.
+    memset(last_few_messages, 0x0badc0de, Heap::kTraceRingBufferSize + 1);
+    memset(js_stacktrace, 0x0badc0de, Heap::kStacktraceBufferSize + 1);
+    memset(&heap_stats, 0xbadc0de, sizeof(heap_stats));
+    // Note that the embedder's oom handler won't be called in this case. We
+    // just crash.
+    FATAL("API fatal error handler returned after process out of memory");
+    return;
+  }
+
   memset(last_few_messages, 0, Heap::kTraceRingBufferSize + 1);
   memset(js_stacktrace, 0, Heap::kStacktraceBufferSize + 1);
 
-  i::HeapStats heap_stats;
   intptr_t start_marker;
   heap_stats.start_marker = &start_marker;
   size_t new_space_size;
@@ -1922,7 +1935,7 @@ MaybeLocal<Value> Module::Evaluate(Local<Context> context) {
 
   i::Handle<i::Module> self = Utils::OpenHandle(this);
   // It's an API error to call Evaluate before Instantiate.
-  CHECK(self->code()->IsJSFunction());
+  CHECK(self->instantiated());
 
   Local<Value> result;
   has_pending_exception = !ToLocal(i::Module::Evaluate(self), &result);
@@ -7191,12 +7204,9 @@ WasmCompiledModule::SerializedModule WasmCompiledModule::Serialize() {
   i::Handle<i::wasm::WasmCompiledModule> compiled_part =
       i::handle(i::wasm::WasmCompiledModule::cast(obj->GetInternalField(0)));
 
-  i::Handle<i::SeqOneByteString> wire_bytes = compiled_part->module_bytes();
-  compiled_part->reset_module_bytes();
   std::unique_ptr<i::ScriptData> script_data =
       i::WasmCompiledModuleSerializer::SerializeWasmModule(obj->GetIsolate(),
                                                            compiled_part);
-  compiled_part->set_module_bytes(wire_bytes);
   script_data->ReleaseDataOwnership();
 
   size_t size = static_cast<size_t>(script_data->length());
@@ -7225,7 +7235,7 @@ MaybeLocal<WasmCompiledModule> WasmCompiledModule::Deserialize(
   i::Handle<i::wasm::WasmCompiledModule> compiled_module =
       handle(i::wasm::WasmCompiledModule::cast(*compiled_part));
   return Local<WasmCompiledModule>::Cast(
-      Utils::ToLocal(i::wasm::CreateCompiledModuleObject(
+      Utils::ToLocal(i::wasm::CreateWasmModuleObject(
           i_isolate, compiled_module, i::wasm::ModuleOrigin::kWasmOrigin)));
 }
 
@@ -7234,7 +7244,25 @@ MaybeLocal<WasmCompiledModule> WasmCompiledModule::DeserializeOrCompile(
     const WasmCompiledModule::CallerOwnedBuffer& serialized_module,
     const WasmCompiledModule::CallerOwnedBuffer& wire_bytes) {
   MaybeLocal<WasmCompiledModule> ret = Deserialize(isolate, serialized_module);
-  if (!ret.IsEmpty()) return ret;
+  if (!ret.IsEmpty()) {
+    // TODO(mtrofin): once we stop taking a dependency on Deserialize,
+    // clean this up to avoid the back and forth between internal
+    // and external representations.
+    i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+    i::Vector<const uint8_t> str(wire_bytes.first,
+                                 static_cast<int>(wire_bytes.second));
+    i::Handle<i::SeqOneByteString> wire_bytes_as_string(
+        i::SeqOneByteString::cast(
+            *i_isolate->factory()->NewStringFromOneByte(str).ToHandleChecked()),
+        i_isolate);
+
+    i::Handle<i::JSObject> obj =
+        i::Handle<i::JSObject>::cast(Utils::OpenHandle(*ret.ToLocalChecked()));
+    i::Handle<i::wasm::WasmCompiledModule> compiled_part =
+        i::handle(i::wasm::WasmCompiledModule::cast(obj->GetInternalField(0)));
+    compiled_part->set_module_bytes(wire_bytes_as_string);
+    return ret;
+  }
   return Compile(isolate, wire_bytes.first, wire_bytes.second);
 }
 
@@ -8733,6 +8761,55 @@ MaybeLocal<Array> Debug::GetInternalProperties(Isolate* v8_isolate,
   return Utils::ToLocal(result);
 }
 
+bool DebugInterface::SetDebugEventListener(Isolate* isolate,
+                                           DebugInterface::EventCallback that,
+                                           Local<Value> data) {
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  ENTER_V8(i_isolate);
+  i::HandleScope scope(i_isolate);
+  i::Handle<i::Object> foreign = i_isolate->factory()->undefined_value();
+  if (that != NULL) {
+    foreign = i_isolate->factory()->NewForeign(FUNCTION_ADDR(that));
+  }
+  i_isolate->debug()->SetEventListener(foreign, Utils::OpenHandle(*data, true));
+  return true;
+}
+
+Local<Context> DebugInterface::GetDebugContext(Isolate* isolate) {
+  return Debug::GetDebugContext(isolate);
+}
+
+MaybeLocal<Value> DebugInterface::Call(Local<Context> context,
+                                       v8::Local<v8::Function> fun,
+                                       v8::Local<v8::Value> data) {
+  return Debug::Call(context, fun, data);
+}
+
+void DebugInterface::SetLiveEditEnabled(Isolate* isolate, bool enable) {
+  Debug::SetLiveEditEnabled(isolate, enable);
+}
+
+void DebugInterface::DebugBreak(Isolate* isolate) {
+  Debug::DebugBreak(isolate);
+}
+
+void DebugInterface::CancelDebugBreak(Isolate* isolate) {
+  Debug::CancelDebugBreak(isolate);
+}
+
+MaybeLocal<Array> DebugInterface::GetInternalProperties(Isolate* isolate,
+                                                        Local<Value> value) {
+  return Debug::GetInternalProperties(isolate, value);
+}
+
+void DebugInterface::ChangeBreakOnException(Isolate* isolate,
+                                            ExceptionBreakState type) {
+  i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  internal_isolate->debug()->ChangeBreakOnException(
+      i::BreakException, type == BreakOnAnyException);
+  internal_isolate->debug()->ChangeBreakOnException(i::BreakUncaughtException,
+                                                    type != NoBreakOnException);
+}
 
 Local<String> CpuProfileNode::GetFunctionName() const {
   const i::ProfileNode* node = reinterpret_cast<const i::ProfileNode*>(this);

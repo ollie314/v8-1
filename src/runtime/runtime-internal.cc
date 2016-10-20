@@ -447,10 +447,10 @@ bool ComputeLocation(Isolate* isolate, MessageLocation* target) {
 Handle<String> RenderCallSite(Isolate* isolate, Handle<Object> object) {
   MessageLocation location;
   if (ComputeLocation(isolate, &location)) {
-    Zone zone(isolate->allocator());
+    Zone zone(isolate->allocator(), ZONE_NAME);
     std::unique_ptr<ParseInfo> info(
         location.function()->shared()->is_function()
-            ? new ParseInfo(&zone, location.function())
+            ? new ParseInfo(&zone, handle(location.function()->shared()))
             : new ParseInfo(&zone, location.script()));
     if (Parser::ParseStatic(info.get())) {
       CallPrinter printer(isolate, location.function()->shared()->IsBuiltin());
@@ -577,29 +577,39 @@ RUNTIME_FUNCTION(Runtime_EnqueuePromiseReactionJob) {
   CONVERT_ARG_HANDLE_CHECKED(Object, value, 0);
   CONVERT_ARG_HANDLE_CHECKED(Object, tasks, 1);
   CONVERT_ARG_HANDLE_CHECKED(Object, deferred, 2);
-  CONVERT_ARG_HANDLE_CHECKED(Object, before_debug_event, 3);
-  CONVERT_ARG_HANDLE_CHECKED(Object, after_debug_event, 4);
+  CONVERT_ARG_HANDLE_CHECKED(Object, debug_id, 3);
+  CONVERT_ARG_HANDLE_CHECKED(Object, debug_name, 4);
   Handle<PromiseReactionJobInfo> info =
-      isolate->factory()->NewPromiseReactionJobInfo(
-          value, tasks, deferred, before_debug_event, after_debug_event,
-          isolate->native_context());
+      isolate->factory()->NewPromiseReactionJobInfo(value, tasks, deferred,
+                                                    debug_id, debug_name,
+                                                    isolate->native_context());
   isolate->EnqueueMicrotask(info);
   return isolate->heap()->undefined_value();
 }
 
 RUNTIME_FUNCTION(Runtime_EnqueuePromiseResolveThenableJob) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 6);
+  DCHECK(args.length() == 4);
   CONVERT_ARG_HANDLE_CHECKED(JSReceiver, resolution, 0);
   CONVERT_ARG_HANDLE_CHECKED(JSReceiver, then, 1);
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, resolve, 2);
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, reject, 3);
-  CONVERT_ARG_HANDLE_CHECKED(Object, before_debug_event, 4);
-  CONVERT_ARG_HANDLE_CHECKED(Object, after_debug_event, 5);
+  Handle<Object> debug_id;
+  Handle<Object> debug_name;
+  if (isolate->debug()->is_active()) {
+    debug_id =
+        handle(Smi::FromInt(isolate->GetNextDebugMicrotaskId()), isolate);
+    debug_name = isolate->factory()->PromiseResolveThenableJob_string();
+    isolate->debug()->OnAsyncTaskEvent(isolate->factory()->enqueue_string(),
+                                       debug_id,
+                                       Handle<String>::cast(debug_name));
+  } else {
+    debug_id = isolate->factory()->undefined_value();
+    debug_name = isolate->factory()->undefined_value();
+  }
   Handle<PromiseResolveThenableJobInfo> info =
       isolate->factory()->NewPromiseResolveThenableJobInfo(
-          resolution, then, resolve, reject, before_debug_event,
-          after_debug_event);
+          resolution, then, resolve, reject, debug_id, debug_name);
   isolate->EnqueueMicrotask(info);
   return isolate->heap()->undefined_value();
 }
@@ -628,13 +638,13 @@ RUNTIME_FUNCTION(Runtime_OrdinaryHasInstance) {
       isolate, Object::OrdinaryHasInstance(isolate, callable, object));
 }
 
-RUNTIME_FUNCTION(Runtime_IsWasmObject) {
+RUNTIME_FUNCTION(Runtime_IsWasmInstance) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_CHECKED(Object, object, 0);
-  bool is_wasm_object =
-      object->IsJSObject() && wasm::IsWasmObject(JSObject::cast(object));
-  return *isolate->factory()->ToBoolean(is_wasm_object);
+  bool is_wasm_instance =
+      object->IsJSObject() && wasm::IsWasmInstance(JSObject::cast(object));
+  return *isolate->factory()->ToBoolean(is_wasm_instance);
 }
 
 RUNTIME_FUNCTION(Runtime_Typeof) {

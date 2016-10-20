@@ -79,6 +79,14 @@ WASM_EXEC_TEST(Int32Const_many) {
   }
 }
 
+WASM_EXEC_TEST(GraphTrimming) {
+  // This WebAssembly code requires graph trimming in the TurboFan compiler.
+  WasmRunner<int32_t> r(execution_mode, MachineType::Int32());
+  BUILD(r, kExprGetLocal, 0, kExprGetLocal, 0, kExprGetLocal, 0, kExprI32RemS,
+        kExprI32Eq, kExprGetLocal, 0, kExprI32DivS, kExprUnreachable);
+  r.Call(1);
+}
+
 WASM_EXEC_TEST(Int32Param0) {
   WasmRunner<int32_t> r(execution_mode, MachineType::Int32());
   // return(local[0])
@@ -1853,7 +1861,7 @@ WASM_EXEC_TEST(Infinite_Loop_not_taken2_brif) {
 
 static void TestBuildGraphForSimpleExpression(WasmOpcode opcode) {
   Isolate* isolate = CcTest::InitIsolateOnce();
-  Zone zone(isolate->allocator());
+  Zone zone(isolate->allocator(), ZONE_NAME);
   HandleScope scope(isolate);
   // Enable all optional operators.
   CommonOperatorBuilder common(&zone);
@@ -2240,7 +2248,7 @@ static void Run_WasmMixedCall_N(WasmExecutionMode execution_mode, int start) {
   int num_params = static_cast<int>(arraysize(mixed)) - start;
   for (int which = 0; which < num_params; ++which) {
     v8::internal::AccountingAllocator allocator;
-    Zone zone(&allocator);
+    Zone zone(&allocator, ZONE_NAME);
     TestingModule module(execution_mode);
     module.AddMemory(1024);
     MachineType* memtypes = &mixed[start];
@@ -2873,7 +2881,7 @@ static void CompileCallIndirectMany(LocalType param) {
   TestSignatures sigs;
   for (byte num_params = 0; num_params < 40; ++num_params) {
     v8::internal::AccountingAllocator allocator;
-    Zone zone(&allocator);
+    Zone zone(&allocator, ZONE_NAME);
     HandleScope scope(CcTest::InitIsolateOnce());
     TestingModule module(kExecuteCompiled);
     FunctionSig* sig = sigs.many(&zone, kAstStmt, param, num_params);

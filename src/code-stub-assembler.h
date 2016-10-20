@@ -8,6 +8,7 @@
 #include <functional>
 
 #include "src/compiler/code-assembler.h"
+#include "src/globals.h"
 #include "src/objects.h"
 
 namespace v8 {
@@ -18,6 +19,8 @@ class StatsCounter;
 class StubCache;
 
 enum class PrimitiveType { kBoolean, kNumber, kString, kSymbol };
+
+enum class IterationKind { kKeys, kValues, kEntries };
 
 #define HEAP_CONSTANT_LIST(V)                 \
   V(BooleanMap, BooleanMap)                   \
@@ -40,7 +43,7 @@ enum class PrimitiveType { kBoolean, kNumber, kString, kSymbol };
 // it's possible to add JavaScript-specific useful CodeAssembler "macros"
 // without modifying files in the compiler directory (and requiring a review
 // from a compiler directory OWNER).
-class CodeStubAssembler : public compiler::CodeAssembler {
+class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
  public:
   // Create with CallStub linkage.
   // |result_size| specifies the number of results returned by the stub.
@@ -101,6 +104,11 @@ class CodeStubAssembler : public compiler::CodeAssembler {
 
   compiler::Node* IntPtrOrSmiConstant(int value, ParameterMode mode);
 
+  compiler::Node* IntPtrAddFoldConstants(compiler::Node* left,
+                                         compiler::Node* right);
+  compiler::Node* IntPtrSubFoldConstants(compiler::Node* left,
+                                         compiler::Node* right);
+
   // Float64 operations.
   compiler::Node* Float64Ceil(compiler::Node* x);
   compiler::Node* Float64Floor(compiler::Node* x);
@@ -139,12 +147,16 @@ class CodeStubAssembler : public compiler::CodeAssembler {
         WordOr(BitcastTaggedToWord(a), BitcastTaggedToWord(b)));
   }
 
+  // Smi | HeapNumber operations.
+  compiler::Node* NumberInc(compiler::Node* value);
+
   // Allocate an object of the given size.
   compiler::Node* Allocate(compiler::Node* size, AllocationFlags flags = kNone);
   compiler::Node* Allocate(int size, AllocationFlags flags = kNone);
   compiler::Node* InnerAllocate(compiler::Node* previous, int offset);
   compiler::Node* InnerAllocate(compiler::Node* previous,
                                 compiler::Node* offset);
+  compiler::Node* IsRegularHeapObjectSize(compiler::Node* size);
 
   void Assert(compiler::Node* condition, const char* string = nullptr,
               const char* file = nullptr, int line = 0);
@@ -153,25 +165,27 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* TaggedIsSmi(compiler::Node* a);
   // Check that the value is a non-negative smi.
   compiler::Node* WordIsPositiveSmi(compiler::Node* a);
+  // Check that a word has a word-aligned address.
+  compiler::Node* WordIsWordAligned(compiler::Node* word);
 
   void BranchIfSmiEqual(compiler::Node* a, compiler::Node* b, Label* if_true,
                         Label* if_false) {
-    BranchIf(SmiEqual(a, b), if_true, if_false);
+    Branch(SmiEqual(a, b), if_true, if_false);
   }
 
   void BranchIfSmiLessThan(compiler::Node* a, compiler::Node* b, Label* if_true,
                            Label* if_false) {
-    BranchIf(SmiLessThan(a, b), if_true, if_false);
+    Branch(SmiLessThan(a, b), if_true, if_false);
   }
 
   void BranchIfSmiLessThanOrEqual(compiler::Node* a, compiler::Node* b,
                                   Label* if_true, Label* if_false) {
-    BranchIf(SmiLessThanOrEqual(a, b), if_true, if_false);
+    Branch(SmiLessThanOrEqual(a, b), if_true, if_false);
   }
 
   void BranchIfFloat64IsNaN(compiler::Node* value, Label* if_true,
                             Label* if_false) {
-    BranchIfFloat64Equal(value, value, if_false, if_true);
+    Branch(Float64Equal(value, value), if_false, if_true);
   }
 
   // Branches to {if_true} if ToBoolean applied to {value} yields true,
@@ -187,6 +201,11 @@ class CodeStubAssembler : public compiler::CodeAssembler {
     BranchIfSimd128Equal(lhs, LoadMap(lhs), rhs, LoadMap(rhs), if_equal,
                          if_notequal);
   }
+
+  void BranchIfJSReceiver(compiler::Node* object, Label* if_true,
+                          Label* if_false);
+  void BranchIfJSObject(compiler::Node* object, Label* if_true,
+                        Label* if_false);
 
   void BranchIfFastJSArray(compiler::Node* object, compiler::Node* context,
                            Label* if_true, Label* if_false);
@@ -223,6 +242,8 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* LoadMap(compiler::Node* object);
   // Load the instance type of an HeapObject.
   compiler::Node* LoadInstanceType(compiler::Node* object);
+  // Compare the instance the type of the object against the provided one.
+  compiler::Node* HasInstanceType(compiler::Node* object, InstanceType type);
   // Checks that given heap object has given instance type.
   void AssertInstanceType(compiler::Node* object, InstanceType instance_type);
   // Load the properties backing store of a JSObject.
@@ -249,6 +270,10 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* LoadMapDescriptors(compiler::Node* map);
   // Load the prototype of a map.
   compiler::Node* LoadMapPrototype(compiler::Node* map);
+  // Load the prototype info of a map. The result has to be checked if it is a
+  // prototype info object or not.
+  compiler::Node* LoadMapPrototypeInfo(compiler::Node* map,
+                                       Label* if_has_no_proto_info);
   // Load the instance size of a Map.
   compiler::Node* LoadMapInstanceSize(compiler::Node* map);
   // Load the inobject properties count of a Map (valid only for JSObjects).
@@ -257,6 +282,10 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* LoadMapConstructorFunctionIndex(compiler::Node* map);
   // Load the constructor of a Map (equivalent to Map::GetConstructor()).
   compiler::Node* LoadMapConstructor(compiler::Node* map);
+  // Check whether the map is for an object with special properties, such as a
+  // JSProxy or an object with interceptors.
+  compiler::Node* IsSpecialReceiverMap(compiler::Node* map);
+  compiler::Node* IsSpecialReceiverInstanceType(compiler::Node* instance_type);
 
   // Load the hash field of a name as an uint32 value.
   compiler::Node* LoadNameHashField(compiler::Node* name);
@@ -295,6 +324,10 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* LoadDoubleWithHoleCheck(
       compiler::Node* base, compiler::Node* offset, Label* if_hole,
       MachineType machine_type = MachineType::Float64());
+  compiler::Node* LoadFixedTypedArrayElement(
+      compiler::Node* data_pointer, compiler::Node* index_node,
+      ElementsKind elements_kind,
+      ParameterMode parameter_mode = INTEGER_PARAMETERS);
 
   // Context manipulation
   compiler::Node* LoadContextElement(compiler::Node* context, int slot_index);
@@ -335,19 +368,27 @@ class CodeStubAssembler : public compiler::CodeAssembler {
       compiler::Node* object, compiler::Node* index, compiler::Node* value,
       ParameterMode parameter_mode = INTEGER_PARAMETERS);
 
+  void StoreFieldsNoWriteBarrier(compiler::Node* start_address,
+                                 compiler::Node* end_address,
+                                 compiler::Node* value);
+
   // Allocate a HeapNumber without initializing its value.
   compiler::Node* AllocateHeapNumber(MutableMode mode = IMMUTABLE);
   // Allocate a HeapNumber with a specific value.
   compiler::Node* AllocateHeapNumberWithValue(compiler::Node* value,
                                               MutableMode mode = IMMUTABLE);
   // Allocate a SeqOneByteString with the given length.
-  compiler::Node* AllocateSeqOneByteString(int length);
-  compiler::Node* AllocateSeqOneByteString(compiler::Node* context,
-                                           compiler::Node* length);
+  compiler::Node* AllocateSeqOneByteString(int length,
+                                           AllocationFlags flags = kNone);
+  compiler::Node* AllocateSeqOneByteString(
+      compiler::Node* context, compiler::Node* length,
+      ParameterMode mode = INTPTR_PARAMETERS, AllocationFlags flags = kNone);
   // Allocate a SeqTwoByteString with the given length.
-  compiler::Node* AllocateSeqTwoByteString(int length);
-  compiler::Node* AllocateSeqTwoByteString(compiler::Node* context,
-                                           compiler::Node* length);
+  compiler::Node* AllocateSeqTwoByteString(int length,
+                                           AllocationFlags flags = kNone);
+  compiler::Node* AllocateSeqTwoByteString(
+      compiler::Node* context, compiler::Node* length,
+      ParameterMode mode = INTPTR_PARAMETERS, AllocationFlags flags = kNone);
 
   // Allocate a SlicedOneByteString with the given length, parent and offset.
   // |length| and |offset| are expected to be tagged.
@@ -365,13 +406,21 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   // expected to be one-byte strings.
   compiler::Node* AllocateOneByteConsString(compiler::Node* length,
                                             compiler::Node* first,
-                                            compiler::Node* second);
+                                            compiler::Node* second,
+                                            AllocationFlags flags = kNone);
   // Allocate a two-byte ConsString with the given length, first and second
   // parts. |length| is expected to be tagged, and |first| and |second| are
   // expected to be two-byte strings.
   compiler::Node* AllocateTwoByteConsString(compiler::Node* length,
                                             compiler::Node* first,
-                                            compiler::Node* second);
+                                            compiler::Node* second,
+                                            AllocationFlags flags = kNone);
+
+  // Allocate an appropriate one- or two-byte ConsString with the first and
+  // second parts specified by |first| and |second|.
+  compiler::Node* NewConsString(compiler::Node* context, compiler::Node* length,
+                                compiler::Node* left, compiler::Node* right,
+                                AllocationFlags flags = kNone);
 
   // Allocate a RegExpResult with the given length (the number of captures,
   // including the match itself), index (the index where the match starts),
@@ -381,6 +430,19 @@ class CodeStubAssembler : public compiler::CodeAssembler {
                                        compiler::Node* length,
                                        compiler::Node* index,
                                        compiler::Node* input);
+
+  compiler::Node* AllocateJSObjectFromMap(compiler::Node* map,
+                                          compiler::Node* properties = nullptr,
+                                          compiler::Node* elements = nullptr);
+
+  void InitializeJSObjectFromMap(compiler::Node* object, compiler::Node* map,
+                                 compiler::Node* size,
+                                 compiler::Node* properties = nullptr,
+                                 compiler::Node* elements = nullptr);
+
+  void InitializeJSObjectBody(compiler::Node* object, compiler::Node* map,
+                              compiler::Node* size,
+                              int start_offset = JSObject::kHeaderSize);
 
   // Allocate a JSArray without elements and initialize the header fields.
   compiler::Node* AllocateUninitializedJSArrayWithoutElements(
@@ -405,6 +467,17 @@ class CodeStubAssembler : public compiler::CodeAssembler {
                                      compiler::Node* capacity,
                                      ParameterMode mode = INTEGER_PARAMETERS,
                                      AllocationFlags flags = kNone);
+
+  // Perform CreateArrayIterator (ES6 #sec-createarrayiterator).
+  compiler::Node* CreateArrayIterator(compiler::Node* array,
+                                      compiler::Node* array_map,
+                                      compiler::Node* array_type,
+                                      compiler::Node* context,
+                                      IterationKind mode);
+
+  compiler::Node* AllocateJSArrayIterator(compiler::Node* array,
+                                          compiler::Node* array_map,
+                                          compiler::Node* map);
 
   void FillFixedArrayWithValue(ElementsKind kind, compiler::Node* array,
                                compiler::Node* from_index,
@@ -435,16 +508,16 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   // Copies |character_count| elements from |from_string| to |to_string|
   // starting at the |from_index|'th character. |from_string| and |to_string|
   // must be either both one-byte strings or both two-byte strings.
-  // |from_index|, |to_index| and |character_count| must be Smis s.t.
-  // 0 <= |from_index| <= |from_index| + |character_count| <= from_string.length
-  // and
-  // 0 <= |to_index| <= |to_index| + |character_count| <= to_string.length.
+  // |from_index|, |to_index| and |character_count| must be either Smis or
+  // intptr_ts depending on |mode| s.t. 0 <= |from_index| <= |from_index| +
+  // |character_count| <= from_string.length and 0 <= |to_index| <= |to_index| +
+  // |character_count| <= to_string.length.
   void CopyStringCharacters(compiler::Node* from_string,
                             compiler::Node* to_string,
                             compiler::Node* from_index,
                             compiler::Node* to_index,
                             compiler::Node* character_count,
-                            String::Encoding encoding);
+                            String::Encoding encoding, ParameterMode mode);
 
   // Loads an element from |array| of |from_kind| elements by given |offset|
   // (NOTE: not index!), does a hole check if |if_hole| is provided and
@@ -534,8 +607,9 @@ class CodeStubAssembler : public compiler::CodeAssembler {
                             compiler::Node* from, compiler::Node* to);
 
   // Return a new string object produced by concatenating |first| with |second|.
-  compiler::Node* StringConcat(compiler::Node* context, compiler::Node* first,
-                               compiler::Node* second);
+  compiler::Node* StringAdd(compiler::Node* context, compiler::Node* first,
+                            compiler::Node* second,
+                            AllocationFlags flags = kNone);
 
   // Return the first index >= {from} at which {needle_char} was found in
   // {string}, or -1 if such an index does not exist. The returned value is
@@ -562,6 +636,13 @@ class CodeStubAssembler : public compiler::CodeAssembler {
                                     compiler::Node* input);
   // Convert any object to a Number.
   compiler::Node* ToNumber(compiler::Node* context, compiler::Node* input);
+
+  // Convert any object to a String.
+  compiler::Node* ToString(compiler::Node* context, compiler::Node* input);
+
+  // Convert any object to a Primitive.
+  compiler::Node* JSReceiverToPrimitive(compiler::Node* context,
+                                        compiler::Node* input);
 
   enum ToIntegerTruncationMode {
     kNoTruncation,
@@ -758,6 +839,12 @@ class CodeStubAssembler : public compiler::CodeAssembler {
                              compiler::Node* feedback, Label* if_handler,
                              Variable* var_handler, Label* if_miss,
                              int unroll_count);
+  void HandleKeyedStorePolymorphicCase(compiler::Node* receiver_map,
+                                       compiler::Node* feedback,
+                                       Label* if_handler, Variable* var_handler,
+                                       Label* if_transition_handler,
+                                       Variable* var_transition_map_cell,
+                                       Label* if_miss);
 
   compiler::Node* StubCachePrimaryOffset(compiler::Node* name,
                                          compiler::Node* map);
@@ -840,6 +927,7 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   void KeyedLoadIC(const LoadICParameters* p);
   void KeyedLoadICGeneric(const LoadICParameters* p);
   void StoreIC(const StoreICParameters* p);
+  void KeyedStoreIC(const StoreICParameters* p, LanguageMode language_mode);
 
   void TransitionElementsKind(compiler::Node* object, compiler::Node* map,
                               ElementsKind from_kind, ElementsKind to_kind,
@@ -889,10 +977,16 @@ class CodeStubAssembler : public compiler::CodeAssembler {
       ParameterMode mode = INTPTR_PARAMETERS,
       ForEachDirection direction = ForEachDirection::kReverse);
 
+  compiler::Node* GetArrayAllocationSize(compiler::Node* element_count,
+                                         ElementsKind kind, ParameterMode mode,
+                                         int header_size) {
+    return ElementOffsetFromIndex(element_count, kind, mode, header_size);
+  }
+
   compiler::Node* GetFixedArrayAllocationSize(compiler::Node* element_count,
                                               ElementsKind kind,
                                               ParameterMode mode) {
-    return ElementOffsetFromIndex(element_count, kind, mode,
+    return GetArrayAllocationSize(element_count, kind, mode,
                                   FixedArray::kHeaderSize);
   }
 
@@ -906,6 +1000,14 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* RelationalComparison(RelationalComparisonMode mode,
                                        compiler::Node* lhs, compiler::Node* rhs,
                                        compiler::Node* context);
+
+  void BranchIfNumericRelationalComparison(RelationalComparisonMode mode,
+                                           compiler::Node* lhs,
+                                           compiler::Node* rhs, Label* if_true,
+                                           Label* if_false);
+
+  void GotoUnlessNumberLessThan(compiler::Node* lhs, compiler::Node* rhs,
+                                Label* if_false);
 
   enum ResultMode { kDontNegateResult, kNegateResult };
 
@@ -925,6 +1027,9 @@ class CodeStubAssembler : public compiler::CodeAssembler {
 
   compiler::Node* InstanceOf(compiler::Node* object, compiler::Node* callable,
                              compiler::Node* context);
+
+  // TypedArray/ArrayBuffer helpers
+  compiler::Node* IsDetachedBuffer(compiler::Node* buffer);
 
  private:
   enum ElementSupport { kOnlyProperties, kSupportElements };

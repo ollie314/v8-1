@@ -487,7 +487,7 @@ MUST_USE_RESULT static Object* StringReplaceGlobalRegExpWithString(
   int subject_length = subject->length();
 
   // CompiledReplacement uses zone allocation.
-  Zone zone(isolate->allocator());
+  Zone zone(isolate->allocator(), ZONE_NAME);
   CompiledReplacement compiled_replacement(&zone);
   bool simple_replace =
       compiled_replacement.Compile(replacement, capture_count, subject_length);
@@ -1338,8 +1338,8 @@ MaybeHandle<String> StringReplaceNonGlobalRegExpWithFunction(
     }
   }
 
-  argv[m] = handle(Smi::FromInt(index), isolate);
-  argv[m + 1] = subject;
+  argv[argc - 2] = handle(Smi::FromInt(index), isolate);
+  argv[argc - 1] = subject;
 
   Handle<Object> replacement_obj;
   ASSIGN_RETURN_ON_EXCEPTION(
@@ -1461,6 +1461,30 @@ MaybeHandle<String> RegExpReplace(Isolate* isolate, Handle<JSRegExp> regexp,
 
 }  // namespace
 
+RUNTIME_FUNCTION(Runtime_StringReplaceGlobalRegExpWithFunction) {
+  HandleScope scope(isolate);
+  DCHECK(args.length() == 3);
+
+  CONVERT_ARG_HANDLE_CHECKED(String, subject, 0);
+  CONVERT_ARG_HANDLE_CHECKED(JSRegExp, regexp, 1);
+  CONVERT_ARG_HANDLE_CHECKED(JSObject, replace, 2);
+
+  RETURN_RESULT_OR_FAILURE(isolate, StringReplaceGlobalRegExpWithFunction(
+                                        isolate, subject, regexp, replace));
+}
+
+RUNTIME_FUNCTION(Runtime_StringReplaceNonGlobalRegExpWithFunction) {
+  HandleScope scope(isolate);
+  DCHECK(args.length() == 3);
+
+  CONVERT_ARG_HANDLE_CHECKED(String, subject, 0);
+  CONVERT_ARG_HANDLE_CHECKED(JSRegExp, regexp, 1);
+  CONVERT_ARG_HANDLE_CHECKED(JSObject, replace, 2);
+
+  RETURN_RESULT_OR_FAILURE(isolate, StringReplaceNonGlobalRegExpWithFunction(
+                                        isolate, subject, regexp, replace));
+}
+
 // Slow path for:
 // ES#sec-regexp.prototype-@@replace
 // RegExp.prototype [ @@replace ] ( string, replaceValue )
@@ -1503,6 +1527,11 @@ RUNTIME_FUNCTION(Runtime_RegExpReplace) {
                                 RegExpUtils::SetLastIndex(isolate, recv, 0));
   }
 
+  // TODO(jgruber): Here and at all other fast path checks, rely on map checks
+  // instead.
+  // TODO(jgruber): We could speed up the fast path by checking flags
+  // afterwards, but that would violate the spec (which states that exec is
+  // accessed after global and unicode).
   // TODO(adamk): this fast path is wrong as we doesn't ensure that 'exec'
   // is actually a data property on RegExp.prototype.
   Handle<Object> exec = factory->undefined_value();
@@ -1517,7 +1546,7 @@ RUNTIME_FUNCTION(Runtime_RegExpReplace) {
     }
   }
 
-  Zone zone(isolate->allocator());
+  Zone zone(isolate->allocator(), ZONE_NAME);
   ZoneVector<Handle<Object>> results(&zone);
 
   while (true) {

@@ -179,7 +179,6 @@ namespace internal {
   TFS(Typeof, BUILTIN, kNoExtraICState, Typeof)                               \
                                                                               \
   /* Handlers */                                                              \
-  ASH(KeyedLoadIC_Megamorphic, KEYED_LOAD_IC, kNoExtraICState)                \
   TFS(KeyedLoadIC_Megamorphic_TF, KEYED_LOAD_IC, kNoExtraICState,             \
       LoadWithVector)                                                         \
   ASM(KeyedLoadIC_Miss)                                                       \
@@ -224,6 +223,14 @@ namespace internal {
   CPP(ArraySlice)                                                             \
   CPP(ArraySplice)                                                            \
   CPP(ArrayUnshift)                                                           \
+  /* ES6 #sec-array.prototype.entries */                                      \
+  TFJ(ArrayPrototypeEntries, 1)                                               \
+  /* ES6 #sec-array.prototype.keys */                                         \
+  TFJ(ArrayPrototypeKeys, 1)                                                  \
+  /* ES6 #sec-array.prototype.values */                                       \
+  TFJ(ArrayPrototypeValues, 1)                                                \
+  /* ES6 #sec-%arrayiteratorprototype%.next */                                \
+  TFJ(ArrayIteratorPrototypeNext, 1)                                          \
                                                                               \
   /* ArrayBuffer */                                                           \
   CPP(ArrayBufferConstructor)                                                 \
@@ -484,6 +491,8 @@ namespace internal {
   TFJ(NumberIsSafeInteger, 2)                                                 \
   /* ES6 section 20.1.2.12 Number.parseFloat ( string ) */                    \
   TFJ(NumberParseFloat, 2)                                                    \
+  /* ES6 section 20.1.2.13 Number.parseInt ( string, radix ) */               \
+  TFJ(NumberParseInt, 3)                                                      \
   CPP(NumberPrototypeToExponential)                                           \
   CPP(NumberPrototypeToFixed)                                                 \
   CPP(NumberPrototypeToLocaleString)                                          \
@@ -513,7 +522,7 @@ namespace internal {
                                                                               \
   /* Object */                                                                \
   CPP(ObjectAssign)                                                           \
-  CPP(ObjectCreate)                                                           \
+  TFJ(ObjectCreate, 3)                                                        \
   CPP(ObjectDefineGetter)                                                     \
   CPP(ObjectDefineProperties)                                                 \
   CPP(ObjectDefineProperty)                                                   \
@@ -671,6 +680,12 @@ namespace internal {
   TFJ(TypedArrayPrototypeByteOffset, 1)                                       \
   /* ES6 section 22.2.3.18 get %TypedArray%.prototype.length */               \
   TFJ(TypedArrayPrototypeLength, 1)                                           \
+  /* ES6 #sec-%typedarray%.prototype.entries */                               \
+  TFJ(TypedArrayPrototypeEntries, 1)                                          \
+  /* ES6 #sec-%typedarray%.prototype.keys */                                  \
+  TFJ(TypedArrayPrototypeKeys, 1)                                             \
+  /* ES6 #sec-%typedarray%.prototype.values */                                \
+  TFJ(TypedArrayPrototypeValues, 1)                                           \
                                                                               \
   CPP(ModuleNamespaceIterator)                                                \
   CPP(FixedArrayIteratorNext)
@@ -717,7 +732,8 @@ class Builtins {
         builtin_count
   };
 
-#define DECLARE_BUILTIN_ACCESSOR(Name, ...) Handle<Code> Name();
+#define DECLARE_BUILTIN_ACCESSOR(Name, ...) \
+  V8_EXPORT_PRIVATE Handle<Code> Name();
   BUILTIN_LIST_ALL(DECLARE_BUILTIN_ACCESSOR)
 #undef DECLARE_BUILTIN_ACCESSOR
 

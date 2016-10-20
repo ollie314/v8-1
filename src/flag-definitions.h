@@ -255,8 +255,6 @@ HARMONY_SHIPPING(FLAG_SHIPPING_FEATURES)
 #undef FLAG_SHIPPING_FEATURES
 
 // Flags for experimental implementation features.
-DEFINE_BOOL(compiled_keyed_generic_loads, false,
-            "use optimizing compiler to generate keyed generic load stubs")
 DEFINE_BOOL(allocation_site_pretenuring, true,
             "pretenure with allocation sites")
 DEFINE_BOOL(page_promotion, true, "promote pages based on utilization")
@@ -832,6 +830,7 @@ DEFINE_BOOL(trace_maps, false, "trace map creation")
 // parser.cc
 DEFINE_BOOL(allow_natives_syntax, false, "allow natives syntax")
 DEFINE_BOOL(trace_parse, false, "trace parsing and preparsing")
+DEFINE_BOOL(trace_preparse, false, "trace preparsing decisions")
 DEFINE_BOOL(lazy_inner_functions, false, "enable lazy parsing inner functions")
 
 // simulator-arm.cc, simulator-arm64.cc and simulator-mips.cc
@@ -877,6 +876,8 @@ DEFINE_INT(hash_seed, 0,
            "Fixed seed to use to hash property keys (0 means random)"
            "(with snapshots this option cannot override the baked-in seed)")
 DEFINE_BOOL(trace_rail, false, "trace RAIL mode")
+DEFINE_BOOL(print_all_exceptions, false,
+            "print exception object and stack trace on each thrown exception")
 
 // runtime.cc
 DEFINE_BOOL(runtime_call_stats, false, "report runtime call counts and times")

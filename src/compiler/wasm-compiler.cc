@@ -24,6 +24,7 @@
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/pipeline.h"
+#include "src/compiler/simd-scalar-lowering.h"
 #include "src/compiler/source-position.h"
 #include "src/compiler/zone-stats.h"
 
@@ -990,15 +991,35 @@ Node* WasmGraphBuilder::HeapConstant(Handle<HeapObject> value) {
   return jsgraph()->HeapConstant(value);
 }
 
-Node* WasmGraphBuilder::Branch(Node* cond, Node** true_node,
-                               Node** false_node) {
+namespace {
+Node* Branch(JSGraph* jsgraph, Node* cond, Node** true_node, Node** false_node,
+             Node* control, BranchHint hint) {
   DCHECK_NOT_NULL(cond);
-  DCHECK_NOT_NULL(*control_);
+  DCHECK_NOT_NULL(control);
   Node* branch =
-      graph()->NewNode(jsgraph()->common()->Branch(), cond, *control_);
-  *true_node = graph()->NewNode(jsgraph()->common()->IfTrue(), branch);
-  *false_node = graph()->NewNode(jsgraph()->common()->IfFalse(), branch);
+      jsgraph->graph()->NewNode(jsgraph->common()->Branch(hint), cond, control);
+  *true_node = jsgraph->graph()->NewNode(jsgraph->common()->IfTrue(), branch);
+  *false_node = jsgraph->graph()->NewNode(jsgraph->common()->IfFalse(), branch);
   return branch;
+}
+}  // namespace
+
+Node* WasmGraphBuilder::BranchNoHint(Node* cond, Node** true_node,
+                                     Node** false_node) {
+  return Branch(jsgraph(), cond, true_node, false_node, *control_,
+                BranchHint::kNone);
+}
+
+Node* WasmGraphBuilder::BranchExpectTrue(Node* cond, Node** true_node,
+                                         Node** false_node) {
+  return Branch(jsgraph(), cond, true_node, false_node, *control_,
+                BranchHint::kTrue);
+}
+
+Node* WasmGraphBuilder::BranchExpectFalse(Node* cond, Node** true_node,
+                                          Node** false_node) {
+  return Branch(jsgraph(), cond, true_node, false_node, *control_,
+                BranchHint::kFalse);
 }
 
 Node* WasmGraphBuilder::Switch(unsigned count, Node* key) {
@@ -1758,7 +1779,7 @@ Node* WasmGraphBuilder::Catch(Node* input, wasm::WasmCodePosition position) {
 
   Node* is_smi;
   Node* is_heap;
-  Branch(BuildTestNotSmi(value), &is_heap, &is_smi);
+  BranchExpectFalse(BuildTestNotSmi(value), &is_heap, &is_smi);
 
   // is_smi
   Node* smi_i32 = BuildChangeSmiToInt32(value);
@@ -1798,7 +1819,7 @@ Node* WasmGraphBuilder::BuildI32DivS(Node* left, Node* right,
   Node* before = *control_;
   Node* denom_is_m1;
   Node* denom_is_not_m1;
-  Branch(
+  BranchExpectFalse(
       graph()->NewNode(m->Word32Equal(), right, jsgraph()->Int32Constant(-1)),
       &denom_is_m1, &denom_is_not_m1);
   *control_ = denom_is_m1;
@@ -1940,9 +1961,9 @@ Node* WasmGraphBuilder::BuildI64DivS(Node* left, Node* right,
   Node* before = *control_;
   Node* denom_is_m1;
   Node* denom_is_not_m1;
-  Branch(graph()->NewNode(jsgraph()->machine()->Word64Equal(), right,
-                          jsgraph()->Int64Constant(-1)),
-         &denom_is_m1, &denom_is_not_m1);
+  BranchExpectFalse(graph()->NewNode(jsgraph()->machine()->Word64Equal(), right,
+                                     jsgraph()->Int64Constant(-1)),
+                    &denom_is_m1, &denom_is_not_m1);
   *control_ = denom_is_m1;
   trap_->TrapIfEq64(wasm::kTrapDivUnrepresentable, left,
                     std::numeric_limits<int64_t>::min(), position);
@@ -2157,9 +2178,8 @@ Node* WasmGraphBuilder::CallIndirect(uint32_t index, Node** args, Node*** rets,
         *effect_, *control_);
     int32_t key = module_->module->function_tables[0].map.Find(sig);
     DCHECK_GE(key, 0);
-    Node* sig_match =
-        graph()->NewNode(machine->Word32Equal(),
-                         BuildChangeSmiToInt32(load_sig), Int32Constant(key));
+    Node* sig_match = graph()->NewNode(machine->WordEqual(), load_sig,
+                                       jsgraph()->SmiConstant(key));
     trap_->AddTrapIfFalse(wasm::kTrapFuncSigMismatch, sig_match, position);
   }
 
@@ -3027,6 +3047,13 @@ void WasmGraphBuilder::Int64LoweringForTesting() {
   }
 }
 
+void WasmGraphBuilder::SimdScalarLoweringForTesting() {
+  SimdScalarLowering(jsgraph()->graph(), jsgraph()->machine(),
+                     jsgraph()->common(), jsgraph()->zone(),
+                     function_signature_)
+      .LowerGraph();
+}
+
 void WasmGraphBuilder::SetSourcePosition(Node* node,
                                          wasm::WasmCodePosition position) {
   DCHECK_NE(position, wasm::kNoCodePosition);
@@ -3049,6 +3076,18 @@ Node* WasmGraphBuilder::SimdOp(wasm::WasmOpcode opcode,
     case wasm::kExprI32x4Splat:
       return graph()->NewNode(jsgraph()->machine()->CreateInt32x4(), inputs[0],
                               inputs[0], inputs[0], inputs[0]);
+    case wasm::kExprI32x4Add:
+      return graph()->NewNode(jsgraph()->machine()->Int32x4Add(), inputs[0],
+                              inputs[1]);
+    case wasm::kExprF32x4ExtractLane:
+      return graph()->NewNode(jsgraph()->machine()->Float32x4ExtractLane(),
+                              inputs[0], inputs[1]);
+    case wasm::kExprF32x4Splat:
+      return graph()->NewNode(jsgraph()->machine()->CreateFloat32x4(),
+                              inputs[0], inputs[0], inputs[0], inputs[0]);
+    case wasm::kExprF32x4Add:
+      return graph()->NewNode(jsgraph()->machine()->Float32x4Add(), inputs[0],
+                              inputs[1]);
     default:
       return graph()->NewNode(UnsupportedOpcode(opcode), nullptr);
   }
@@ -3060,6 +3099,9 @@ Node* WasmGraphBuilder::SimdExtractLane(wasm::WasmOpcode opcode, uint8_t lane,
     case wasm::kExprI32x4ExtractLane:
       return graph()->NewNode(jsgraph()->machine()->Int32x4ExtractLane(), input,
                               Int32Constant(lane));
+    case wasm::kExprF32x4ExtractLane:
+      return graph()->NewNode(jsgraph()->machine()->Float32x4ExtractLane(),
+                              input, Int32Constant(lane));
     default:
       return graph()->NewNode(UnsupportedOpcode(opcode), nullptr);
   }
@@ -3093,7 +3135,7 @@ Handle<Code> CompileJSToWasmWrapper(Isolate* isolate, wasm::ModuleEnv* module,
   //----------------------------------------------------------------------------
   // Create the Graph
   //----------------------------------------------------------------------------
-  Zone zone(isolate->allocator());
+  Zone zone(isolate->allocator(), ZONE_NAME);
   Graph graph(&zone);
   CommonOperatorBuilder common(&zone);
   MachineOperatorBuilder machine(&zone);
@@ -3167,7 +3209,7 @@ Handle<Code> CompileWasmToJSWrapper(Isolate* isolate, Handle<JSReceiver> target,
   //----------------------------------------------------------------------------
   // Create the Graph
   //----------------------------------------------------------------------------
-  Zone zone(isolate->allocator());
+  Zone zone(isolate->allocator(), ZONE_NAME);
   Graph graph(&zone);
   CommonOperatorBuilder common(&zone);
   MachineOperatorBuilder machine(&zone);
@@ -3275,6 +3317,9 @@ SourcePositionTable* WasmCompilationUnit::BuildGraphForWasmFunction(
     r.LowerGraph();
   }
 
+  SimdScalarLowering(graph, machine, common, jsgraph_->zone(), function_->sig)
+      .LowerGraph();
+
   int index = static_cast<int>(function_->func_index);
 
   if (index >= FLAG_trace_wasm_ast_start && index < FLAG_trace_wasm_ast_end) {
@@ -3296,7 +3341,7 @@ WasmCompilationUnit::WasmCompilationUnit(wasm::ErrorThrower* thrower,
       isolate_(isolate),
       module_env_(module_env),
       function_(function),
-      graph_zone_(new Zone(isolate->allocator())),
+      graph_zone_(new Zone(isolate->allocator(), ZONE_NAME)),
       jsgraph_(new (graph_zone()) JSGraph(
           isolate, new (graph_zone()) Graph(graph_zone()),
           new (graph_zone()) CommonOperatorBuilder(graph_zone()), nullptr,
@@ -3304,7 +3349,7 @@ WasmCompilationUnit::WasmCompilationUnit(wasm::ErrorThrower* thrower,
                        graph_zone(), MachineType::PointerRepresentation(),
                        InstructionSelector::SupportedMachineOperatorFlags(),
                        InstructionSelector::AlignmentRequirements()))),
-      compilation_zone_(isolate->allocator()),
+      compilation_zone_(isolate->allocator(), ZONE_NAME),
       info_(function->name_length != 0
                 ? module_env->module->GetNameOrNull(function->name_offset,
                                                     function->name_length)

@@ -546,8 +546,7 @@ RUNTIME_FUNCTION(Runtime_NativeScriptsCount) {
   return Smi::FromInt(Natives::GetBuiltinsCount());
 }
 
-
-// Returns V8 version as a string.
+// TODO(5510): remove this.
 RUNTIME_FUNCTION(Runtime_GetV8Version) {
   HandleScope scope(isolate);
   DCHECK(args.length() == 0);
@@ -768,7 +767,7 @@ RUNTIME_FUNCTION(Runtime_DeserializeWasmModule) {
   if (!maybe_compiled_module.ToHandle(&compiled_module)) {
     return isolate->heap()->undefined_value();
   }
-  return *wasm::CreateCompiledModuleObject(
+  return *wasm::CreateWasmModuleObject(
       isolate, Handle<wasm::WasmCompiledModule>::cast(compiled_module),
       wasm::kWasmOrigin);
 }

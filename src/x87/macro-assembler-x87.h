@@ -381,11 +381,6 @@ class MacroAssembler: public Assembler {
   // Compare instance type for map.
   void CmpInstanceType(Register map, InstanceType type);
 
-  // Check if a map for a JSObject indicates that the object has fast elements.
-  // Jump to the specified label if it does not.
-  void CheckFastElements(Register map, Label* fail,
-                         Label::Distance distance = Label::kFar);
-
   // Check if a map for a JSObject indicates that the object can have both smi
   // and HeapObject elements.  Jump to the specified label if it does not.
   void CheckFastObjectElements(Register map, Label* fail,
@@ -601,10 +596,6 @@ class MacroAssembler: public Assembler {
 
   void GetNumberHash(Register r0, Register scratch);
 
-  void LoadFromNumberDictionary(Label* miss, Register elements, Register key,
-                                Register r0, Register r1, Register r2,
-                                Register result);
-
   // ---------------------------------------------------------------------------
   // Allocation support
 
@@ -711,12 +702,6 @@ class MacroAssembler: public Assembler {
   // clobbered.
   void TryGetFunctionPrototype(Register function, Register result,
                                Register scratch, Label* miss);
-
-  // Picks out an array index from the hash field.
-  // Register use:
-  //   hash - holds the index's hash. Clobbered.
-  //   index - holds the overwritten index on exit.
-  void IndexFromHash(Register hash, Register index);
 
   // ---------------------------------------------------------------------------
   // Runtime calls

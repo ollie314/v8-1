@@ -52,8 +52,6 @@ namespace internal {
   F(HasComplexElements, 1, 1)        \
   F(IsArray, 1, 1)                   \
   F(ArrayIsArray, 1, 1)              \
-  F(HasCachedArrayIndex, 1, 1)       \
-  F(GetCachedArrayIndex, 1, 1)       \
   F(FixedArrayGet, 2, 1)             \
   F(FixedArraySet, 3, 1)             \
   F(ArraySpeciesConstructor, 1, 1)   \
@@ -196,7 +194,8 @@ namespace internal {
   F(DebugRecordAsyncFunction, 1, 1)             \
   F(DebugPushPromise, 1, 1)                     \
   F(DebugPopPromise, 0, 1)                      \
-  F(DebugAsyncTaskEvent, 1, 1)                  \
+  F(DebugNextMicrotaskId, 0, 1)                 \
+  F(DebugAsyncTaskEvent, 3, 1)                  \
   F(DebugIsActive, 0, 1)                        \
   F(DebugBreakInOptimizedCode, 0, 1)            \
   F(GetWasmFunctionOffsetTable, 1, 1)           \
@@ -292,7 +291,7 @@ namespace internal {
   F(CreateListFromArrayLike, 1, 1)                  \
   F(EnqueueMicrotask, 1, 1)                         \
   F(EnqueuePromiseReactionJob, 5, 1)                \
-  F(EnqueuePromiseResolveThenableJob, 6, 1)         \
+  F(EnqueuePromiseResolveThenableJob, 4, 1)         \
   F(GetAndResetRuntimeCallStats, -1 /* <= 2 */, 1)  \
   F(ExportExperimentalFromRuntime, 1, 1)            \
   F(ExportFromRuntime, 1, 1)                        \
@@ -300,7 +299,7 @@ namespace internal {
   F(InstallToContext, 1, 1)                         \
   F(Interrupt, 0, 1)                                \
   F(IS_VAR, 1, 1)                                   \
-  F(IsWasmObject, 1, 1)                             \
+  F(IsWasmInstance, 1, 1)                           \
   F(NewReferenceError, 2, 1)                        \
   F(NewSyntaxError, 2, 1)                           \
   F(NewTypeError, 2, 1)                             \
@@ -379,6 +378,7 @@ namespace internal {
 #define FOR_EACH_INTRINSIC_OBJECT(F)                 \
   F(GetPrototype, 1, 1)                              \
   F(ObjectHasOwnProperty, 2, 1)                      \
+  F(ObjectCreate, 2, 1)                              \
   F(InternalSetPrototype, 2, 1)                      \
   F(OptimizeObjectForAddingMultipleProperties, 2, 1) \
   F(GetProperty, 2, 1)                               \
@@ -456,19 +456,21 @@ namespace internal {
   F(JSProxyGetHandler, 1, 1)            \
   F(JSProxyRevoke, 1, 1)
 
-#define FOR_EACH_INTRINSIC_REGEXP(F)           \
-  F(StringReplaceGlobalRegExpWithString, 4, 1) \
-  F(StringSplit, 3, 1)                         \
-  F(RegExpCreate, 1, 1)                        \
-  F(RegExpExec, 4, 1)                          \
-  F(RegExpFlags, 1, 1)                         \
-  F(RegExpReplace, 3, 1)                       \
-  F(RegExpSource, 1, 1)                        \
-  F(RegExpConstructResult, 3, 1)               \
-  F(RegExpInitializeAndCompile, 3, 1)          \
-  F(RegExpInternalReplace, 3, 1)               \
-  F(RegExpExecReThrow, 4, 1)                   \
-  F(IsRegExp, 1, 1)
+#define FOR_EACH_INTRINSIC_REGEXP(F)                \
+  F(IsRegExp, 1, 1)                                 \
+  F(RegExpConstructResult, 3, 1)                    \
+  F(RegExpCreate, 1, 1)                             \
+  F(RegExpExec, 4, 1)                               \
+  F(RegExpExecReThrow, 4, 1)                        \
+  F(RegExpFlags, 1, 1)                              \
+  F(RegExpInitializeAndCompile, 3, 1)               \
+  F(RegExpInternalReplace, 3, 1)                    \
+  F(RegExpReplace, 3, 1)                            \
+  F(RegExpSource, 1, 1)                             \
+  F(StringReplaceGlobalRegExpWithString, 4, 1)      \
+  F(StringReplaceGlobalRegExpWithFunction, 3, 1)    \
+  F(StringReplaceNonGlobalRegExpWithFunction, 3, 1) \
+  F(StringSplit, 3, 1)
 
 #define FOR_EACH_INTRINSIC_SCOPES(F)    \
   F(ThrowConstAssignError, 0, 1)        \
@@ -1119,8 +1121,7 @@ class RuntimeState {
   DISALLOW_COPY_AND_ASSIGN(RuntimeState);
 };
 
-
-std::ostream& operator<<(std::ostream&, Runtime::FunctionId);
+V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&, Runtime::FunctionId);
 
 //---------------------------------------------------------------------------
 // Constants used by interface to runtime functions.

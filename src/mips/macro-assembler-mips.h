@@ -504,15 +504,6 @@ class MacroAssembler: public Assembler {
 
   void GetNumberHash(Register reg0, Register scratch);
 
-  void LoadFromNumberDictionary(Label* miss,
-                                Register elements,
-                                Register key,
-                                Register result,
-                                Register reg0,
-                                Register reg1,
-                                Register reg2);
-
-
   inline void MarkCode(NopMarkerTypes type) {
     nop(type);
   }
@@ -1180,12 +1171,6 @@ class MacroAssembler: public Assembler {
         FieldMemOperand(object_map, Map::kInstanceTypeOffset));
   }
 
-  // Check if a map for a JSObject indicates that the object has fast elements.
-  // Jump to the specified label if it does not.
-  void CheckFastElements(Register map,
-                         Register scratch,
-                         Label* fail);
-
   // Check if a map for a JSObject indicates that the object can have both smi
   // and HeapObject elements.  Jump to the specified label if it does not.
   void CheckFastObjectElements(Register map,
@@ -1275,13 +1260,6 @@ class MacroAssembler: public Assembler {
     DCHECK_EQ(0u, kStringTag);
     return eq;
   }
-
-
-  // Picks out an array index from the hash field.
-  // Register use:
-  //   hash - holds the index's hash. Clobbered.
-  //   index - holds the overwritten index on exit.
-  void IndexFromHash(Register hash, Register index);
 
   // Get the number of least significant bits from a register.
   void GetLeastBitsFromSmi(Register dst, Register src, int num_least_bits);

@@ -815,7 +815,7 @@ TEST(SnapshotDataBlobWithWarmup) {
     // Running the warmup script has effect on whether functions are
     // pre-compiled, but does not pollute the context.
     CHECK(IsCompiled("Math.abs"));
-    CHECK(!IsCompiled("Number.parseInt"));
+    CHECK(!IsCompiled("String.raw"));
     CHECK(CompileRun("Math.random")->IsFunction());
   }
   isolate->Dispose();
@@ -825,7 +825,7 @@ TEST(CustomSnapshotDataBlobWithWarmup) {
   DisableTurbofan();
   const char* source =
       "function f() { return Math.abs(1); }\n"
-      "function g() { return Number.parseInt(1); }\n"
+      "function g() { return String.raw(1); }\n"
       "Object.valueOf(1);"
       "var a = 5";
   const char* warmup = "a = f()";
@@ -850,7 +850,7 @@ TEST(CustomSnapshotDataBlobWithWarmup) {
     CHECK(IsCompiled("f"));
     CHECK(IsCompiled("Math.abs"));
     CHECK(!IsCompiled("g"));
-    CHECK(!IsCompiled("Number.parseInt"));
+    CHECK(!IsCompiled("String.raw"));
     CHECK(!IsCompiled("Object.valueOf"));
     CHECK_EQ(5, CompileRun("a")->Int32Value(context).FromJust());
   }
@@ -2010,12 +2010,11 @@ TEST(SnapshotCreatorMultipleContexts) {
   delete[] blob.data;
 }
 
-static void SerializedCallback(
-    const v8::FunctionCallbackInfo<v8::Value>& args) {
+void SerializedCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
   args.GetReturnValue().Set(v8_num(42));
 }
 
-static void SerializedCallbackReplacement(
+void SerializedCallbackReplacement(
     const v8::FunctionCallbackInfo<v8::Value>& args) {
   args.GetReturnValue().Set(v8_num(1337));
 }
@@ -2083,6 +2082,30 @@ TEST(SnapshotCreatorExternalReferences) {
     }
     isolate->Dispose();
   }
+  delete[] blob.data;
+}
+
+TEST(SnapshotCreatorUnknownExternalReferences) {
+  DisableTurbofan();
+  v8::SnapshotCreator creator;
+  v8::Isolate* isolate = creator.GetIsolate();
+  {
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = v8::Context::New(isolate);
+    v8::Context::Scope context_scope(context);
+
+    v8::Local<v8::FunctionTemplate> callback =
+        v8::FunctionTemplate::New(isolate, SerializedCallback);
+    v8::Local<v8::Value> function =
+        callback->GetFunction(context).ToLocalChecked();
+    CHECK(context->Global()->Set(context, v8_str("f"), function).FromJust());
+    ExpectInt32("f()", 42);
+
+    CHECK_EQ(0, creator.AddContext(context));
+  }
+  v8::StartupData blob =
+      creator.CreateBlob(v8::SnapshotCreator::FunctionCodeHandling::kClear);
+
   delete[] blob.data;
 }
 

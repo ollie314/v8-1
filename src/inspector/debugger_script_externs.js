@@ -44,7 +44,7 @@ var FormattedScript;
 var JavaScriptCallFrameDetails;
 
 /** @typedef {{
-        sourceID: function():(number|undefined),
+        sourceID: function():(number),
         line: function():number,
         column: function():number,
         thisObject: !Object,
@@ -60,17 +60,6 @@ var JavaScriptCallFrame;
  * @const
  */
 var Debug = {};
-
-Debug.setBreakOnException = function() {}
-
-Debug.clearBreakOnException = function() {}
-
-Debug.setBreakOnUncaughtException = function() {}
-
-/**
- * @return {undefined}
- */
-Debug.clearBreakOnUncaughtException = function() {}
 
 Debug.clearStepping = function() {}
 
@@ -288,6 +277,9 @@ FrameDetails.prototype.receiver = function() {}
 /** @return {function()} */
 FrameDetails.prototype.func = function() {}
 
+/** @return {!Object} */
+FrameDetails.prototype.script = function() {}
+
 /** @return {boolean} */
 FrameDetails.prototype.isAtReturn = function() {}
 
@@ -465,6 +457,9 @@ FrameMirror.prototype.allScopes = function(ignoreNestedScopes) {}
 
 /** @return {!FrameDetails} */
 FrameMirror.prototype.details = function() {}
+
+/** @return {!ScriptMirror} */
+FrameMirror.prototype.script = function() {}
 
 /**
  * @param {string} source

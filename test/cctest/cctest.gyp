@@ -203,6 +203,7 @@
       'trace-extension.cc',
       'trace-extension.h',
       'types-fuzz.h',
+      'wasm/test-managed.cc',
       'wasm/test-run-wasm.cc',
       'wasm/test-run-wasm-64.cc',
       'wasm/test-run-wasm-asmjs.cc',
@@ -234,7 +235,8 @@
       'test-macro-assembler-x64.cc',
       'test-log-stack-tracer.cc',
       'test-run-wasm-relocation-x64.cc',
-      'wasm/test-run-wasm-simd.cc'
+      'wasm/test-run-wasm-simd.cc',
+      'wasm/test-run-wasm-simd-lowering.cc',
     ],
     'cctest_sources_arm': [  ### gcmole(arch:arm) ###
       'test-assembler-arm.cc',

@@ -444,6 +444,46 @@ const int kStubMinorKeyBits = kSmiValueSize - kStubMajorKeyBits - 1;
   V(JS_ERROR_TYPE)                                              \
   V(JS_STRING_ITERATOR_TYPE)                                    \
                                                                 \
+  V(JS_TYPED_ARRAY_KEY_ITERATOR_TYPE)                           \
+  V(JS_FAST_ARRAY_KEY_ITERATOR_TYPE)                            \
+  V(JS_GENERIC_ARRAY_KEY_ITERATOR_TYPE)                         \
+                                                                \
+  V(JS_INT8_ARRAY_KEY_VALUE_ITERATOR_TYPE)                      \
+  V(JS_UINT8_ARRAY_KEY_VALUE_ITERATOR_TYPE)                     \
+  V(JS_INT16_ARRAY_KEY_VALUE_ITERATOR_TYPE)                     \
+  V(JS_UINT16_ARRAY_KEY_VALUE_ITERATOR_TYPE)                    \
+  V(JS_INT32_ARRAY_KEY_VALUE_ITERATOR_TYPE)                     \
+  V(JS_UINT32_ARRAY_KEY_VALUE_ITERATOR_TYPE)                    \
+  V(JS_FLOAT32_ARRAY_KEY_VALUE_ITERATOR_TYPE)                   \
+  V(JS_FLOAT64_ARRAY_KEY_VALUE_ITERATOR_TYPE)                   \
+  V(JS_UINT8_CLAMPED_ARRAY_KEY_VALUE_ITERATOR_TYPE)             \
+                                                                \
+  V(JS_FAST_SMI_ARRAY_KEY_VALUE_ITERATOR_TYPE)                  \
+  V(JS_FAST_HOLEY_SMI_ARRAY_KEY_VALUE_ITERATOR_TYPE)            \
+  V(JS_FAST_ARRAY_KEY_VALUE_ITERATOR_TYPE)                      \
+  V(JS_FAST_HOLEY_ARRAY_KEY_VALUE_ITERATOR_TYPE)                \
+  V(JS_FAST_DOUBLE_ARRAY_KEY_VALUE_ITERATOR_TYPE)               \
+  V(JS_FAST_HOLEY_DOUBLE_ARRAY_KEY_VALUE_ITERATOR_TYPE)         \
+  V(JS_GENERIC_ARRAY_KEY_VALUE_ITERATOR_TYPE)                   \
+                                                                \
+  V(JS_INT8_ARRAY_VALUE_ITERATOR_TYPE)                          \
+  V(JS_UINT8_ARRAY_VALUE_ITERATOR_TYPE)                         \
+  V(JS_INT16_ARRAY_VALUE_ITERATOR_TYPE)                         \
+  V(JS_UINT16_ARRAY_VALUE_ITERATOR_TYPE)                        \
+  V(JS_INT32_ARRAY_VALUE_ITERATOR_TYPE)                         \
+  V(JS_UINT32_ARRAY_VALUE_ITERATOR_TYPE)                        \
+  V(JS_FLOAT32_ARRAY_VALUE_ITERATOR_TYPE)                       \
+  V(JS_FLOAT64_ARRAY_VALUE_ITERATOR_TYPE)                       \
+  V(JS_UINT8_CLAMPED_ARRAY_VALUE_ITERATOR_TYPE)                 \
+                                                                \
+  V(JS_FAST_SMI_ARRAY_VALUE_ITERATOR_TYPE)                      \
+  V(JS_FAST_HOLEY_SMI_ARRAY_VALUE_ITERATOR_TYPE)                \
+  V(JS_FAST_ARRAY_VALUE_ITERATOR_TYPE)                          \
+  V(JS_FAST_HOLEY_ARRAY_VALUE_ITERATOR_TYPE)                    \
+  V(JS_FAST_DOUBLE_ARRAY_VALUE_ITERATOR_TYPE)                   \
+  V(JS_FAST_HOLEY_DOUBLE_ARRAY_VALUE_ITERATOR_TYPE)             \
+  V(JS_GENERIC_ARRAY_VALUE_ITERATOR_TYPE)                       \
+                                                                \
   V(JS_BOUND_FUNCTION_TYPE)                                     \
   V(JS_FUNCTION_TYPE)                                           \
   V(DEBUG_INFO_TYPE)                                            \
@@ -747,6 +787,47 @@ enum InstanceType {
   JS_REGEXP_TYPE,
   JS_ERROR_TYPE,
   JS_STRING_ITERATOR_TYPE,
+
+  JS_TYPED_ARRAY_KEY_ITERATOR_TYPE,
+  JS_FAST_ARRAY_KEY_ITERATOR_TYPE,
+  JS_GENERIC_ARRAY_KEY_ITERATOR_TYPE,
+
+  JS_UINT8_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_INT8_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_UINT16_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_INT16_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_UINT32_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_INT32_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_FLOAT32_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_FLOAT64_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_UINT8_CLAMPED_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+
+  JS_FAST_SMI_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_FAST_HOLEY_SMI_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_FAST_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_FAST_HOLEY_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_FAST_DOUBLE_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_FAST_HOLEY_DOUBLE_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  JS_GENERIC_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+
+  JS_UINT8_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_INT8_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_UINT16_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_INT16_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_UINT32_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_INT32_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_FLOAT32_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_FLOAT64_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_UINT8_CLAMPED_ARRAY_VALUE_ITERATOR_TYPE,
+
+  JS_FAST_SMI_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_FAST_HOLEY_SMI_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_FAST_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_FAST_HOLEY_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_FAST_DOUBLE_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_FAST_HOLEY_DOUBLE_ARRAY_VALUE_ITERATOR_TYPE,
+  JS_GENERIC_ARRAY_VALUE_ITERATOR_TYPE,
+
   JS_BOUND_FUNCTION_TYPE,
   JS_FUNCTION_TYPE,  // LAST_JS_OBJECT_TYPE, LAST_JS_RECEIVER_TYPE
 
@@ -783,6 +864,18 @@ enum InstanceType {
   // an empty fixed array as elements backing store. This is true for string
   // wrappers.
   LAST_CUSTOM_ELEMENTS_RECEIVER = JS_VALUE_TYPE,
+
+  FIRST_ARRAY_KEY_ITERATOR_TYPE = JS_TYPED_ARRAY_KEY_ITERATOR_TYPE,
+  LAST_ARRAY_KEY_ITERATOR_TYPE = JS_GENERIC_ARRAY_KEY_ITERATOR_TYPE,
+
+  FIRST_ARRAY_KEY_VALUE_ITERATOR_TYPE = JS_UINT8_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+  LAST_ARRAY_KEY_VALUE_ITERATOR_TYPE = JS_GENERIC_ARRAY_KEY_VALUE_ITERATOR_TYPE,
+
+  FIRST_ARRAY_VALUE_ITERATOR_TYPE = JS_UINT8_ARRAY_VALUE_ITERATOR_TYPE,
+  LAST_ARRAY_VALUE_ITERATOR_TYPE = JS_GENERIC_ARRAY_VALUE_ITERATOR_TYPE,
+
+  FIRST_ARRAY_ITERATOR_TYPE = FIRST_ARRAY_KEY_ITERATOR_TYPE,
+  LAST_ARRAY_ITERATOR_TYPE = LAST_ARRAY_VALUE_ITERATOR_TYPE,
 };
 
 STATIC_ASSERT(JS_OBJECT_TYPE == Internals::kJSObjectType);
@@ -1028,6 +1121,7 @@ template <class C> inline bool Is(Object* obj);
   V(JSArrayBufferView)           \
   V(JSCollection)                \
   V(JSTypedArray)                \
+  V(JSArrayIterator)             \
   V(JSDataView)                  \
   V(JSProxy)                     \
   V(JSError)                     \
@@ -1403,7 +1497,7 @@ class Object {
   // Checks whether this object has the same value as the given one.  This
   // function is implemented according to ES5, section 9.12 and can be used
   // to implement the Harmony "egal" function.
-  bool SameValue(Object* other);
+  V8_EXPORT_PRIVATE bool SameValue(Object* other);
 
   // Checks whether this object has the same value as the given one.
   // +0 and -0 are treated equal. Everything else is the same as SameValue.
@@ -1490,9 +1584,7 @@ struct Brief {
   const Object* value;
 };
 
-
-std::ostream& operator<<(std::ostream& os, const Brief& v);
-
+V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& os, const Brief& v);
 
 // Smi represents integer Numbers that can be stored in 31 bits.
 // Smis are immediate which means they are NOT allocated in the heap.
@@ -3017,7 +3109,7 @@ class V8_EXPORT_PRIVATE RegExpMatchInfo : NON_EXPORTED_BASE(public FixedArray) {
 };
 
 #define FRAME_ARRAY_FIELD_LIST(V) \
-  V(WasmObject, Object)           \
+  V(WasmInstance, Object)         \
   V(WasmFunctionIndex, Smi)       \
   V(Receiver, Object)             \
   V(Function, JSFunction)         \
@@ -3052,7 +3144,7 @@ class FrameArray : public FixedArray {
                                           Handle<AbstractCode> code, int offset,
                                           int flags);
   static Handle<FrameArray> AppendWasmFrame(Handle<FrameArray> in,
-                                            Handle<Object> wasm_object,
+                                            Handle<Object> wasm_instance,
                                             int wasm_function_index,
                                             Handle<AbstractCode> code,
                                             int offset, int flags);
@@ -3067,7 +3159,7 @@ class FrameArray : public FixedArray {
   //
   // with internal offsets as below:
 
-  static const int kWasmObjectOffset = 0;
+  static const int kWasmInstanceOffset = 0;
   static const int kWasmFunctionIndexOffset = 1;
 
   static const int kReceiverOffset = 0;
@@ -4505,7 +4597,7 @@ class ScopeInfo : public FixedArray {
   static Handle<ScopeInfo> CreateGlobalThisBinding(Isolate* isolate);
 
   // Serializes empty scope info.
-  static ScopeInfo* Empty(Isolate* isolate);
+  V8_EXPORT_PRIVATE static ScopeInfo* Empty(Isolate* isolate);
 
 #ifdef DEBUG
   void Print();
@@ -5204,7 +5296,7 @@ class LiteralsArray : public FixedArray {
  public:
   static const int kVectorIndex = 0;
   static const int kFirstLiteralIndex = 1;
-  static const int kFeedbackVectorOffset;
+  V8_EXPORT_PRIVATE static const int kFeedbackVectorOffset;
   static const int kOffsetToFirstLiteral;
 
   static int OffsetOfLiteralAt(int index) {
@@ -6222,6 +6314,11 @@ class Map: public HeapObject {
   static const int kPrototypeChainValid = 0;
   static const int kPrototypeChainInvalid = 1;
 
+  // Returns a WeakCell object containing given prototype. The cell is cached
+  // in PrototypeInfo which is created lazily.
+  static Handle<WeakCell> GetOrCreatePrototypeWeakCell(
+      Handle<JSObject> prototype, Isolate* isolate);
+
   Map* FindRootMap();
   Map* FindFieldOwner(int descriptor);
 
@@ -6751,17 +6848,16 @@ class PromiseResolveThenableJobInfo : public Struct {
   DECL_ACCESSORS(then, JSReceiver)
   DECL_ACCESSORS(resolve, JSFunction)
   DECL_ACCESSORS(reject, JSFunction)
-  DECL_ACCESSORS(before_debug_event, Object)
-  DECL_ACCESSORS(after_debug_event, Object)
+  DECL_ACCESSORS(debug_id, Object)
+  DECL_ACCESSORS(debug_name, Object)
 
   static const int kThenableOffset = Struct::kHeaderSize;
   static const int kThenOffset = kThenableOffset + kPointerSize;
   static const int kResolveOffset = kThenOffset + kPointerSize;
   static const int kRejectOffset = kResolveOffset + kPointerSize;
-  static const int kBeforeDebugEventOffset = kRejectOffset + kPointerSize;
-  static const int kAfterDebugEventOffset =
-      kBeforeDebugEventOffset + kPointerSize;
-  static const int kSize = kAfterDebugEventOffset + kPointerSize;
+  static const int kDebugIdOffset = kRejectOffset + kPointerSize;
+  static const int kDebugNameOffset = kDebugIdOffset + kPointerSize;
+  static const int kSize = kDebugNameOffset + kPointerSize;
 
   DECLARE_CAST(PromiseResolveThenableJobInfo)
   DECLARE_PRINTER(PromiseResolveThenableJobInfo)
@@ -6777,17 +6873,16 @@ class PromiseReactionJobInfo : public Struct {
   DECL_ACCESSORS(value, Object)
   DECL_ACCESSORS(tasks, Object)
   DECL_ACCESSORS(deferred, Object)
-  DECL_ACCESSORS(before_debug_event, Object)
-  DECL_ACCESSORS(after_debug_event, Object)
+  DECL_ACCESSORS(debug_id, Object)
+  DECL_ACCESSORS(debug_name, Object)
   DECL_ACCESSORS(context, Context)
 
   static const int kValueOffset = Struct::kHeaderSize;
   static const int kTasksOffset = kValueOffset + kPointerSize;
   static const int kDeferredOffset = kTasksOffset + kPointerSize;
-  static const int kBeforeDebugEventOffset = kDeferredOffset + kPointerSize;
-  static const int kAfterDebugEventOffset =
-      kBeforeDebugEventOffset + kPointerSize;
-  static const int kContextOffset = kAfterDebugEventOffset + kPointerSize;
+  static const int kDebugIdOffset = kDeferredOffset + kPointerSize;
+  static const int kDebugNameOffset = kDebugIdOffset + kPointerSize;
+  static const int kContextOffset = kDebugNameOffset + kPointerSize;
   static const int kSize = kContextOffset + kPointerSize;
 
   DECLARE_CAST(PromiseReactionJobInfo)
@@ -6823,6 +6918,9 @@ class PrototypeInfo : public Struct {
  public:
   static const int UNREGISTERED = -1;
 
+  // [weak_cell]: A WeakCell containing this prototype. ICs cache the cell here.
+  DECL_ACCESSORS(weak_cell, Object)
+
   // [prototype_users]: WeakFixedArray containing maps using this prototype,
   // or Smi(0) if uninitialized.
   DECL_ACCESSORS(prototype_users, Object)
@@ -6856,7 +6954,8 @@ class PrototypeInfo : public Struct {
   DECLARE_PRINTER(PrototypeInfo)
   DECLARE_VERIFIER(PrototypeInfo)
 
-  static const int kPrototypeUsersOffset = HeapObject::kHeaderSize;
+  static const int kWeakCellOffset = HeapObject::kHeaderSize;
+  static const int kPrototypeUsersOffset = kWeakCellOffset + kPointerSize;
   static const int kRegistrySlotOffset = kPrototypeUsersOffset + kPointerSize;
   static const int kValidityCellOffset = kRegistrySlotOffset + kPointerSize;
   static const int kObjectCreateMap = kValidityCellOffset + kPointerSize;
@@ -6993,9 +7092,9 @@ class Script: public Struct {
   // [source_mapping_url]: sourceMappingURL magic comment
   DECL_ACCESSORS(source_mapping_url, Object)
 
-  // [wasm_object]: the wasm object this script belongs to.
+  // [wasm_instance]: the wasm instance this script belongs to.
   // This must only be called if the type of this script is TYPE_WASM.
-  DECL_ACCESSORS(wasm_object, JSObject)
+  DECL_ACCESSORS(wasm_instance, JSObject)
 
   // [wasm_function_index]: the wasm function index this script belongs to.
   // This must only be called if the type of this script is TYPE_WASM.
@@ -7231,6 +7330,7 @@ enum BuiltinFunctionId {
   kTypedArrayByteOffset,
   kTypedArrayLength,
   kSharedArrayBufferByteLength,
+  kStringIterator,
   kStringIteratorNext,
 };
 
@@ -7303,8 +7403,8 @@ class SharedFunctionInfo: public HeapObject {
 
   // Set up the link between shared function info and the script. The shared
   // function info is added to the list on the script.
-  static void SetScript(Handle<SharedFunctionInfo> shared,
-                        Handle<Object> script_object);
+  V8_EXPORT_PRIVATE static void SetScript(Handle<SharedFunctionInfo> shared,
+                                          Handle<Object> script_object);
 
   // Layout description of the optimized code map.
   static const int kEntriesStart = 0;
@@ -8019,35 +8119,32 @@ class Module : public Struct {
   DECLARE_VERIFIER(Module)
   DECLARE_PRINTER(Module)
 
-  // The code representing this Module, either a SharedFunctionInfo or a
-  // JSFunction depending on whether it's been instantiated.
+  // The code representing this Module, or an abstraction thereof.
+  // This is either a SharedFunctionInfo or a JSFunction or a ModuleInfo
+  // depending on whether the module has been instantiated and evaluated.  See
+  // Module::ModuleVerify() for the precise invariant.
   DECL_ACCESSORS(code, Object)
 
+  // The export table.
   DECL_ACCESSORS(exports, ObjectHashTable)
-
-  // The namespace object (or undefined).
-  DECL_ACCESSORS(module_namespace, HeapObject)
-
-  // [[RequestedModules]]: Modules imported or re-exported by this module.
-  // Corresponds 1-to-1 to the module specifier strings in
-  // ModuleInfo::module_requests.
-  DECL_ACCESSORS(requested_modules, FixedArray)
-
-  // [[Evaluated]]: Whether this module has been evaluated. Modules
-  // are only evaluated a single time.
-  DECL_BOOLEAN_ACCESSORS(evaluated)
-
-  // Storage for [[Evaluated]].
-  DECL_INT_ACCESSORS(flags)
 
   // Hash for this object (a random non-zero Smi).
   DECL_INT_ACCESSORS(hash)
 
-  // Get the SharedFunctionInfo associated with the code.
-  inline SharedFunctionInfo* shared() const;
+  // The namespace object (or undefined).
+  DECL_ACCESSORS(module_namespace, HeapObject)
+
+  // Modules imported or re-exported by this module.
+  // Corresponds 1-to-1 to the module specifier strings in
+  // ModuleInfo::module_requests.
+  DECL_ACCESSORS(requested_modules, FixedArray)
 
   // Get the ModuleInfo associated with the code.
   inline ModuleInfo* info() const;
+
+  inline bool instantiated() const;
+  inline bool evaluated() const;
+  inline void set_evaluated();
 
   // Implementation of spec operation ModuleDeclarationInstantiation.
   // Returns false if an exception occurred during instantiation, true
@@ -8073,12 +8170,11 @@ class Module : public Struct {
 
   static const int kCodeOffset = HeapObject::kHeaderSize;
   static const int kExportsOffset = kCodeOffset + kPointerSize;
-  static const int kRequestedModulesOffset = kExportsOffset + kPointerSize;
-  static const int kFlagsOffset = kRequestedModulesOffset + kPointerSize;
-  static const int kEmbedderDataOffset = kFlagsOffset + kPointerSize;
-  static const int kModuleNamespaceOffset = kEmbedderDataOffset + kPointerSize;
-  static const int kHashOffset = kModuleNamespaceOffset + kPointerSize;
-  static const int kSize = kHashOffset + kPointerSize;
+  static const int kHashOffset = kExportsOffset + kPointerSize;
+  static const int kModuleNamespaceOffset = kHashOffset + kPointerSize;
+  static const int kRequestedModulesOffset =
+      kModuleNamespaceOffset + kPointerSize;
+  static const int kSize = kRequestedModulesOffset + kPointerSize;
 
  private:
   enum { kEvaluatedBit };
@@ -10514,6 +10610,32 @@ class JSMap : public JSCollection {
   DISALLOW_IMPLICIT_CONSTRUCTORS(JSMap);
 };
 
+class JSArrayIterator : public JSObject {
+ public:
+  DECLARE_PRINTER(JSArrayIterator)
+  DECLARE_VERIFIER(JSArrayIterator)
+
+  DECLARE_CAST(JSArrayIterator)
+
+  // [object]: the [[IteratedObject]] internal field.
+  DECL_ACCESSORS(object, Object)
+
+  // [index]: The [[ArrayIteratorNextIndex]] internal field.
+  DECL_ACCESSORS(index, Object)
+
+  // [map]: The Map of the [[IteratedObject]] field at the time the iterator is
+  // allocated.
+  DECL_ACCESSORS(object_map, Object)
+
+  static const int kIteratedObjectOffset = JSObject::kHeaderSize;
+  static const int kNextIndexOffset = kIteratedObjectOffset + kPointerSize;
+  static const int kIteratedObjectMapOffset = kNextIndexOffset + kPointerSize;
+  static const int kSize = kIteratedObjectMapOffset + kPointerSize;
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(JSArrayIterator);
+};
+
 class JSStringIterator : public JSObject {
  public:
   // Dispatched behavior.
@@ -10773,9 +10895,10 @@ class JSArrayBuffer: public JSObject {
 
   void Neuter();
 
-  static void Setup(Handle<JSArrayBuffer> array_buffer, Isolate* isolate,
-                    bool is_external, void* data, size_t allocated_length,
-                    SharedFlag shared = SharedFlag::kNotShared);
+  V8_EXPORT_PRIVATE static void Setup(
+      Handle<JSArrayBuffer> array_buffer, Isolate* isolate, bool is_external,
+      void* data, size_t allocated_length,
+      SharedFlag shared = SharedFlag::kNotShared);
 
   static bool SetupAllocatingData(Handle<JSArrayBuffer> array_buffer,
                                   Isolate* isolate, size_t allocated_length,
@@ -10854,7 +10977,7 @@ class JSTypedArray: public JSArrayBufferView {
   DECLARE_CAST(JSTypedArray)
 
   ExternalArrayType type();
-  size_t element_size();
+  V8_EXPORT_PRIVATE size_t element_size();
 
   Handle<JSArrayBuffer> GetBuffer();
 

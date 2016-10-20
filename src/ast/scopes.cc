@@ -271,6 +271,8 @@ void DeclarationScope::SetDefaults() {
   function_ = nullptr;
   arguments_ = nullptr;
   this_function_ = nullptr;
+  should_eager_compile_ = false;
+  is_lazily_parsed_ = false;
 }
 
 void Scope::SetDefaults() {
@@ -300,9 +302,6 @@ void Scope::SetDefaults() {
   force_context_allocation_ = false;
 
   is_declaration_scope_ = false;
-
-  is_lazily_parsed_ = false;
-  should_eager_compile_ = false;
 }
 
 bool Scope::HasSimpleParameters() {
@@ -310,20 +309,12 @@ bool Scope::HasSimpleParameters() {
   return !scope->is_function_scope() || scope->has_simple_parameters();
 }
 
-bool Scope::ShouldEagerCompile() const {
-  if (is_declaration_scope() &&
-      !AsDeclarationScope()->AllowsLazyCompilation()) {
-    return true;
-  }
-  return !is_lazily_parsed_ && should_eager_compile_;
+bool DeclarationScope::ShouldEagerCompile() const {
+  return force_eager_compilation_ || should_eager_compile_;
 }
 
-void Scope::SetShouldEagerCompile() {
-  should_eager_compile_ = true;
-  for (Scope* inner = inner_scope_; inner != nullptr; inner = inner->sibling_) {
-    if (inner->is_function_scope()) continue;
-    inner->SetShouldEagerCompile();
-  }
+void DeclarationScope::set_should_eager_compile() {
+  should_eager_compile_ = !is_lazily_parsed_;
 }
 
 void DeclarationScope::set_asm_module() {
@@ -569,7 +560,7 @@ void DeclarationScope::Analyze(ParseInfo* info, AnalyzeMode mode) {
          scope->outer_scope()->already_resolved_);
 
   // The outer scope is never lazy.
-  scope->SetShouldEagerCompile();
+  scope->set_should_eager_compile();
 
   scope->AllocateVariables(info, mode);
 
@@ -1095,12 +1086,12 @@ void DeclarationScope::AllocateVariables(ParseInfo* info, AnalyzeMode mode) {
   AllocateVariablesRecursively();
 
   MaybeHandle<ScopeInfo> outer_scope;
-  for (const Scope* s = outer_scope_; s != nullptr; s = s->outer_scope_) {
-    if (s->scope_info_.is_null()) continue;
-    outer_scope = s->scope_info_;
-    break;
+  if (outer_scope_ != nullptr) outer_scope = outer_scope_->scope_info_;
+
+  AllocateScopeInfosRecursively(info->isolate(), outer_scope);
+  if (mode == AnalyzeMode::kDebugger) {
+    AllocateDebuggerScopeInfos(info->isolate(), outer_scope);
   }
-  AllocateScopeInfosRecursively(info->isolate(), mode, outer_scope);
   // The debugger expects all shared function infos to contain a scope info.
   // Since the top-most scope will end up in a shared function info, make sure
   // it has one, even if it doesn't need a scope info.
@@ -1184,12 +1175,29 @@ DeclarationScope* Scope::GetDeclarationScope() {
   return scope->AsDeclarationScope();
 }
 
+const DeclarationScope* Scope::GetClosureScope() const {
+  const Scope* scope = this;
+  while (!scope->is_declaration_scope() || scope->is_block_scope()) {
+    scope = scope->outer_scope();
+  }
+  return scope->AsDeclarationScope();
+}
+
 DeclarationScope* Scope::GetClosureScope() {
   Scope* scope = this;
   while (!scope->is_declaration_scope() || scope->is_block_scope()) {
     scope = scope->outer_scope();
   }
   return scope->AsDeclarationScope();
+}
+
+bool Scope::NeedsScopeInfo() const {
+  DCHECK(!already_resolved_);
+  DCHECK(GetClosureScope()->ShouldEagerCompile());
+  // The debugger expects all functions to have scope infos.
+  // TODO(jochen|yangguo): Remove this requirement.
+  if (is_function_scope()) return true;
+  return NeedsContext();
 }
 
 ModuleScope* Scope::GetModuleScope() {
@@ -1446,8 +1454,11 @@ void Scope::Print(int n) {
     Indent(n1, "// scope uses 'super' property\n");
   }
   if (inner_scope_calls_eval_) Indent(n1, "// inner scope calls 'eval'\n");
-  if (is_lazily_parsed_) Indent(n1, "// lazily parsed\n");
-  if (should_eager_compile_) Indent(n1, "// will be compiled\n");
+  if (is_declaration_scope()) {
+    DeclarationScope* scope = AsDeclarationScope();
+    if (scope->is_lazily_parsed()) Indent(n1, "// lazily parsed\n");
+    if (scope->ShouldEagerCompile()) Indent(n1, "// will be compiled\n");
+  }
   if (num_stack_slots_ > 0) {
     Indent(n1, "// ");
     PrintF("%d stack slots\n", num_stack_slots_);
@@ -1872,7 +1883,9 @@ void Scope::AllocateVariablesRecursively() {
   DCHECK(!already_resolved_);
   DCHECK_EQ(0, num_stack_slots_);
   // Don't allocate variables of preparsed scopes.
-  if (is_lazily_parsed_) return;
+  if (is_declaration_scope() && AsDeclarationScope()->is_lazily_parsed()) {
+    return;
+  }
 
   // Allocate variables for inner scopes.
   for (Scope* scope = inner_scope_; scope != nullptr; scope = scope->sibling_) {
@@ -1913,35 +1926,36 @@ void Scope::AllocateVariablesRecursively() {
   DCHECK(num_heap_slots_ == 0 || num_heap_slots_ >= Context::MIN_CONTEXT_SLOTS);
 }
 
-void Scope::AllocateScopeInfosRecursively(Isolate* isolate, AnalyzeMode mode,
+void Scope::AllocateScopeInfosRecursively(Isolate* isolate,
                                           MaybeHandle<ScopeInfo> outer_scope) {
   DCHECK(scope_info_.is_null());
-  if (mode == AnalyzeMode::kDebugger || NeedsScopeInfo()) {
-    scope_info_ = ScopeInfo::Create(isolate, zone(), this, outer_scope);
-  }
-
-  // The ScopeInfo chain should mirror the context chain, so we only link to
-  // the next outer scope that needs a context.
   MaybeHandle<ScopeInfo> next_outer_scope = outer_scope;
-  if (NeedsContext()) next_outer_scope = scope_info_;
+
+  if (NeedsScopeInfo()) {
+    scope_info_ = ScopeInfo::Create(isolate, zone(), this, outer_scope);
+    // The ScopeInfo chain should mirror the context chain, so we only link to
+    // the next outer scope that needs a context.
+    if (NeedsContext()) next_outer_scope = scope_info_;
+  }
 
   // Allocate ScopeInfos for inner scopes.
   for (Scope* scope = inner_scope_; scope != nullptr; scope = scope->sibling_) {
-    AnalyzeMode next_mode = mode;
-    bool next_eager = should_eager_compile_;
-    if (scope->is_function_scope()) {
-      // Make sure all inner scopes have are consistently marked: we can't
-      // eager compile inner functions of lazy functions, but if a function
-      // should be eagerly compiled, all its inner scopes are compiled as well.
-      next_eager = should_eager_compile_ ? scope->ShouldEagerCompile() : false;
-
-      // The ScopeIterator which uses the AnalyzeMode::kDebugger only expects
-      // to find ScopeInfos for the current function and all its inner
-      // non-function scopes (see ScopeIterator::GetNestedScopeChain).
-      next_mode = AnalyzeMode::kRegular;
+    if (!scope->is_function_scope() ||
+        scope->AsDeclarationScope()->ShouldEagerCompile()) {
+      scope->AllocateScopeInfosRecursively(isolate, next_outer_scope);
     }
-    scope->should_eager_compile_ = next_eager;
-    scope->AllocateScopeInfosRecursively(isolate, next_mode, next_outer_scope);
+  }
+}
+
+void Scope::AllocateDebuggerScopeInfos(Isolate* isolate,
+                                       MaybeHandle<ScopeInfo> outer_scope) {
+  if (scope_info_.is_null()) {
+    scope_info_ = ScopeInfo::Create(isolate, zone(), this, outer_scope);
+  }
+  MaybeHandle<ScopeInfo> outer = NeedsContext() ? scope_info_ : outer_scope;
+  for (Scope* scope = inner_scope_; scope != nullptr; scope = scope->sibling_) {
+    if (scope->is_function_scope()) continue;
+    scope->AllocateDebuggerScopeInfos(isolate, outer);
   }
 }
 

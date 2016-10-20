@@ -1129,7 +1129,7 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     SimpleInstallFunction(object_function, factory->assign_string(),
                           Builtins::kObjectAssign, 2, false);
     SimpleInstallFunction(object_function, factory->create_string(),
-                          Builtins::kObjectCreate, 2, false);
+                          Builtins::kObjectCreate, 2, true);
     SimpleInstallFunction(object_function, "getOwnPropertyDescriptor",
                           Builtins::kObjectGetOwnPropertyDescriptor, 2, false);
     SimpleInstallFunction(object_function, "getOwnPropertyNames",
@@ -1310,6 +1310,91 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     native_context()->set_is_arraylike(*is_arraylike);
   }
 
+  {  // --- A r r a y I t e r a t o r ---
+    Handle<JSObject> iterator_prototype(
+        native_context()->initial_iterator_prototype());
+
+    Handle<JSObject> array_iterator_prototype =
+        factory->NewJSObject(isolate->object_function(), TENURED);
+    JSObject::ForceSetPrototype(array_iterator_prototype, iterator_prototype);
+
+    JSObject::AddProperty(
+        array_iterator_prototype, factory->to_string_tag_symbol(),
+        factory->ArrayIterator_string(),
+        static_cast<PropertyAttributes>(DONT_ENUM | READ_ONLY));
+
+    Handle<JSFunction> next = InstallFunction(
+        array_iterator_prototype, "next", JS_OBJECT_TYPE, JSObject::kHeaderSize,
+        MaybeHandle<JSObject>(), Builtins::kArrayIteratorPrototypeNext);
+
+    // Set the expected parameters for %ArrayIteratorPrototype%.next to 0 (not
+    // including the receiver), as required by the builtin.
+    next->shared()->set_internal_formal_parameter_count(0);
+
+    // Set the length for the function to satisfy ECMA-262.
+    next->shared()->set_length(0);
+
+    Handle<JSFunction> array_iterator_function = CreateFunction(
+        isolate, factory->ArrayIterator_string(),
+        JS_FAST_ARRAY_VALUE_ITERATOR_TYPE, JSArrayIterator::kSize,
+        array_iterator_prototype, Builtins::kIllegal);
+    array_iterator_function->shared()->set_instance_class_name(
+        isolate->heap()->ArrayIterator_string());
+
+    Handle<Map> initial_map(array_iterator_function->initial_map(), isolate);
+
+#define ARRAY_ITERATOR_LIST(V)                                              \
+  V(TYPED_ARRAY, KEY, typed_array, key)                                     \
+  V(FAST_ARRAY, KEY, fast_array, key)                                       \
+  V(GENERIC_ARRAY, KEY, array, key)                                         \
+  V(UINT8_ARRAY, KEY_VALUE, uint8_array, key_value)                         \
+  V(INT8_ARRAY, KEY_VALUE, int8_array, key_value)                           \
+  V(UINT16_ARRAY, KEY_VALUE, uint16_array, key_value)                       \
+  V(INT16_ARRAY, KEY_VALUE, int16_array, key_value)                         \
+  V(UINT32_ARRAY, KEY_VALUE, uint32_array, key_value)                       \
+  V(INT32_ARRAY, KEY_VALUE, int32_array, key_value)                         \
+  V(FLOAT32_ARRAY, KEY_VALUE, float32_array, key_value)                     \
+  V(FLOAT64_ARRAY, KEY_VALUE, float64_array, key_value)                     \
+  V(UINT8_CLAMPED_ARRAY, KEY_VALUE, uint8_clamped_array, key_value)         \
+  V(FAST_SMI_ARRAY, KEY_VALUE, fast_smi_array, key_value)                   \
+  V(FAST_HOLEY_SMI_ARRAY, KEY_VALUE, fast_holey_smi_array, key_value)       \
+  V(FAST_ARRAY, KEY_VALUE, fast_array, key_value)                           \
+  V(FAST_HOLEY_ARRAY, KEY_VALUE, fast_holey_array, key_value)               \
+  V(FAST_DOUBLE_ARRAY, KEY_VALUE, fast_double_array, key_value)             \
+  V(FAST_HOLEY_DOUBLE_ARRAY, KEY_VALUE, fast_holey_double_array, key_value) \
+  V(GENERIC_ARRAY, KEY_VALUE, array, key_value)                             \
+  V(UINT8_ARRAY, VALUE, uint8_array, value)                                 \
+  V(INT8_ARRAY, VALUE, int8_array, value)                                   \
+  V(UINT16_ARRAY, VALUE, uint16_array, value)                               \
+  V(INT16_ARRAY, VALUE, int16_array, value)                                 \
+  V(UINT32_ARRAY, VALUE, uint32_array, value)                               \
+  V(INT32_ARRAY, VALUE, int32_array, value)                                 \
+  V(FLOAT32_ARRAY, VALUE, float32_array, value)                             \
+  V(FLOAT64_ARRAY, VALUE, float64_array, value)                             \
+  V(UINT8_CLAMPED_ARRAY, VALUE, uint8_clamped_array, value)                 \
+  V(FAST_SMI_ARRAY, VALUE, fast_smi_array, value)                           \
+  V(FAST_HOLEY_SMI_ARRAY, VALUE, fast_holey_smi_array, value)               \
+  V(FAST_ARRAY, VALUE, fast_array, value)                                   \
+  V(FAST_HOLEY_ARRAY, VALUE, fast_holey_array, value)                       \
+  V(FAST_DOUBLE_ARRAY, VALUE, fast_double_array, value)                     \
+  V(FAST_HOLEY_DOUBLE_ARRAY, VALUE, fast_holey_double_array, value)         \
+  V(GENERIC_ARRAY, VALUE, array, value)
+
+#define CREATE_ARRAY_ITERATOR_MAP(PREFIX, SUFFIX, prefix, suffix)           \
+  do {                                                                      \
+    const InstanceType type = JS_##PREFIX##_##SUFFIX##_ITERATOR_TYPE;       \
+    Handle<Map> map =                                                       \
+        Map::Copy(initial_map, "JS_" #PREFIX "_" #SUFFIX "_ITERATOR_TYPE"); \
+    map->set_instance_type(type);                                           \
+    native_context()->set_##prefix##_##suffix##_iterator_map(*map);         \
+  } while (0);
+
+    ARRAY_ITERATOR_LIST(CREATE_ARRAY_ITERATOR_MAP)
+
+#undef CREATE_ARRAY_ITERATOR_MAP
+#undef ARRAY_ITERATOR_LIST
+  }
+
   {  // --- N u m b e r ---
     Handle<JSFunction> number_fun = InstallFunction(
         global, "Number", JS_VALUE_TYPE, JSValue::kSize,
@@ -1362,6 +1447,13 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     JSObject::AddProperty(global_object,
                           factory->NewStringFromAsciiChecked("parseFloat"),
                           parse_float_fun, DONT_ENUM);
+
+    // Install Number.parseInt and Global.parseInt.
+    Handle<JSFunction> parse_int_fun = SimpleInstallFunction(
+        number_fun, "parseInt", Builtins::kNumberParseInt, 2, true);
+    JSObject::AddProperty(global_object,
+                          factory->NewStringFromAsciiChecked("parseInt"),
+                          parse_int_fun, DONT_ENUM);
   }
 
   {  // --- B o o l e a n ---
@@ -1476,6 +1568,7 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
         isolate, factory->NewStringFromAsciiChecked("[Symbol.iterator]"),
         Builtins::kStringPrototypeIterator, 0, true);
     iterator->shared()->set_native(true);
+    iterator->shared()->set_builtin_function_id(kStringIterator);
     JSObject::AddProperty(prototype, factory->iterator_symbol(), iterator,
                           static_cast<PropertyAttributes>(DONT_ENUM));
   }
@@ -2092,6 +2185,17 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     SimpleInstallGetter(prototype, factory->length_string(),
                         Builtins::kTypedArrayPrototypeLength, true,
                         kTypedArrayLength);
+
+    // Install "keys", "values" and "entries" methods on the {prototype}.
+    SimpleInstallFunction(prototype, factory->entries_string(),
+                          Builtins::kTypedArrayPrototypeEntries, 0, true);
+    SimpleInstallFunction(prototype, factory->keys_string(),
+                          Builtins::kTypedArrayPrototypeKeys, 0, true);
+    Handle<JSFunction> iterator =
+        SimpleInstallFunction(prototype, factory->values_string(),
+                              Builtins::kTypedArrayPrototypeValues, 0, true);
+    JSObject::AddProperty(prototype, factory->iterator_symbol(), iterator,
+                          DONT_ENUM);
   }
 
   {  // -- T y p e d A r r a y s

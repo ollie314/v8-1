@@ -690,6 +690,12 @@ bool HeapObject::IsJSObject() const {
 
 bool HeapObject::IsJSProxy() const { return map()->IsJSProxyMap(); }
 
+bool HeapObject::IsJSArrayIterator() const {
+  InstanceType instance_type = map()->instance_type();
+  return (instance_type >= FIRST_ARRAY_ITERATOR_TYPE &&
+          instance_type <= LAST_ARRAY_ITERATOR_TYPE);
+}
+
 TYPE_CHECKER(JSSet, JS_SET_TYPE)
 TYPE_CHECKER(JSMap, JS_MAP_TYPE)
 TYPE_CHECKER(JSSetIterator, JS_SET_ITERATOR_TYPE)
@@ -3338,6 +3344,7 @@ CAST_ACCESSOR(JSRegExp)
 CAST_ACCESSOR(JSSet)
 CAST_ACCESSOR(JSSetIterator)
 CAST_ACCESSOR(JSStringIterator)
+CAST_ACCESSOR(JSArrayIterator)
 CAST_ACCESSOR(JSTypedArray)
 CAST_ACCESSOR(JSValue)
 CAST_ACCESSOR(JSWeakCollection)
@@ -5707,18 +5714,14 @@ ACCESSORS(PromiseResolveThenableJobInfo, thenable, JSReceiver, kThenableOffset)
 ACCESSORS(PromiseResolveThenableJobInfo, then, JSReceiver, kThenOffset)
 ACCESSORS(PromiseResolveThenableJobInfo, resolve, JSFunction, kResolveOffset)
 ACCESSORS(PromiseResolveThenableJobInfo, reject, JSFunction, kRejectOffset)
-ACCESSORS(PromiseResolveThenableJobInfo, before_debug_event, Object,
-          kBeforeDebugEventOffset)
-ACCESSORS(PromiseResolveThenableJobInfo, after_debug_event, Object,
-          kAfterDebugEventOffset)
+ACCESSORS(PromiseResolveThenableJobInfo, debug_id, Object, kDebugIdOffset)
+ACCESSORS(PromiseResolveThenableJobInfo, debug_name, Object, kDebugNameOffset)
 
 ACCESSORS(PromiseReactionJobInfo, value, Object, kValueOffset);
 ACCESSORS(PromiseReactionJobInfo, tasks, Object, kTasksOffset);
 ACCESSORS(PromiseReactionJobInfo, deferred, Object, kDeferredOffset);
-ACCESSORS(PromiseReactionJobInfo, before_debug_event, Object,
-          kBeforeDebugEventOffset);
-ACCESSORS(PromiseReactionJobInfo, after_debug_event, Object,
-          kAfterDebugEventOffset);
+ACCESSORS(PromiseReactionJobInfo, debug_id, Object, kDebugIdOffset);
+ACCESSORS(PromiseReactionJobInfo, debug_name, Object, kDebugNameOffset);
 ACCESSORS(PromiseReactionJobInfo, context, Context, kContextOffset);
 
 Map* PrototypeInfo::ObjectCreateMap() {
@@ -5762,6 +5765,7 @@ ObjectTemplateInfo* ObjectTemplateInfo::GetParent(Isolate* isolate) {
   return nullptr;
 }
 
+ACCESSORS(PrototypeInfo, weak_cell, Object, kWeakCellOffset)
 ACCESSORS(PrototypeInfo, prototype_users, Object, kPrototypeUsersOffset)
 ACCESSORS(PrototypeInfo, object_create_map, Object, kObjectCreateMap)
 SMI_ACCESSORS(PrototypeInfo, registry_slot, kRegistrySlotOffset)
@@ -5786,17 +5790,25 @@ ACCESSORS(Module, code, Object, kCodeOffset)
 ACCESSORS(Module, exports, ObjectHashTable, kExportsOffset)
 ACCESSORS(Module, module_namespace, HeapObject, kModuleNamespaceOffset)
 ACCESSORS(Module, requested_modules, FixedArray, kRequestedModulesOffset)
-SMI_ACCESSORS(Module, flags, kFlagsOffset)
-BOOL_ACCESSORS(Module, flags, evaluated, kEvaluatedBit)
 SMI_ACCESSORS(Module, hash, kHashOffset)
 
-SharedFunctionInfo* Module::shared() const {
-  return code()->IsSharedFunctionInfo() ? SharedFunctionInfo::cast(code())
-                                        : JSFunction::cast(code())->shared();
+bool Module::evaluated() const { return code()->IsModuleInfo(); }
+
+void Module::set_evaluated() {
+  DCHECK(instantiated());
+  DCHECK(!evaluated());
+  return set_code(
+      JSFunction::cast(code())->shared()->scope_info()->ModuleDescriptorInfo());
 }
 
+bool Module::instantiated() const { return !code()->IsSharedFunctionInfo(); }
+
 ModuleInfo* Module::info() const {
-  return shared()->scope_info()->ModuleDescriptorInfo();
+  if (evaluated()) return ModuleInfo::cast(code());
+  ScopeInfo* scope_info = instantiated()
+                              ? JSFunction::cast(code())->shared()->scope_info()
+                              : SharedFunctionInfo::cast(code())->scope_info();
+  return scope_info->ModuleDescriptorInfo();
 }
 
 ACCESSORS(AccessorPair, getter, Object, kGetterOffset)
@@ -5917,7 +5929,7 @@ ACCESSORS(Script, shared_function_infos, Object, kSharedFunctionInfosOffset)
 SMI_ACCESSORS(Script, flags, kFlagsOffset)
 ACCESSORS(Script, source_url, Object, kSourceUrlOffset)
 ACCESSORS(Script, source_mapping_url, Object, kSourceMappingUrlOffset)
-ACCESSORS_CHECKED(Script, wasm_object, JSObject, kEvalFromSharedOffset,
+ACCESSORS_CHECKED(Script, wasm_instance, JSObject, kEvalFromSharedOffset,
                   this->type() == TYPE_WASM)
 SMI_ACCESSORS_CHECKED(Script, wasm_function_index, kEvalFromPositionOffset,
                       this->type() == TYPE_WASM)
@@ -8351,6 +8363,10 @@ static inline Handle<Object> MakeEntryPair(Isolate* isolate, Handle<Name> key,
 
 ACCESSORS(JSIteratorResult, value, Object, kValueOffset)
 ACCESSORS(JSIteratorResult, done, Object, kDoneOffset)
+
+ACCESSORS(JSArrayIterator, object, Object, kIteratedObjectOffset)
+ACCESSORS(JSArrayIterator, index, Object, kNextIndexOffset)
+ACCESSORS(JSArrayIterator, object_map, Object, kIteratedObjectMapOffset)
 
 ACCESSORS(JSStringIterator, string, String, kStringOffset)
 SMI_ACCESSORS(JSStringIterator, index, kNextIndexOffset)

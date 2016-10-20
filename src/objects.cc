@@ -3794,7 +3794,7 @@ void Map::UpdateFieldType(int descriptor, Handle<Name> name,
   PropertyDetails details = instance_descriptors()->GetDetails(descriptor);
   if (details.type() != DATA) return;
 
-  Zone zone(GetIsolate()->allocator());
+  Zone zone(GetIsolate()->allocator(), ZONE_NAME);
   ZoneQueue<Map*> backlog(&zone);
   backlog.push(this);
 
@@ -10339,14 +10339,14 @@ Handle<FrameArray> FrameArray::AppendJSFrame(Handle<FrameArray> in,
 
 // static
 Handle<FrameArray> FrameArray::AppendWasmFrame(Handle<FrameArray> in,
-                                               Handle<Object> wasm_object,
+                                               Handle<Object> wasm_instance,
                                                int wasm_function_index,
                                                Handle<AbstractCode> code,
                                                int offset, int flags) {
   const int frame_count = in->FrameCount();
   const int new_length = LengthFor(frame_count + 1);
   Handle<FrameArray> array = EnsureSpace(in, new_length);
-  array->SetWasmObject(frame_count, *wasm_object);
+  array->SetWasmInstance(frame_count, *wasm_instance);
   array->SetWasmFunctionIndex(frame_count, Smi::FromInt(wasm_function_index));
   array->SetCode(frame_count, *code);
   array->SetOffset(frame_count, Smi::FromInt(offset));
@@ -12732,6 +12732,24 @@ Handle<Cell> Map::GetOrCreatePrototypeChainValidityCell(Handle<Map> map,
   return cell;
 }
 
+// static
+Handle<WeakCell> Map::GetOrCreatePrototypeWeakCell(Handle<JSObject> prototype,
+                                                   Isolate* isolate) {
+  DCHECK(!prototype.is_null());
+  Handle<PrototypeInfo> proto_info =
+      GetOrCreatePrototypeInfo(prototype, isolate);
+  Object* maybe_cell = proto_info->weak_cell();
+  // Return existing cell if it's already created.
+  if (maybe_cell->IsWeakCell()) {
+    Handle<WeakCell> cell(WeakCell::cast(maybe_cell), isolate);
+    DCHECK(!cell->cleared());
+    return cell;
+  }
+  // Otherwise create a new cell.
+  Handle<WeakCell> cell = isolate->factory()->NewWeakCell(prototype);
+  proto_info->set_weak_cell(*cell);
+  return cell;
+}
 
 // static
 void Map::SetPrototype(Handle<Map> map, Handle<Object> prototype,
@@ -19944,8 +19962,7 @@ MaybeHandle<Cell> Module::ResolveExportUsingStarExports(
 
 bool Module::Instantiate(Handle<Module> module, v8::Local<v8::Context> context,
                          v8::Module::ResolveCallback callback) {
-  // Already instantiated.
-  if (module->code()->IsJSFunction()) return true;
+  if (module->instantiated()) return true;
 
   Isolate* isolate = module->GetIsolate();
   Handle<SharedFunctionInfo> shared(SharedFunctionInfo::cast(module->code()),
@@ -19955,6 +19972,7 @@ bool Module::Instantiate(Handle<Module> module, v8::Local<v8::Context> context,
           shared,
           handle(Utils::OpenHandle(*context)->native_context(), isolate));
   module->set_code(*function);
+  DCHECK(module->instantiated());
 
   Handle<ModuleInfo> module_info(shared->scope_info()->ModuleDescriptorInfo(),
                                  isolate);
@@ -20003,7 +20021,7 @@ bool Module::Instantiate(Handle<Module> module, v8::Local<v8::Context> context,
     }
   }
 
-  Zone zone(isolate->allocator());
+  Zone zone(isolate->allocator(), ZONE_NAME);
 
   // Resolve imports.
   Handle<FixedArray> regular_imports(module_info->regular_imports(), isolate);
@@ -20036,16 +20054,15 @@ bool Module::Instantiate(Handle<Module> module, v8::Local<v8::Context> context,
 }
 
 MaybeHandle<Object> Module::Evaluate(Handle<Module> module) {
-  DCHECK(module->code()->IsJSFunction());  // Instantiated.
-
-  Isolate* isolate = module->GetIsolate();
+  DCHECK(module->instantiated());
 
   // Each module can only be evaluated once.
+  Isolate* isolate = module->GetIsolate();
   if (module->evaluated()) return isolate->factory()->undefined_value();
-  module->set_evaluated(true);
+  Handle<JSFunction> function(JSFunction::cast(module->code()), isolate);
+  module->set_evaluated();
 
   // Initialization.
-  Handle<JSFunction> function(JSFunction::cast(module->code()), isolate);
   DCHECK_EQ(MODULE_SCOPE, function->shared()->scope_info()->scope_type());
   Handle<Object> receiver = isolate->factory()->undefined_value();
   Handle<Object> argv[] = {module};
@@ -20072,7 +20089,7 @@ namespace {
 
 void FetchStarExports(Handle<Module> module, Zone* zone,
                       UnorderedModuleSet* visited) {
-  DCHECK(module->code()->IsJSFunction());  // Instantiated.
+  DCHECK(module->instantiated());
 
   bool cycle = !visited->insert(module).second;
   if (cycle) return;
@@ -20167,7 +20184,7 @@ Handle<JSModuleNamespace> Module::GetModuleNamespace(Handle<Module> module) {
   module->set_module_namespace(*ns);
 
   // Collect the export names.
-  Zone zone(isolate->allocator());
+  Zone zone(isolate->allocator(), ZONE_NAME);
   UnorderedModuleSet visited(&zone);
   FetchStarExports(module, &zone, &visited);
   Handle<ObjectHashTable> exports(module->exports(), isolate);

@@ -510,7 +510,7 @@ Handle<Object> Isolate::CaptureSimpleStackTrace(Handle<JSReceiver> error_object,
 
       case StackFrame::WASM: {
         WasmFrame* wasm_frame = WasmFrame::cast(frame);
-        Handle<Object> wasm_object(wasm_frame->wasm_obj(), this);
+        Handle<Object> instance(wasm_frame->wasm_instance(), this);
         const int wasm_function_index = wasm_frame->function_index();
         Code* code = wasm_frame->unchecked_code();
         Handle<AbstractCode> abstract_code(AbstractCode::cast(code), this);
@@ -519,16 +519,15 @@ Handle<Object> Isolate::CaptureSimpleStackTrace(Handle<JSReceiver> error_object,
 
         // TODO(wasm): The wasm object returned by the WasmFrame should always
         //             be a wasm object.
-        DCHECK(wasm::IsWasmObject(*wasm_object) ||
-               wasm_object->IsUndefined(this));
+        DCHECK(wasm::IsWasmInstance(*instance) || instance->IsUndefined(this));
 
-        int flags = wasm::WasmIsAsmJs(*wasm_object, this)
+        int flags = wasm::WasmIsAsmJs(*instance, this)
                         ? FrameArray::kIsAsmJsWasmFrame
                         : FrameArray::kIsWasmFrame;
 
-        elements = FrameArray::AppendWasmFrame(elements, wasm_object,
-                                               wasm_function_index,
-                                               abstract_code, offset, flags);
+        elements =
+            FrameArray::AppendWasmFrame(elements, instance, wasm_function_index,
+                                        abstract_code, offset, flags);
       } break;
 
       default:
@@ -702,7 +701,7 @@ class CaptureStackTraceHelper {
 
     if (!function_key_.is_null()) {
       Handle<String> name = wasm::GetWasmFunctionName(
-          isolate_, handle(frame->wasm_obj(), isolate_),
+          isolate_, handle(frame->wasm_instance(), isolate_),
           frame->function_index());
       JSObject::AddProperty(stack_frame, function_key_, name, NONE);
     }
@@ -1069,6 +1068,15 @@ Object* Isolate::Throw(Object* exception, MessageLocation* location) {
 
   HandleScope scope(this);
   Handle<Object> exception_handle(exception, this);
+
+  if (FLAG_print_all_exceptions) {
+    printf("=========================================================\n");
+    printf("Exception thrown:\n");
+    exception->Print();
+    printf("Stack Trace:\n");
+    PrintStack(stdout);
+    printf("=========================================================\n");
+  }
 
   // Determine whether a message needs to be created for the given exception
   // depending on the following criteria:
@@ -2055,7 +2063,6 @@ Isolate::Isolate(bool enable_serializer)
       capture_stack_trace_for_uncaught_exceptions_(false),
       stack_trace_for_uncaught_exceptions_frame_limit_(0),
       stack_trace_for_uncaught_exceptions_options_(StackTrace::kOverview),
-      keyed_lookup_cache_(NULL),
       context_slot_cache_(NULL),
       descriptor_lookup_cache_(NULL),
       handle_scope_implementer_(NULL),
@@ -2286,8 +2293,6 @@ Isolate::~Isolate() {
   descriptor_lookup_cache_ = NULL;
   delete context_slot_cache_;
   context_slot_cache_ = NULL;
-  delete keyed_lookup_cache_;
-  keyed_lookup_cache_ = NULL;
 
   delete load_stub_cache_;
   load_stub_cache_ = NULL;
@@ -2429,7 +2434,6 @@ bool Isolate::Init(Deserializer* des) {
 #undef ASSIGN_ELEMENT
 
   compilation_cache_ = new CompilationCache(this);
-  keyed_lookup_cache_ = new KeyedLookupCache();
   context_slot_cache_ = new ContextSlotCache();
   descriptor_lookup_cache_ = new DescriptorLookupCache();
   unicode_cache_ = new UnicodeCache();
@@ -3076,26 +3080,31 @@ void Isolate::ReportPromiseReject(Handle<JSObject> promise,
 namespace {
 class PromiseDebugEventScope {
  public:
-  PromiseDebugEventScope(Isolate* isolate, Object* before, Object* after)
+  PromiseDebugEventScope(Isolate* isolate, Object* id, Object* name)
       : isolate_(isolate),
-        after_(after, isolate_),
-        is_debug_active_(isolate_->debug()->is_active() &&
-                         before->IsJSObject() && after->IsJSObject()) {
+        id_(id, isolate_),
+        name_(name, isolate_),
+        is_debug_active_(isolate_->debug()->is_active() && id_->IsNumber() &&
+                         name_->IsString()) {
     if (is_debug_active_) {
       isolate_->debug()->OnAsyncTaskEvent(
-          handle(JSObject::cast(before), isolate_));
+          isolate_->factory()->will_handle_string(), id_,
+          Handle<String>::cast(name_));
     }
   }
 
   ~PromiseDebugEventScope() {
     if (is_debug_active_) {
-      isolate_->debug()->OnAsyncTaskEvent(Handle<JSObject>::cast(after_));
+      isolate_->debug()->OnAsyncTaskEvent(
+          isolate_->factory()->did_handle_string(), id_,
+          Handle<String>::cast(name_));
     }
   }
 
  private:
   Isolate* isolate_;
-  Handle<Object> after_;
+  Handle<Object> id_;
+  Handle<Object> name_;
   bool is_debug_active_;
 };
 }  // namespace
@@ -3103,8 +3112,7 @@ class PromiseDebugEventScope {
 void Isolate::PromiseReactionJob(Handle<PromiseReactionJobInfo> info,
                                  MaybeHandle<Object>* result,
                                  MaybeHandle<Object>* maybe_exception) {
-  PromiseDebugEventScope helper(this, info->before_debug_event(),
-                                info->after_debug_event());
+  PromiseDebugEventScope helper(this, info->debug_id(), info->debug_name());
 
   Handle<Object> value(info->value(), this);
   Handle<Object> tasks(info->tasks(), this);
@@ -3145,8 +3153,7 @@ void Isolate::PromiseReactionJob(Handle<PromiseReactionJobInfo> info,
 void Isolate::PromiseResolveThenableJob(
     Handle<PromiseResolveThenableJobInfo> info, MaybeHandle<Object>* result,
     MaybeHandle<Object>* maybe_exception) {
-  PromiseDebugEventScope helper(this, info->before_debug_event(),
-                                info->after_debug_event());
+  PromiseDebugEventScope helper(this, info->debug_id(), info->debug_name());
 
   Handle<JSReceiver> thenable(info->thenable(), this);
   Handle<JSFunction> resolve(info->resolve(), this);

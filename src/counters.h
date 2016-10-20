@@ -15,6 +15,7 @@
 #include "src/objects.h"
 #include "src/runtime/runtime.h"
 #include "src/tracing/trace-event.h"
+#include "src/tracing/traced-value.h"
 
 namespace v8 {
 namespace internal {
@@ -483,8 +484,8 @@ double AggregatedMemoryHistogram<Histogram>::Aggregate(double current_ms,
 
 struct RuntimeCallCounter {
   explicit RuntimeCallCounter(const char* name) : name(name) {}
-  void Reset();
-  V8_NOINLINE void Dump(std::stringstream& out);
+  V8_NOINLINE void Reset();
+  V8_NOINLINE void Dump(v8::tracing::TracedValue* value);
 
   const char* name;
   int64_t count = 0;
@@ -798,8 +799,8 @@ class RuntimeCallStats {
                                       CounterId counter_id);
 
   void Reset();
-  V8_NOINLINE void Print(std::ostream& os);
-  V8_NOINLINE std::string Dump();
+  void Print(std::ostream& os);
+  V8_NOINLINE void Dump(v8::tracing::TracedValue* value);
 
   RuntimeCallStats() {
     Reset();
@@ -810,7 +811,6 @@ class RuntimeCallStats {
   bool InUse() { return in_use_; }
 
  private:
-  std::stringstream buffer_;
   // Counter to track recursive time events.
   RuntimeCallTimer* current_timer_ = NULL;
   // Used to track nested tracing scopes.

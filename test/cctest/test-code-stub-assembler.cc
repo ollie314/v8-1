@@ -119,6 +119,62 @@ TEST(ComputeIntegerHash) {
   }
 }
 
+TEST(ToString) {
+  Isolate* isolate(CcTest::InitIsolateOnce());
+  const int kNumParams = 1;
+  CodeStubAssemblerTester m(isolate, kNumParams);
+  m.Return(m.ToString(m.Parameter(kNumParams + 2), m.Parameter(0)));
+
+  Handle<Code> code = m.GenerateCode();
+  FunctionTester ft(code, kNumParams);
+
+  Handle<FixedArray> test_cases = isolate->factory()->NewFixedArray(5);
+  Handle<FixedArray> smi_test = isolate->factory()->NewFixedArray(2);
+  smi_test->set(0, Smi::FromInt(42));
+  Handle<String> str(isolate->factory()->InternalizeUtf8String("42"));
+  smi_test->set(1, *str);
+  test_cases->set(0, *smi_test);
+
+  Handle<FixedArray> number_test = isolate->factory()->NewFixedArray(2);
+  Handle<HeapNumber> num(isolate->factory()->NewHeapNumber(3.14));
+  number_test->set(0, *num);
+  str = isolate->factory()->InternalizeUtf8String("3.14");
+  number_test->set(1, *str);
+  test_cases->set(1, *number_test);
+
+  Handle<FixedArray> string_test = isolate->factory()->NewFixedArray(2);
+  str = isolate->factory()->InternalizeUtf8String("test");
+  string_test->set(0, *str);
+  string_test->set(1, *str);
+  test_cases->set(2, *string_test);
+
+  Handle<FixedArray> oddball_test = isolate->factory()->NewFixedArray(2);
+  oddball_test->set(0, isolate->heap()->undefined_value());
+  str = isolate->factory()->InternalizeUtf8String("undefined");
+  oddball_test->set(1, *str);
+  test_cases->set(3, *oddball_test);
+
+  Handle<FixedArray> tostring_test = isolate->factory()->NewFixedArray(2);
+  Handle<FixedArray> js_array_storage = isolate->factory()->NewFixedArray(2);
+  js_array_storage->set(0, Smi::FromInt(1));
+  js_array_storage->set(1, Smi::FromInt(2));
+  Handle<JSArray> js_array = isolate->factory()->NewJSArray(2);
+  JSArray::SetContent(js_array, js_array_storage);
+  tostring_test->set(0, *js_array);
+  str = isolate->factory()->InternalizeUtf8String("1,2");
+  tostring_test->set(1, *str);
+  test_cases->set(4, *tostring_test);
+
+  for (int i = 0; i < 5; ++i) {
+    Handle<FixedArray> test = handle(FixedArray::cast(test_cases->get(i)));
+    Handle<Object> obj = handle(test->get(0), isolate);
+    Handle<String> expected = handle(String::cast(test->get(1)));
+    Handle<Object> result = ft.Call(obj).ToHandleChecked();
+    CHECK(result->IsString());
+    CHECK(String::Equals(Handle<String>::cast(result), expected));
+  }
+}
+
 TEST(TryToName) {
   typedef CodeStubAssembler::Label Label;
   typedef CodeStubAssembler::Variable Variable;
@@ -1257,12 +1313,12 @@ TEST(TryProbeStubCache) {
     m.TryProbeStubCache(&stub_cache, receiver, name, &if_handler, &var_handler,
                         &if_miss);
     m.Bind(&if_handler);
-    m.BranchIfWordEqual(expected_handler, var_handler.value(), &passed,
-                        &failed);
+    m.Branch(m.WordEqual(expected_handler, var_handler.value()), &passed,
+             &failed);
 
     m.Bind(&if_miss);
-    m.BranchIfWordEqual(expected_handler, m.IntPtrConstant(0), &passed,
-                        &failed);
+    m.Branch(m.WordEqual(expected_handler, m.IntPtrConstant(0)), &passed,
+             &failed);
 
     m.Bind(&passed);
     m.Return(m.BooleanConstant(true));
@@ -1507,6 +1563,68 @@ TEST(GotoIfExceptionMultiple) {
                                    isolate->factory()->constructor_string())
           .ToHandleChecked();
   CHECK(constructor->SameValue(*isolate->type_error_function()));
+}
+
+TEST(AllocateJSObjectFromMap) {
+  Isolate* isolate(CcTest::InitIsolateOnce());
+  Factory* factory = isolate->factory();
+
+  const int kNumParams = 3;
+  CodeStubAssemblerTester m(isolate, kNumParams);
+
+  {
+    Node* map = m.Parameter(0);
+    Node* properties = m.Parameter(1);
+    Node* elements = m.Parameter(2);
+
+    Node* result = m.AllocateJSObjectFromMap(map, properties, elements);
+
+    m.Return(result);
+  }
+
+  Handle<Code> code = m.GenerateCode();
+  FunctionTester ft(code, kNumParams);
+
+  Handle<Map> maps[] = {
+      isolate->object_with_null_prototype_map(),
+      handle(isolate->object_function()->initial_map(), isolate),
+      handle(isolate->array_function()->initial_map(), isolate),
+  };
+
+#define VERIFY(result, map_value, properties_value, elements_value) \
+  CHECK_EQ(result->map(), map_value);                               \
+  CHECK_EQ(result->properties(), properties_value);                 \
+  CHECK_EQ(result->elements(), elements_value);
+
+  {
+    Handle<Object> empty_fixed_array = factory->empty_fixed_array();
+    for (int i = 0; i < arraysize(maps); i++) {
+      Handle<Map> map = maps[i];
+      Handle<JSObject> result = Handle<JSObject>::cast(
+          ft.Call(map, empty_fixed_array, empty_fixed_array).ToHandleChecked());
+      VERIFY(result, *map, *empty_fixed_array, *empty_fixed_array);
+#ifdef VERIFY_HEAP
+      isolate->heap()->Verify();
+#endif
+    }
+  }
+
+  {
+    // TODO(cbruni): handle in-object properties
+    Handle<JSObject> object = Handle<JSObject>::cast(
+        v8::Utils::OpenHandle(*CompileRun("var object = {a:1,b:2, 1:1, 2:2}; "
+                                          "object")));
+    JSObject::NormalizeProperties(object, KEEP_INOBJECT_PROPERTIES, 0,
+                                  "Normalize");
+    Handle<JSObject> result = Handle<JSObject>::cast(
+        ft.Call(handle(object->map()), handle(object->properties()),
+                handle(object->elements()))
+            .ToHandleChecked());
+    VERIFY(result, object->map(), object->properties(), object->elements());
+#ifdef VERIFY_HEAP
+    isolate->heap()->Verify();
+#endif
+  }
 }
 
 }  // namespace internal

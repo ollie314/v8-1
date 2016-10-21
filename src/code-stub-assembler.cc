@@ -658,8 +658,7 @@ void CodeStubAssembler::BranchIfFastJSArray(Node* object, Node* context,
   GotoIf(WordNotEqual(LoadMapInstanceType(map), Int32Constant(JS_ARRAY_TYPE)),
          if_false);
 
-  Node* bit_field2 = LoadMapBitField2(map);
-  Node* elements_kind = BitFieldDecode<Map::ElementsKindBits>(bit_field2);
+  Node* elements_kind = LoadMapElementsKind(map);
 
   // Bailout if receiver has slow elements.
   GotoIf(
@@ -1025,7 +1024,7 @@ Node* CodeStubAssembler::LoadMapInstanceType(Node* map) {
 
 Node* CodeStubAssembler::LoadMapElementsKind(Node* map) {
   Node* bit_field2 = LoadMapBitField2(map);
-  return BitFieldDecode<Map::ElementsKindBits>(bit_field2);
+  return DecodeWord32<Map::ElementsKindBits>(bit_field2);
 }
 
 Node* CodeStubAssembler::LoadMapDescriptors(Node* map) {
@@ -3309,7 +3308,8 @@ Node* CodeStubAssembler::StringToNumber(Node* context, Node* input) {
       Word32And(hash, Int32Constant(String::kContainsCachedArrayIndexMask));
   GotoIf(Word32NotEqual(bit, Int32Constant(0)), &runtime);
 
-  var_result.Bind(SmiTag(BitFieldDecode<String::ArrayIndexValueBits>(hash)));
+  var_result.Bind(
+      SmiTag(DecodeWordFromWord32<String::ArrayIndexValueBits>(hash)));
   Goto(&end);
 
   Bind(&runtime);
@@ -3609,6 +3609,44 @@ Node* CodeStubAssembler::ToString(Node* context, Node* input) {
   return result.value();
 }
 
+Node* CodeStubAssembler::FlattenString(Node* string) {
+  Variable var_result(this, MachineRepresentation::kTagged);
+  var_result.Bind(string);
+
+  Node* instance_type = LoadInstanceType(string);
+
+  // Check if the {string} is not a ConsString (i.e. already flat).
+  Label is_cons(this, Label::kDeferred), is_flat_in_cons(this), end(this);
+  {
+    GotoUnless(Word32Equal(Word32And(instance_type,
+                                     Int32Constant(kStringRepresentationMask)),
+                           Int32Constant(kConsStringTag)),
+               &end);
+
+    // Check whether the right hand side is the empty string (i.e. if
+    // this is really a flat string in a cons string).
+    Node* rhs = LoadObjectField(string, ConsString::kSecondOffset);
+    Branch(WordEqual(rhs, EmptyStringConstant()), &is_flat_in_cons, &is_cons);
+  }
+
+  // Bail out to the runtime.
+  Bind(&is_cons);
+  {
+    var_result.Bind(
+        CallRuntime(Runtime::kFlattenString, NoContextConstant(), string));
+    Goto(&end);
+  }
+
+  Bind(&is_flat_in_cons);
+  {
+    var_result.Bind(LoadObjectField(string, ConsString::kFirstOffset));
+    Goto(&end);
+  }
+
+  Bind(&end);
+  return var_result.value();
+}
+
 Node* CodeStubAssembler::JSReceiverToPrimitive(Node* context, Node* input) {
   STATIC_ASSERT(LAST_JS_RECEIVER_TYPE == LAST_TYPE);
   Label if_isreceiver(this, Label::kDeferred), if_isnotreceiver(this);
@@ -3701,10 +3739,14 @@ Node* CodeStubAssembler::ToInteger(Node* context, Node* input,
   return var_arg.value();
 }
 
-Node* CodeStubAssembler::BitFieldDecode(Node* word32, uint32_t shift,
-                                        uint32_t mask) {
+Node* CodeStubAssembler::DecodeWord32(Node* word32, uint32_t shift,
+                                      uint32_t mask) {
   return Word32Shr(Word32And(word32, Int32Constant(mask)),
                    static_cast<int>(shift));
+}
+
+Node* CodeStubAssembler::DecodeWord(Node* word, uint32_t shift, uint32_t mask) {
+  return WordShr(WordAnd(word, IntPtrConstant(mask)), static_cast<int>(shift));
 }
 
 void CodeStubAssembler::SetCounter(StatsCounter* counter, int value) {
@@ -3776,7 +3818,7 @@ void CodeStubAssembler::TryToName(Node* key, Label* if_keyisindex,
   Goto(if_keyisunique);
 
   Bind(&if_hascachedindex);
-  var_index->Bind(BitFieldDecodeWord<Name::ArrayIndexValueBits>(hash));
+  var_index->Bind(DecodeWordFromWord32<Name::ArrayIndexValueBits>(hash));
   Goto(if_keyisindex);
 }
 
@@ -3989,13 +4031,14 @@ void CodeStubAssembler::TryLookupProperty(
   CSA_ASSERT(Word32Equal(Word32And(bit_field, mask), Int32Constant(0)));
 
   Node* bit_field3 = LoadMapBitField3(map);
-  Node* bit = BitFieldDecode<Map::DictionaryMap>(bit_field3);
   Label if_isfastmap(this), if_isslowmap(this);
-  Branch(Word32Equal(bit, Int32Constant(0)), &if_isfastmap, &if_isslowmap);
+  Branch(IsSetWord32<Map::DictionaryMap>(bit_field3), &if_isslowmap,
+         &if_isfastmap);
   Bind(&if_isfastmap);
   {
     Comment("DescriptorArrayLookup");
-    Node* nof = BitFieldDecodeWord<Map::NumberOfOwnDescriptorsBits>(bit_field3);
+    Node* nof =
+        DecodeWordFromWord32<Map::NumberOfOwnDescriptorsBits>(bit_field3);
     // Bail out to the runtime for large numbers of own descriptors. The stub
     // only does linear search, which becomes too expensive in that case.
     {
@@ -4083,7 +4126,7 @@ void CodeStubAssembler::LoadPropertyFromFastObject(Node* object, Node* map,
                                                         name_to_details_offset);
   var_details->Bind(details);
 
-  Node* location = BitFieldDecode<PropertyDetails::LocationField>(details);
+  Node* location = DecodeWord32<PropertyDetails::LocationField>(details);
 
   Label if_in_field(this), if_in_descriptor(this), done(this);
   Branch(Word32Equal(location, Int32Constant(kField)), &if_in_field,
@@ -4091,9 +4134,9 @@ void CodeStubAssembler::LoadPropertyFromFastObject(Node* object, Node* map,
   Bind(&if_in_field);
   {
     Node* field_index =
-        BitFieldDecodeWord<PropertyDetails::FieldIndexField>(details);
+        DecodeWordFromWord32<PropertyDetails::FieldIndexField>(details);
     Node* representation =
-        BitFieldDecode<PropertyDetails::RepresentationField>(details);
+        DecodeWord32<PropertyDetails::RepresentationField>(details);
 
     Node* inobject_properties = LoadMapInobjectProperties(map);
 
@@ -4232,7 +4275,7 @@ Node* CodeStubAssembler::CallGetterIfAccessor(Node* value, Node* details,
   var_value.Bind(value);
   Label done(this);
 
-  Node* kind = BitFieldDecode<PropertyDetails::KindField>(details);
+  Node* kind = DecodeWord32<PropertyDetails::KindField>(details);
   GotoIf(Word32Equal(kind, Int32Constant(kData)), &done);
 
   // Accessor case.
@@ -5123,7 +5166,7 @@ void CodeStubAssembler::EmitElementLoad(Node* object, Node* elements,
         var_entry.value(), SeededNumberDictionary::kEntryDetailsIndex);
     Node* details = SmiToWord32(
         LoadFixedArrayElement(elements, details_index, 0, INTPTR_PARAMETERS));
-    Node* kind = BitFieldDecode<PropertyDetails::KindField>(details);
+    Node* kind = DecodeWord32<PropertyDetails::KindField>(details);
     // TODO(jkummerow): Support accessors without missing?
     GotoUnless(Word32Equal(kind, Int32Constant(kData)), miss);
     // Finally, load the value.
@@ -5253,21 +5296,20 @@ void CodeStubAssembler::HandleLoadICHandlerCase(
 
     Node* holder = var_holder.value();
     Node* handler_word = SmiUntag(var_smi_handler.value());
-    Node* handler_type =
-        WordAnd(handler_word, IntPtrConstant(LoadHandlerTypeBits::kMask));
+    Node* handler_kind = DecodeWord<LoadHandler::KindBits>(handler_word);
     if (support_elements == kSupportElements) {
       Label property(this);
       GotoUnless(
-          WordEqual(handler_type, IntPtrConstant(kLoadICHandlerForElements)),
+          WordEqual(handler_kind, IntPtrConstant(LoadHandler::kForElements)),
           &property);
 
       Comment("element_load");
       Node* intptr_index = TryToIntptr(p->name, miss);
       Node* elements = LoadElements(holder);
-      Node* is_jsarray =
-          WordAnd(handler_word, IntPtrConstant(KeyedLoadIsJsArray::kMask));
-      Node* is_jsarray_condition = WordNotEqual(is_jsarray, IntPtrConstant(0));
-      Node* elements_kind = BitFieldDecode<KeyedLoadElementsKind>(handler_word);
+      Node* is_jsarray_condition =
+          IsSetWord<LoadHandler::IsJsArrayBits>(handler_word);
+      Node* elements_kind =
+          DecodeWord<LoadHandler::ElementsKindBits>(handler_word);
       Label if_hole(this), unimplemented_elements_kind(this);
       Label* out_of_bounds = miss;
       EmitElementLoad(holder, elements, elements_kind, intptr_index,
@@ -5286,9 +5328,7 @@ void CodeStubAssembler::HandleLoadICHandlerCase(
       Bind(&if_hole);
       {
         Comment("convert hole");
-        Node* convert_hole =
-            WordAnd(handler_word, IntPtrConstant(KeyedLoadConvertHole::kMask));
-        GotoIf(WordEqual(convert_hole, IntPtrConstant(0)), miss);
+        GotoUnless(IsSetWord<LoadHandler::ConvertHoleBits>(handler_word), miss);
         Node* protector_cell = LoadRoot(Heap::kArrayProtectorRootIndex);
         DCHECK(isolate()->heap()->array_protector()->IsPropertyCell());
         GotoUnless(
@@ -5304,46 +5344,47 @@ void CodeStubAssembler::HandleLoadICHandlerCase(
     }
 
     Label constant(this), field(this);
-    Branch(WordEqual(handler_type, IntPtrConstant(kLoadICHandlerForFields)),
+    Branch(WordEqual(handler_kind, IntPtrConstant(LoadHandler::kForFields)),
            &field, &constant);
 
     Bind(&field);
     {
       Comment("field_load");
-      Label inobject_double(this), out_of_object(this),
-          out_of_object_double(this);
-      Node* inobject_bit =
-          WordAnd(handler_word, IntPtrConstant(FieldOffsetIsInobject::kMask));
-      Node* double_bit =
-          WordAnd(handler_word, IntPtrConstant(FieldOffsetIsDouble::kMask));
-      Node* offset =
-          WordSar(handler_word, IntPtrConstant(FieldOffsetOffset::kShift));
+      Node* offset = DecodeWord<LoadHandler::FieldOffsetBits>(handler_word);
 
-      GotoIf(WordEqual(inobject_bit, IntPtrConstant(0)), &out_of_object);
+      Label inobject(this), out_of_object(this);
+      Branch(IsSetWord<LoadHandler::IsInobjectBits>(handler_word), &inobject,
+             &out_of_object);
 
-      GotoUnless(WordEqual(double_bit, IntPtrConstant(0)), &inobject_double);
-      Return(LoadObjectField(holder, offset));
+      Bind(&inobject);
+      {
+        Label is_double(this);
+        GotoIf(IsSetWord<LoadHandler::IsDoubleBits>(handler_word), &is_double);
+        Return(LoadObjectField(holder, offset));
 
-      Bind(&inobject_double);
-      if (FLAG_unbox_double_fields) {
-        var_double_value.Bind(
-            LoadObjectField(holder, offset, MachineType::Float64()));
-      } else {
-        Node* mutable_heap_number = LoadObjectField(holder, offset);
-        var_double_value.Bind(LoadHeapNumberValue(mutable_heap_number));
+        Bind(&is_double);
+        if (FLAG_unbox_double_fields) {
+          var_double_value.Bind(
+              LoadObjectField(holder, offset, MachineType::Float64()));
+        } else {
+          Node* mutable_heap_number = LoadObjectField(holder, offset);
+          var_double_value.Bind(LoadHeapNumberValue(mutable_heap_number));
+        }
+        Goto(&rebox_double);
       }
-      Goto(&rebox_double);
 
       Bind(&out_of_object);
-      Node* properties = LoadProperties(holder);
-      Node* value = LoadObjectField(properties, offset);
-      GotoUnless(WordEqual(double_bit, IntPtrConstant(0)),
-                 &out_of_object_double);
-      Return(value);
+      {
+        Label is_double(this);
+        Node* properties = LoadProperties(holder);
+        Node* value = LoadObjectField(properties, offset);
+        GotoIf(IsSetWord<LoadHandler::IsDoubleBits>(handler_word), &is_double);
+        Return(value);
 
-      Bind(&out_of_object_double);
-      var_double_value.Bind(LoadHeapNumberValue(value));
-      Goto(&rebox_double);
+        Bind(&is_double);
+        var_double_value.Bind(LoadHeapNumberValue(value));
+        Goto(&rebox_double);
+      }
 
       Bind(&rebox_double);
       Return(AllocateHeapNumberWithValue(var_double_value.value()));
@@ -5353,11 +5394,11 @@ void CodeStubAssembler::HandleLoadICHandlerCase(
     {
       Comment("constant_load");
       Node* descriptors = LoadMapDescriptors(LoadMap(holder));
-      Node* descriptor = WordSar(
-          handler_word, IntPtrConstant(ValueIndexInDescriptorArray::kShift));
+      Node* descriptor =
+          DecodeWord<LoadHandler::DescriptorValueIndexBits>(handler_word);
 #if defined(DEBUG)
-      Assert(UintPtrLessThan(descriptor,
-                             LoadAndUntagFixedArrayBaseLength(descriptors)));
+      CSA_ASSERT(UintPtrLessThan(
+          descriptor, LoadAndUntagFixedArrayBaseLength(descriptors)));
 #endif
       Return(
           LoadFixedArrayElement(descriptors, descriptor, 0, INTPTR_PARAMETERS));
@@ -5591,7 +5632,8 @@ void CodeStubAssembler::KeyedLoadICGeneric(const LoadICParameters* p) {
     const int32_t kMaxLinear = 210;
     Label stub_cache(this);
     Node* bitfield3 = LoadMapBitField3(receiver_map);
-    Node* nof = BitFieldDecodeWord<Map::NumberOfOwnDescriptorsBits>(bitfield3);
+    Node* nof =
+        DecodeWordFromWord32<Map::NumberOfOwnDescriptorsBits>(bitfield3);
     GotoIf(UintPtrGreaterThan(nof, IntPtrConstant(kMaxLinear)), &stub_cache);
     Node* descriptors = LoadMapDescriptors(receiver_map);
     Variable var_name_index(this, MachineType::PointerRepresentation());
@@ -6398,7 +6440,7 @@ Node* CodeStubAssembler::PageFromAddress(Node* address) {
 
 Node* CodeStubAssembler::EnumLength(Node* map) {
   Node* bitfield_3 = LoadMapBitField3(map);
-  Node* enum_length = BitFieldDecode<Map::EnumLengthBits>(bitfield_3);
+  Node* enum_length = DecodeWordFromWord32<Map::EnumLengthBits>(bitfield_3);
   return SmiTag(enum_length);
 }
 

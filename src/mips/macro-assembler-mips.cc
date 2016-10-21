@@ -1136,26 +1136,18 @@ void MacroAssembler::Bnvc(Register rs, Register rt, Label* L) {
 void MacroAssembler::ByteSwapSigned(Register dest, Register src,
                                     int operand_size) {
   DCHECK(operand_size == 1 || operand_size == 2 || operand_size == 4);
-  if (IsMipsArchVariant(kMips32r2) || IsMipsArchVariant(kMips32r6)) {
-    if (operand_size == 2) {
-      seh(src, src);
-    } else if (operand_size == 1) {
-      seb(src, src);
-    }
-    // No need to do any preparation if operand_size is 4
 
+  if (operand_size == 2) {
+    Seh(src, src);
+  } else if (operand_size == 1) {
+    Seb(src, src);
+  }
+  // No need to do any preparation if operand_size is 4
+
+  if (IsMipsArchVariant(kMips32r2) || IsMipsArchVariant(kMips32r6)) {
     wsbh(dest, src);
     rotr(dest, dest, 16);
   } else if (IsMipsArchVariant(kMips32r1) || IsMipsArchVariant(kLoongson)) {
-    if (operand_size == 1) {
-      sll(src, src, 24);
-      sra(src, src, 24);
-    } else if (operand_size == 2) {
-      sll(src, src, 16);
-      sra(src, src, 16);
-    }
-    // No need to do any preparation if operand_size is 4
-
     Register tmp = t0;
     Register tmp2 = t1;
 
@@ -1833,6 +1825,26 @@ void MacroAssembler::Ins(Register rt,
     nor(at, at, zero_reg);
     and_(at, rt, at);
     or_(rt, t8, at);
+  }
+}
+
+void MacroAssembler::Seb(Register rd, Register rt) {
+  if (IsMipsArchVariant(kMips32r2) || IsMipsArchVariant(kMips32r6)) {
+    seb(rd, rt);
+  } else {
+    DCHECK(IsMipsArchVariant(kMips32r1) || IsMipsArchVariant(kLoongson));
+    sll(rd, rt, 24);
+    sra(rd, rd, 24);
+  }
+}
+
+void MacroAssembler::Seh(Register rd, Register rt) {
+  if (IsMipsArchVariant(kMips32r2) || IsMipsArchVariant(kMips32r6)) {
+    seh(rd, rt);
+  } else {
+    DCHECK(IsMipsArchVariant(kMips32r1) || IsMipsArchVariant(kLoongson));
+    sll(rd, rt, 16);
+    sra(rd, rd, 16);
   }
 }
 
@@ -4572,75 +4584,6 @@ void MacroAssembler::AllocateJSValue(Register result, Register constructor,
   sw(value, FieldMemOperand(result, JSValue::kValueOffset));
   STATIC_ASSERT(JSValue::kSize == 4 * kPointerSize);
 }
-
-
-void MacroAssembler::CopyBytes(Register src,
-                               Register dst,
-                               Register length,
-                               Register scratch) {
-  Label align_loop_1, word_loop, byte_loop, byte_loop_1, done;
-
-  // Align src before copying in word size chunks.
-  Branch(&byte_loop, le, length, Operand(kPointerSize));
-  bind(&align_loop_1);
-  And(scratch, src, kPointerSize - 1);
-  Branch(&word_loop, eq, scratch, Operand(zero_reg));
-  lbu(scratch, MemOperand(src));
-  Addu(src, src, 1);
-  sb(scratch, MemOperand(dst));
-  Addu(dst, dst, 1);
-  Subu(length, length, Operand(1));
-  Branch(&align_loop_1, ne, length, Operand(zero_reg));
-
-  // Copy bytes in word size chunks.
-  bind(&word_loop);
-  if (emit_debug_code()) {
-    And(scratch, src, kPointerSize - 1);
-    Assert(eq, kExpectingAlignmentForCopyBytes,
-        scratch, Operand(zero_reg));
-  }
-  Branch(&byte_loop, lt, length, Operand(kPointerSize));
-  lw(scratch, MemOperand(src));
-  Addu(src, src, kPointerSize);
-
-  // TODO(kalmard) check if this can be optimized to use sw in most cases.
-  // Can't use unaligned access - copy byte by byte.
-  if (kArchEndian == kLittle) {
-    sb(scratch, MemOperand(dst, 0));
-    srl(scratch, scratch, 8);
-    sb(scratch, MemOperand(dst, 1));
-    srl(scratch, scratch, 8);
-    sb(scratch, MemOperand(dst, 2));
-    srl(scratch, scratch, 8);
-    sb(scratch, MemOperand(dst, 3));
-  } else {
-    sb(scratch, MemOperand(dst, 3));
-    srl(scratch, scratch, 8);
-    sb(scratch, MemOperand(dst, 2));
-    srl(scratch, scratch, 8);
-    sb(scratch, MemOperand(dst, 1));
-    srl(scratch, scratch, 8);
-    sb(scratch, MemOperand(dst, 0));
-  }
-
-  Addu(dst, dst, 4);
-
-  Subu(length, length, Operand(kPointerSize));
-  Branch(&word_loop);
-
-  // Copy the last bytes if any left.
-  bind(&byte_loop);
-  Branch(&done, eq, length, Operand(zero_reg));
-  bind(&byte_loop_1);
-  lbu(scratch, MemOperand(src));
-  Addu(src, src, 1);
-  sb(scratch, MemOperand(dst));
-  Addu(dst, dst, 1);
-  Subu(length, length, Operand(1));
-  Branch(&byte_loop_1, ne, length, Operand(zero_reg));
-  bind(&done);
-}
-
 
 void MacroAssembler::InitializeFieldsWithFiller(Register current_address,
                                                 Register end_address,

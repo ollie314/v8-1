@@ -461,6 +461,7 @@ namespace internal {
   F(RegExpConstructResult, 3, 1)                    \
   F(RegExpCreate, 1, 1)                             \
   F(RegExpExec, 4, 1)                               \
+  F(RegExpExecMultiple, 4, 1)                       \
   F(RegExpExecReThrow, 4, 1)                        \
   F(RegExpFlags, 1, 1)                              \
   F(RegExpInitializeAndCompile, 3, 1)               \
@@ -468,7 +469,6 @@ namespace internal {
   F(RegExpReplace, 3, 1)                            \
   F(RegExpSource, 1, 1)                             \
   F(StringReplaceGlobalRegExpWithString, 4, 1)      \
-  F(StringReplaceGlobalRegExpWithFunction, 3, 1)    \
   F(StringReplaceNonGlobalRegExpWithFunction, 3, 1) \
   F(StringSplit, 3, 1)
 
@@ -897,7 +897,7 @@ namespace internal {
   F(HasFixedUint8ClampedElements, 1, 1)       \
   F(SpeciesProtector, 0, 1)                   \
   F(SerializeWasmModule, 1, 1)                \
-  F(DeserializeWasmModule, 1, 1)              \
+  F(DeserializeWasmModule, 2, 1)              \
   F(IsAsmWasmCode, 1, 1)                      \
   F(IsNotAsmWasmCode, 1, 1)                   \
   F(ValidateWasmInstancesChain, 2, 1)         \

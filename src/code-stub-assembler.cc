@@ -2569,6 +2569,12 @@ Node* CodeStubAssembler::IsJSReceiverInstanceType(Node* instance_type) {
                                  Int32Constant(FIRST_JS_RECEIVER_TYPE));
 }
 
+Node* CodeStubAssembler::IsCallableMap(Node* map) {
+  return Word32NotEqual(
+      Word32And(LoadMapBitField(map), Int32Constant(1 << Map::kIsCallable)),
+      Int32Constant(0));
+}
+
 Node* CodeStubAssembler::StringCharCodeAt(Node* string, Node* index) {
   // Translate the {index} into a Word.
   index = SmiToWord(index);
@@ -4295,10 +4301,7 @@ Node* CodeStubAssembler::CallGetterIfAccessor(Node* value, Node* details,
 
     // Return undefined if the {getter} is not callable.
     var_value.Bind(UndefinedConstant());
-    GotoIf(Word32Equal(Word32And(LoadMapBitField(getter_map),
-                                 Int32Constant(1 << Map::kIsCallable)),
-                       Int32Constant(0)),
-           &done);
+    GotoUnless(IsCallableMap(getter_map), &done);
 
     // Call the accessor.
     Callable callable = CodeFactory::Call(isolate());
@@ -4781,8 +4784,7 @@ void CodeStubAssembler::UpdateFeedback(compiler::Node* feedback,
 
 compiler::Node* CodeStubAssembler::LoadReceiverMap(compiler::Node* receiver) {
   Variable var_receiver_map(this, MachineRepresentation::kTagged);
-  // TODO(ishell): defer blocks when it works.
-  Label load_smi_map(this /*, Label::kDeferred*/), load_receiver_map(this),
+  Label load_smi_map(this, Label::kDeferred), load_receiver_map(this),
       if_result(this);
 
   Branch(TaggedIsSmi(receiver), &load_smi_map, &load_receiver_map);
@@ -4808,17 +4810,22 @@ compiler::Node* CodeStubAssembler::TryMonomorphicCase(
   // TODO(ishell): add helper class that hides offset computations for a series
   // of loads.
   int32_t header_size = FixedArray::kHeaderSize - kHeapObjectTag;
-  Node* offset = ElementOffsetFromIndex(slot, FAST_HOLEY_ELEMENTS,
-                                        SMI_PARAMETERS, header_size);
-  Node* feedback = Load(MachineType::AnyTagged(), vector, offset);
+  // Adding |header_size| with a separate IntPtrAdd rather than passing it
+  // into ElementOffsetFromIndex() allows it to be folded into a single
+  // [base, index, offset] indirect memory access on x64.
+  Node* offset =
+      ElementOffsetFromIndex(slot, FAST_HOLEY_ELEMENTS, SMI_PARAMETERS);
+  Node* feedback = Load(MachineType::AnyTagged(), vector,
+                        IntPtrAdd(offset, IntPtrConstant(header_size)));
 
   // Try to quickly handle the monomorphic case without knowing for sure
   // if we have a weak cell in feedback. We do know it's safe to look
   // at WeakCell::kValueOffset.
-  GotoUnless(WordEqual(receiver_map, LoadWeakCellValue(feedback)), if_miss);
+  GotoIf(WordNotEqual(receiver_map, LoadWeakCellValue(feedback)), if_miss);
 
-  Node* handler = Load(MachineType::AnyTagged(), vector,
-                       IntPtrAdd(offset, IntPtrConstant(kPointerSize)));
+  Node* handler =
+      Load(MachineType::AnyTagged(), vector,
+           IntPtrAdd(offset, IntPtrConstant(header_size + kPointerSize)));
 
   var_handler->Bind(handler);
   Goto(if_handler);
@@ -8096,10 +8103,7 @@ compiler::Node* CodeStubAssembler::InstanceOf(compiler::Node* object,
 
   // Check if {callable} is a valid receiver.
   GotoIf(TaggedIsSmi(callable), &return_runtime);
-  GotoIf(Word32Equal(Word32And(LoadMapBitField(LoadMap(callable)),
-                               Int32Constant(1 << Map::kIsCallable)),
-                     Int32Constant(0)),
-         &return_runtime);
+  GotoUnless(IsCallableMap(LoadMap(callable)), &return_runtime);
 
   // Use the inline OrdinaryHasInstance directly.
   result.Bind(OrdinaryHasInstance(context, callable, object));

@@ -323,29 +323,29 @@ compiler::Node* ConstructNewResultFromMatchInfo(Isolate* isolate,
   return result;
 }
 
-}  // namespace
-
 // ES#sec-regexp.prototype.exec
 // RegExp.prototype.exec ( string )
-void Builtins::Generate_RegExpPrototypeExec(CodeStubAssembler* a) {
+compiler::Node* RegExpPrototypeExecInternal(CodeStubAssembler* a,
+                                            compiler::Node* context,
+                                            compiler::Node* maybe_receiver,
+                                            compiler::Node* maybe_string) {
   typedef CodeStubAssembler::Variable Variable;
   typedef CodeStubAssembler::Label Label;
   typedef compiler::Node Node;
 
   Isolate* const isolate = a->isolate();
 
-  Node* const receiver = a->Parameter(0);
-  Node* const maybe_string = a->Parameter(1);
-  Node* const context = a->Parameter(4);
-
   Node* const null = a->NullConstant();
   Node* const int_zero = a->IntPtrConstant(0);
   Node* const smi_zero = a->SmiConstant(Smi::kZero);
 
-  // Ensure {receiver} is a JSRegExp.
+  Variable var_result(a, MachineRepresentation::kTagged);
+  Label out(a);
+
+  // Ensure {maybe_receiver} is a JSRegExp.
   Node* const regexp_map = a->ThrowIfNotInstanceType(
-      context, receiver, JS_REGEXP_TYPE, "RegExp.prototype.exec");
-  Node* const regexp = receiver;
+      context, maybe_receiver, JS_REGEXP_TYPE, "RegExp.prototype.exec");
+  Node* const regexp = maybe_receiver;
 
   // Check whether the regexp instance is unmodified.
   Node* const native_context = a->LoadNativeContext(context);
@@ -394,7 +394,8 @@ void Builtins::Generate_RegExpPrototypeExec(CodeStubAssembler* a) {
       a->Bind(&if_isoob);
       {
         StoreLastIndex(a, context, has_initialmap, regexp, smi_zero);
-        a->Return(null);
+        var_result.Bind(null);
+        a->Goto(&out);
       }
     }
 
@@ -429,7 +430,8 @@ void Builtins::Generate_RegExpPrototypeExec(CodeStubAssembler* a) {
     a->Goto(&return_null);
 
     a->Bind(&return_null);
-    a->Return(null);
+    var_result.Bind(null);
+    a->Goto(&out);
   }
 
   Label construct_result(a);
@@ -449,9 +451,29 @@ void Builtins::Generate_RegExpPrototypeExec(CodeStubAssembler* a) {
     {
       Node* result = ConstructNewResultFromMatchInfo(isolate, a, context,
                                                      match_indices, string);
-      a->Return(result);
+      var_result.Bind(result);
+      a->Goto(&out);
     }
   }
+
+  a->Bind(&out);
+  return var_result.value();
+}
+
+}  // namespace
+
+// ES#sec-regexp.prototype.exec
+// RegExp.prototype.exec ( string )
+void Builtins::Generate_RegExpPrototypeExec(CodeStubAssembler* a) {
+  typedef compiler::Node Node;
+
+  Node* const maybe_receiver = a->Parameter(0);
+  Node* const maybe_string = a->Parameter(1);
+  Node* const context = a->Parameter(4);
+
+  Node* const result =
+      RegExpPrototypeExecInternal(a, context, maybe_receiver, maybe_string);
+  a->Return(result);
 }
 
 namespace {
@@ -947,25 +969,106 @@ BUILTIN(RegExpRightContextGetter) {
   return *isolate->factory()->NewSubString(last_subject, start_index, len);
 }
 
+namespace {
+
+// ES#sec-regexpexec Runtime Semantics: RegExpExec ( R, S )
+compiler::Node* RegExpExec(CodeStubAssembler* a, compiler::Node* context,
+                           compiler::Node* recv, compiler::Node* string) {
+  typedef CodeStubAssembler::Variable Variable;
+  typedef CodeStubAssembler::Label Label;
+  typedef compiler::Node Node;
+
+  Isolate* isolate = a->isolate();
+
+  Node* const null = a->NullConstant();
+
+  Variable var_result(a, MachineRepresentation::kTagged);
+  Label out(a), call_builtin_exec(a), slow_path(a, Label::kDeferred);
+
+  Node* const map = a->LoadMap(recv);
+  BranchIfFastPath(a, context, map, &call_builtin_exec, &slow_path);
+
+  a->Bind(&call_builtin_exec);
+  {
+    Node* const result = RegExpPrototypeExecInternal(a, context, recv, string);
+    var_result.Bind(result);
+    a->Goto(&out);
+  }
+
+  a->Bind(&slow_path);
+  {
+    // Take the slow path of fetching the exec property, calling it, and
+    // verifying its return value.
+
+    // Get the exec property.
+    Node* const name = a->HeapConstant(isolate->factory()->exec_string());
+    Callable getproperty_callable = CodeFactory::GetProperty(a->isolate());
+    Node* const exec = a->CallStub(getproperty_callable, context, recv, name);
+
+    // Is {exec} callable?
+    Label if_iscallable(a), if_isnotcallable(a);
+
+    a->GotoIf(a->TaggedIsSmi(exec), &if_isnotcallable);
+
+    Node* const exec_map = a->LoadMap(exec);
+    a->Branch(a->IsCallableMap(exec_map), &if_iscallable, &if_isnotcallable);
+
+    a->Bind(&if_iscallable);
+    {
+      Callable call_callable = CodeFactory::Call(isolate);
+      Node* const result =
+          a->CallJS(call_callable, context, exec, recv, string);
+
+      var_result.Bind(result);
+      a->GotoIf(a->WordEqual(result, null), &out);
+
+      ThrowIfNotJSReceiver(a, isolate, context, result,
+                           MessageTemplate::kInvalidRegExpExecResult, "unused");
+
+      a->Goto(&out);
+    }
+
+    a->Bind(&if_isnotcallable);
+    {
+      a->ThrowIfNotInstanceType(context, recv, JS_REGEXP_TYPE,
+                                "RegExp.prototype.exec");
+      a->Goto(&call_builtin_exec);
+    }
+  }
+
+  a->Bind(&out);
+  return var_result.value();
+}
+
+}  // namespace
+
 // ES#sec-regexp.prototype.test
 // RegExp.prototype.test ( S )
-BUILTIN(RegExpPrototypeTest) {
-  HandleScope scope(isolate);
-  CHECK_RECEIVER(JSReceiver, recv, "RegExp.prototype.test");
+void Builtins::Generate_RegExpPrototypeTest(CodeStubAssembler* a) {
+  typedef compiler::Node Node;
 
-  Handle<Object> string_obj = args.atOrUndefined(isolate, 1);
+  Isolate* const isolate = a->isolate();
 
-  Handle<String> string;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, string,
-                                     Object::ToString(isolate, string_obj));
+  Node* const maybe_receiver = a->Parameter(0);
+  Node* const maybe_string = a->Parameter(1);
+  Node* const context = a->Parameter(4);
 
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      RegExpUtils::RegExpExec(isolate, recv, string,
-                              isolate->factory()->undefined_value()));
+  // Ensure {maybe_receiver} is a JSReceiver.
+  ThrowIfNotJSReceiver(a, isolate, context, maybe_receiver,
+                       MessageTemplate::kIncompatibleMethodReceiver,
+                       "RegExp.prototype.test");
+  Node* const receiver = maybe_receiver;
 
-  return isolate->heap()->ToBoolean(!result->IsNull(isolate));
+  // Convert {maybe_string} to a String.
+  Node* const string = a->ToString(context, maybe_string);
+
+  // Call exec.
+  Node* const match_indices = RegExpExec(a, context, receiver, string);
+
+  // Return true iff exec matched successfully.
+  Node* const result = a->Select(a->WordEqual(match_indices, a->NullConstant()),
+                                 a->FalseConstant(), a->TrueConstant());
+  a->Return(result);
 }
 
 // ES#sec-regexp.prototype-@@match
@@ -1798,7 +1901,7 @@ void Builtins::Generate_RegExpPrototypeReplace(CodeStubAssembler* a) {
 
   Node* const int_zero = a->IntPtrConstant(0);
 
-  // Ensure {receiver} is a JSReceiver.
+  // Ensure {maybe_receiver} is a JSReceiver.
   Node* const map =
       ThrowIfNotJSReceiver(a, isolate, context, maybe_receiver,
                            MessageTemplate::kIncompatibleMethodReceiver,

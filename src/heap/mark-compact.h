@@ -53,23 +53,27 @@ class ObjectMarking : public AllStatic {
 class MarkingDeque {
  public:
   MarkingDeque()
-      : array_(NULL),
+      : backing_store_(nullptr),
+        backing_store_committed_size_(0),
+        array_(nullptr),
         top_(0),
         bottom_(0),
         mask_(0),
         overflowed_(false),
         in_use_(false) {}
 
-  void Initialize(Address low, Address high);
-  void Uninitialize(bool aborting = false);
+  void SetUp();
+  void TearDown();
+
+  void StartUsing();
+  void StopUsing();
+  void Clear();
 
   inline bool IsFull() { return ((top_ + 1) & mask_) == bottom_; }
 
   inline bool IsEmpty() { return top_ == bottom_; }
 
   bool overflowed() const { return overflowed_; }
-
-  bool in_use() const { return in_use_; }
 
   void ClearOverflowed() { overflowed_ = false; }
 
@@ -118,6 +122,14 @@ class MarkingDeque {
   void set_top(int top) { top_ = top; }
 
  private:
+  static const size_t kMaxSize = 4 * MB;
+  static const size_t kMinSize = 256 * KB;
+
+  void EnsureCommitted();
+  void Uncommit();
+
+  base::VirtualMemory* backing_store_;
+  size_t backing_store_committed_size_;
   HeapObject** array_;
   // array_[(top - 1) & mask_] is the top element in the deque.  The Deque is
   // empty when top_ == bottom_.  It is full when top_ + 1 == bottom
@@ -304,25 +316,24 @@ class MarkCompactCollector {
         : heap_(heap),
           pending_sweeper_tasks_semaphore_(0),
           sweeping_in_progress_(false),
+          late_pages_(false),
           num_sweeping_tasks_(0) {}
 
     bool sweeping_in_progress() { return sweeping_in_progress_; }
+    bool contains_late_pages() { return late_pages_; }
 
     void AddPage(AllocationSpace space, Page* page);
+    void AddLatePage(AllocationSpace space, Page* page);
 
     int ParallelSweepSpace(AllocationSpace identity, int required_freed_bytes,
                            int max_pages = 0);
     int ParallelSweepPage(Page* page, AllocationSpace identity);
 
-    // After calling this function sweeping is considered to be in progress
-    // and the main thread can sweep lazily, but the background sweeper tasks
-    // are not running yet.
     void StartSweeping();
-    void StartSweeperTasks();
+    void StartSweepingHelper(AllocationSpace space_to_start);
     void EnsureCompleted();
     void EnsureNewSpaceCompleted();
-    bool AreSweeperTasksRunning();
-    bool IsSweepingCompleted(AllocationSpace space);
+    bool IsSweepingCompleted();
     void SweepOrWaitUntilSweepingCompleted(Page* page);
 
     void AddSweptPageSafe(PagedSpace* space, Page* page);
@@ -351,6 +362,7 @@ class MarkCompactCollector {
     SweptList swept_list_[kAllocationSpaces];
     SweepingList sweeping_list_[kAllocationSpaces];
     bool sweeping_in_progress_;
+    bool late_pages_;
     base::AtomicNumber<intptr_t> num_sweeping_tasks_;
   };
 
@@ -469,21 +481,6 @@ class MarkCompactCollector {
   void MarkImplicitRefGroups(MarkObjectFunction mark_object);
 
   MarkingDeque* marking_deque() { return &marking_deque_; }
-
-  static const size_t kMaxMarkingDequeSize = 4 * MB;
-  static const size_t kMinMarkingDequeSize = 256 * KB;
-
-  void EnsureMarkingDequeIsCommittedAndInitialize(size_t max_size) {
-    if (!marking_deque()->in_use()) {
-      EnsureMarkingDequeIsCommitted(max_size);
-      InitializeMarkingDeque();
-    }
-  }
-
-  void EnsureMarkingDequeIsCommitted(size_t max_size);
-  void EnsureMarkingDequeIsReserved();
-
-  void InitializeMarkingDeque();
 
   Sweeper& sweeper() { return sweeper_; }
 
@@ -640,10 +637,21 @@ class MarkCompactCollector {
 
   void AbortTransitionArrays();
 
-  // Starts sweeping of spaces by contributing on the main thread and setting
-  // up other pages for sweeping. Does not start sweeper tasks.
-  void StartSweepSpaces();
-  void StartSweepSpace(PagedSpace* space);
+  // -----------------------------------------------------------------------
+  // Phase 2: Sweeping to clear mark bits and free non-live objects for
+  // a non-compacting collection.
+  //
+  //  Before: Live objects are marked and non-live objects are unmarked.
+  //
+  //   After: Live objects are unmarked, non-live regions have been added to
+  //          their space's free list. Active eden semispace is compacted by
+  //          evacuation.
+  //
+
+  // If we are not compacting the heap, we simply sweep the spaces except
+  // for the large object space, clearing mark bits and adding unmarked
+  // regions to each space's free list.
+  void SweepSpaces();
 
   void EvacuateNewSpacePrologue();
 
@@ -666,6 +674,9 @@ class MarkCompactCollector {
 
   void ReleaseEvacuationCandidates();
 
+  // Starts sweeping of a space by contributing on the main thread and setting
+  // up other pages for sweeping.
+  void StartSweepSpace(PagedSpace* space);
 
 #ifdef DEBUG
   friend class MarkObjectVisitor;
@@ -708,8 +719,6 @@ class MarkCompactCollector {
 
   bool have_code_to_deoptimize_;
 
-  base::VirtualMemory* marking_deque_memory_;
-  size_t marking_deque_memory_committed_;
   MarkingDeque marking_deque_;
 
   CodeFlusher* code_flusher_;

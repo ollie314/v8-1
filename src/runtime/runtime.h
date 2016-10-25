@@ -290,7 +290,7 @@ namespace internal {
   F(CheckIsBootstrapping, 0, 1)                     \
   F(CreateListFromArrayLike, 1, 1)                  \
   F(EnqueueMicrotask, 1, 1)                         \
-  F(EnqueuePromiseReactionJob, 5, 1)                \
+  F(EnqueuePromiseReactionJob, 4, 1)                \
   F(EnqueuePromiseResolveThenableJob, 4, 1)         \
   F(GetAndResetRuntimeCallStats, -1 /* <= 2 */, 1)  \
   F(ExportExperimentalFromRuntime, 1, 1)            \
@@ -304,6 +304,7 @@ namespace internal {
   F(NewSyntaxError, 2, 1)                           \
   F(NewTypeError, 2, 1)                             \
   F(OrdinaryHasInstance, 2, 1)                      \
+  F(PromiseFulfill, 4, 1)                           \
   F(PromiseRejectEvent, 3, 1)                       \
   F(PromiseRejectEventFromStack, 2, 1)              \
   F(PromiseRevokeReject, 1, 1)                      \
@@ -458,16 +459,12 @@ namespace internal {
 
 #define FOR_EACH_INTRINSIC_REGEXP(F)                \
   F(IsRegExp, 1, 1)                                 \
-  F(RegExpConstructResult, 3, 1)                    \
   F(RegExpCreate, 1, 1)                             \
   F(RegExpExec, 4, 1)                               \
   F(RegExpExecMultiple, 4, 1)                       \
   F(RegExpExecReThrow, 4, 1)                        \
-  F(RegExpFlags, 1, 1)                              \
-  F(RegExpInitializeAndCompile, 3, 1)               \
   F(RegExpInternalReplace, 3, 1)                    \
   F(RegExpReplace, 3, 1)                            \
-  F(RegExpSource, 1, 1)                             \
   F(StringReplaceGlobalRegExpWithString, 4, 1)      \
   F(StringReplaceNonGlobalRegExpWithFunction, 3, 1) \
   F(StringSplit, 3, 1)

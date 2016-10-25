@@ -67,7 +67,7 @@ class Interpreter {
   }
 
   // TODO(ignition): Tune code size multiplier.
-  static const int kCodeSizeMultiplier = 32;
+  static const int kCodeSizeMultiplier = 72;
 
  private:
 // Bytecode handler generator functions.
@@ -175,6 +175,7 @@ class Interpreter {
                                       OperandScale operand_scale);
 
   bool IsDispatchTableInitialized();
+  bool ShouldInitializeDispatchTable();
 
   static const int kNumberOfWideVariants = 3;
   static const int kDispatchTableSize = kNumberOfWideVariants * (kMaxUInt8 + 1);

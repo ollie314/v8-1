@@ -3489,6 +3489,9 @@ class HashTableBase : public FixedArray {
   // Constant used for denoting a absent entry.
   static const int kNotFound = -1;
 
+  // Minimum capacity for newly created hash tables.
+  static const int kMinCapacity = 4;
+
  protected:
   // Update the number of elements in the hash table.
   inline void SetNumberOfElements(int nof);
@@ -3566,8 +3569,11 @@ class HashTable : public HashTableBase {
   static const int kEntryKeyIndex = 0;
   static const int kElementsStartOffset =
       kHeaderSize + kElementsStartIndex * kPointerSize;
-  static const int kCapacityOffset =
-      kHeaderSize + kCapacityIndex * kPointerSize;
+  // Maximal capacity of HashTable. Based on maximal length of underlying
+  // FixedArray. Staying below kMaxCapacity also ensures that EntryToIndex
+  // cannot overflow.
+  static const int kMaxCapacity =
+      (FixedArray::kMaxLength - kElementsStartIndex) / kEntrySize;
 
   // Returns the index for an entry (of the key)
   static inline int EntryToIndex(int entry) {
@@ -3603,12 +3609,6 @@ class HashTable : public HashTableBase {
     DCHECK(capacity <= kMaxCapacity);
     set(kCapacityIndex, Smi::FromInt(capacity));
   }
-
-  // Maximal capacity of HashTable. Based on maximal length of underlying
-  // FixedArray. Staying below kMaxCapacity also ensures that EntryToIndex
-  // cannot overflow.
-  static const int kMaxCapacity =
-      (FixedArray::kMaxLength - kElementsStartOffset) / kEntrySize;
 
  private:
   // Returns _expected_ if one of entries given by the first _probe_ probes is
@@ -3838,23 +3838,22 @@ class Dictionary: public HashTable<Derived, Shape, Key> {
   static Handle<FixedArray> BuildIterationIndicesArray(
       Handle<Derived> dictionary);
 
+  static const int kMaxNumberKeyIndex = DerivedHashTable::kPrefixStartIndex;
+  static const int kNextEnumerationIndexIndex = kMaxNumberKeyIndex + 1;
+
  protected:
   // Generic at put operation.
   MUST_USE_RESULT static Handle<Derived> AtPut(
       Handle<Derived> dictionary,
       Key key,
       Handle<Object> value);
-
   // Add entry to dictionary. Returns entry value.
   static int AddEntry(Handle<Derived> dictionary, Key key, Handle<Object> value,
                       PropertyDetails details, uint32_t hash);
-
   // Generate new enumeration indices to avoid enumeration index overflow.
   // Returns iteration indices array for the |dictionary|.
   static Handle<FixedArray> GenerateNewEnumerationIndices(
       Handle<Derived> dictionary);
-  static const int kMaxNumberKeyIndex = DerivedHashTable::kPrefixStartIndex;
-  static const int kNextEnumerationIndexIndex = kMaxNumberKeyIndex + 1;
 };
 
 
@@ -3926,6 +3925,7 @@ class NameDictionary
 
   static const int kEntryValueIndex = 1;
   static const int kEntryDetailsIndex = 2;
+  static const int kInitialCapacity = 2;
 };
 
 
@@ -4686,6 +4686,14 @@ class ScopeInfo : public FixedArray {
              VariableLocation* location, InitializationFlag* init_flag,
              MaybeAssignedFlag* maybe_assigned_flag);
 
+  // Get metadata of i-th MODULE-allocated variable, where 0 <= i <
+  // ModuleVariableCount.  The metadata is returned via out-arguments, which may
+  // be nullptr if the corresponding information is not requested
+  void ModuleVariable(int i, String** name, int* index,
+                      VariableMode* mode = nullptr,
+                      InitializationFlag* init_flag = nullptr,
+                      MaybeAssignedFlag* maybe_assigned_flag = nullptr);
+
   // Used for the function name variable for named function expressions, and for
   // the receiver.
   enum VariableAllocationInfo { NONE, STACK, CONTEXT, UNUSED };
@@ -4753,13 +4761,18 @@ class ModuleInfoEntry : public FixedArray {
 class ModuleInfo : public FixedArray {
  public:
   DECLARE_CAST(ModuleInfo)
+
   static Handle<ModuleInfo> New(Isolate* isolate, Zone* zone,
                                 ModuleDescriptor* descr);
+
   inline FixedArray* module_requests() const;
   inline FixedArray* special_exports() const;
   inline FixedArray* regular_exports() const;
   inline FixedArray* namespace_imports() const;
   inline FixedArray* regular_imports() const;
+
+  static Handle<ModuleInfoEntry> LookupRegularImport(Handle<ModuleInfo> info,
+                                                     Handle<String> local_name);
 
 #ifdef DEBUG
   inline bool Equals(ModuleInfo* other) const;

@@ -143,14 +143,8 @@ function PromiseInit(promise) {
 }
 
 function FulfillPromise(promise, status, value, promiseQueue) {
-  if (GET_PRIVATE(promise, promiseStateSymbol) === kPending) {
-    var tasks = GET_PRIVATE(promise, promiseQueue);
-    if (!IS_UNDEFINED(tasks)) {
-      var deferred = GET_PRIVATE(promise, promiseDeferredReactionSymbol);
-      PromiseEnqueue(value, tasks, deferred, status);
-    }
-    PromiseSet(promise, status, value);
-  }
+  %PromiseFulfill(promise, status, value, promiseQueue);
+  PromiseSet(promise, status, value);
 }
 
 function PromiseHandle(value, handler, deferred) {
@@ -178,7 +172,7 @@ function PromiseHandle(value, handler, deferred) {
   }
 }
 
-function PromiseEnqueue(value, tasks, deferreds, status) {
+function PromiseDebugGetInfo(deferreds, status) {
   var id, name, instrumenting = DEBUG_IS_ACTIVE;
 
   if (instrumenting) {
@@ -201,7 +195,7 @@ function PromiseEnqueue(value, tasks, deferreds, status) {
       %DebugAsyncTaskEvent("enqueue", id, name);
     }
   }
-  %EnqueuePromiseReactionJob(value, tasks, deferreds, id, name);
+  return [id, name];
 }
 
 function PromiseAttachCallbacks(promise, deferred, onResolve, onReject) {
@@ -390,8 +384,8 @@ function PerformPromiseThen(promise, onResolve, onReject, resultCapability) {
       PromiseAttachCallbacks(promise, resultCapability, onResolve, onReject);
       break;
     case kFulfilled:
-      PromiseEnqueue(GET_PRIVATE(promise, promiseResultSymbol),
-                     onResolve, resultCapability, kFulfilled);
+      %EnqueuePromiseReactionJob(GET_PRIVATE(promise, promiseResultSymbol),
+                                 onResolve, resultCapability, kFulfilled);
       break;
     case kRejected:
       if (!HAS_DEFINED_PRIVATE(promise, promiseHasHandlerSymbol)) {
@@ -399,8 +393,8 @@ function PerformPromiseThen(promise, onResolve, onReject, resultCapability) {
         // Revoke previously triggered reject event.
         %PromiseRevokeReject(promise);
       }
-      PromiseEnqueue(GET_PRIVATE(promise, promiseResultSymbol),
-                     onReject, resultCapability, kRejected);
+      %EnqueuePromiseReactionJob(GET_PRIVATE(promise, promiseResultSymbol),
+                                 onReject, resultCapability, kRejected);
       break;
   }
 
@@ -659,7 +653,8 @@ utils.InstallFunctions(GlobalPromise.prototype, DONT_ENUM, [
   "promise_reject", DoRejectPromise,
   "promise_resolve", ResolvePromise,
   "promise_then", PromiseThen,
-  "promise_handle", PromiseHandle
+  "promise_handle", PromiseHandle,
+  "promise_debug_get_info", PromiseDebugGetInfo
 ]);
 
 // This allows extras to create promises quickly without building extra

@@ -23,7 +23,6 @@
 #include "src/crankshaft/hydrogen-infer-representation.h"
 #include "src/crankshaft/hydrogen-infer-types.h"
 #include "src/crankshaft/hydrogen-load-elimination.h"
-#include "src/crankshaft/hydrogen-mark-deoptimize.h"
 #include "src/crankshaft/hydrogen-mark-unreachable.h"
 #include "src/crankshaft/hydrogen-osr.h"
 #include "src/crankshaft/hydrogen-range-analysis.h"
@@ -2970,12 +2969,12 @@ void HGraphBuilder::BuildCopyElements(HValue* from_elements,
       if_hole.Else();
       HStoreKeyed* store =
           Add<HStoreKeyed>(to_elements, key, element, nullptr, kind);
-      store->SetFlag(HValue::kAllowUndefinedAsNaN);
+      store->SetFlag(HValue::kTruncatingToNumber);
       if_hole.End();
     } else {
       HStoreKeyed* store =
           Add<HStoreKeyed>(to_elements, key, element, nullptr, kind);
-      store->SetFlag(HValue::kAllowUndefinedAsNaN);
+      store->SetFlag(HValue::kTruncatingToNumber);
     }
 
     builder.EndBody();
@@ -4131,7 +4130,6 @@ bool HGraph::Optimize(BailoutReason* bailout_reason) {
   // This must happen after inferring representations.
   Run<HMergeRemovableSimulatesPhase>();
 
-  Run<HMarkDeoptimizeOnUndefinedPhase>();
   Run<HRepresentationChangesPhase>();
 
   Run<HInferTypesPhase>();
@@ -4150,8 +4148,6 @@ bool HGraph::Optimize(BailoutReason* bailout_reason) {
   if (FLAG_store_elimination) Run<HStoreEliminationPhase>();
 
   Run<HRangeAnalysisPhase>();
-
-  Run<HComputeChangeUndefinedToNaN>();
 
   // Eliminate redundant stack checks on backwards branches.
   Run<HStackCheckEliminationPhase>();
@@ -6522,11 +6518,19 @@ void HOptimizedGraphBuilder::HandleGlobalVariableAssignment(
           access = access.WithRepresentation(Representation::Smi());
           break;
         case PropertyCellConstantType::kStableMap: {
-          // The map may no longer be stable, deopt if it's ever different from
-          // what is currently there, which will allow for restablization.
-          Handle<Map> map(HeapObject::cast(cell->value())->map());
+          // First check that the previous value of the {cell} still has the
+          // map that we are about to check the new {value} for. If not, then
+          // the stable map assumption was invalidated and we cannot continue
+          // with the optimized code.
+          Handle<HeapObject> cell_value(HeapObject::cast(cell->value()));
+          Handle<Map> cell_value_map(cell_value->map());
+          if (!cell_value_map->is_stable()) {
+            return Bailout(kUnstableConstantTypeHeapObject);
+          }
+          top_info()->dependencies()->AssumeMapStable(cell_value_map);
+          // Now check that the new {value} is a HeapObject with the same map.
           Add<HCheckHeapObject>(value);
-          value = Add<HCheckMaps>(value, map);
+          value = Add<HCheckMaps>(value, cell_value_map);
           access = access.WithRepresentation(Representation::HeapObject());
           break;
         }
@@ -8769,7 +8773,7 @@ bool HOptimizedGraphBuilder::TryInlineBuiltinMethodCall(
                                           copy_kind, ALLOW_RETURN_HOLE);
               HStoreKeyed* store = Add<HStoreKeyed>(elements, new_key, element,
                                                     nullptr, copy_kind);
-              store->SetFlag(HValue::kAllowUndefinedAsNaN);
+              store->SetFlag(HValue::kTruncatingToNumber);
             }
             loop.EndBody();
 
@@ -11712,7 +11716,7 @@ void HOptimizedGraphBuilder::BuildEmitFixedDoubleArray(
                         kind, ALLOW_RETURN_HOLE);
     HInstruction* store = Add<HStoreKeyed>(object_elements, key_constant,
                                            value_instruction, nullptr, kind);
-    store->SetFlag(HValue::kAllowUndefinedAsNaN);
+    store->SetFlag(HValue::kTruncatingToNumber);
   }
 }
 

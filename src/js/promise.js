@@ -142,11 +142,6 @@ function PromiseInit(promise) {
   return PromiseSet(promise, kPending, UNDEFINED);
 }
 
-function FulfillPromise(promise, status, value, promiseQueue) {
-  %PromiseFulfill(promise, status, value, promiseQueue);
-  PromiseSet(promise, status, value);
-}
-
 function PromiseHandle(value, handler, deferred) {
   var debug_is_active = DEBUG_IS_ACTIVE;
   try {
@@ -269,8 +264,9 @@ function ResolvePromise(promise, resolution) {
         // This goes inside the if-else to save one symbol lookup in
         // the slow path.
         var thenableValue = GET_PRIVATE(resolution, promiseResultSymbol);
-        FulfillPromise(promise, kFulfilled, thenableValue,
+        %PromiseFulfill(promise, kFulfilled, thenableValue,
                        promiseFulfillReactionsSymbol);
+        PromiseSet(promise, kFulfilled, thenableValue);
         SET_PRIVATE(promise, promiseHasHandlerSymbol, true);
         return;
       } else if (thenableState === kRejected) {
@@ -298,27 +294,26 @@ function ResolvePromise(promise, resolution) {
       return;
     }
   }
-  FulfillPromise(promise, kFulfilled, resolution,
-                 promiseFulfillReactionsSymbol);
+  %PromiseFulfill(promise, kFulfilled, resolution,
+                  promiseFulfillReactionsSymbol);
+  PromiseSet(promise, kFulfilled, resolution);
 }
 
 // ES#sec-rejectpromise
 // RejectPromise ( promise, reason )
 function RejectPromise(promise, reason, debugEvent) {
-  // Check promise status to confirm that this reject has an effect.
   // Call runtime for callbacks to the debugger or for unhandled reject.
   // The debugEvent parameter sets whether a debug ExceptionEvent should
   // be triggered. It should be set to false when forwarding a rejection
   // rather than creating a new one.
-  if (GET_PRIVATE(promise, promiseStateSymbol) === kPending) {
-    // This check is redundant with checks in the runtime, but it may help
-    // avoid unnecessary runtime calls.
-    if ((debugEvent && DEBUG_IS_ACTIVE) ||
-        !HAS_DEFINED_PRIVATE(promise, promiseHasHandlerSymbol)) {
-      %PromiseRejectEvent(promise, reason, debugEvent);
-    }
+  // This check is redundant with checks in the runtime, but it may help
+  // avoid unnecessary runtime calls.
+  if ((debugEvent && DEBUG_IS_ACTIVE) ||
+      !HAS_DEFINED_PRIVATE(promise, promiseHasHandlerSymbol)) {
+    %PromiseRejectEvent(promise, reason, debugEvent);
   }
-  FulfillPromise(promise, kRejected, reason, promiseRejectReactionsSymbol)
+  %PromiseFulfill(promise, kRejected, reason, promiseRejectReactionsSymbol)
+  PromiseSet(promise, kRejected, reason);
 }
 
 // Export to bindings

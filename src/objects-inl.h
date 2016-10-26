@@ -7867,7 +7867,7 @@ uint32_t UnseededNumberDictionaryShape::HashForObject(uint32_t key,
 }
 
 Map* UnseededNumberDictionaryShape::GetMap(Isolate* isolate) {
-  return *isolate->factory()->unseeded_number_dictionary_map();
+  return isolate->heap()->unseeded_number_dictionary_map();
 }
 
 uint32_t SeededNumberDictionaryShape::SeededHash(uint32_t key, uint32_t seed) {
@@ -8046,6 +8046,14 @@ Object* ModuleInfoEntry::import_name() const { return get(kImportNameIndex); }
 
 Object* ModuleInfoEntry::module_request() const {
   return get(kModuleRequestIndex);
+}
+
+int ModuleInfoEntry::beg_pos() const {
+  return Smi::cast(get(kBegPosIndex))->value();
+}
+
+int ModuleInfoEntry::end_pos() const {
+  return Smi::cast(get(kEndPosIndex))->value();
 }
 
 FixedArray* ModuleInfo::module_requests() const {

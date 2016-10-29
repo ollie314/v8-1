@@ -6049,8 +6049,8 @@ BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, never_compiled,
                kNeverCompiled)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_declaration,
                kIsDeclaration)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, was_marked_for_optimization,
-               kWasMarkedForOptimization)
+BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, marked_for_tier_up,
+               kMarkedForTierUp)
 
 #if V8_HOST_ARCH_32_BIT
 SMI_ACCESSORS(SharedFunctionInfo, length, kLengthOffset)
@@ -6495,9 +6495,9 @@ bool SharedFunctionInfo::IsBuiltin() {
   return type != Script::TYPE_NORMAL;
 }
 
-
-bool SharedFunctionInfo::IsSubjectToDebugging() { return !IsBuiltin(); }
-
+bool SharedFunctionInfo::IsSubjectToDebugging() {
+  return !IsBuiltin() && !HasAsmWasmData();
+}
 
 bool SharedFunctionInfo::OptimizedCodeMapIsCleared() const {
   return optimized_code_map() == GetHeap()->empty_fixed_array();
@@ -7722,6 +7722,14 @@ bool AccessorInfo::is_special_data_property() {
 
 void AccessorInfo::set_is_special_data_property(bool value) {
   set_flag(BooleanBit::set(flag(), kSpecialDataProperty, value));
+}
+
+bool AccessorInfo::replace_on_access() {
+  return BooleanBit::get(flag(), kReplaceOnAccess);
+}
+
+void AccessorInfo::set_replace_on_access(bool value) {
+  set_flag(BooleanBit::set(flag(), kReplaceOnAccess, value));
 }
 
 bool AccessorInfo::is_sloppy() { return BooleanBit::get(flag(), kIsSloppy); }

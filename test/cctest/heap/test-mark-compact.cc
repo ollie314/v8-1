@@ -51,7 +51,7 @@ using v8::Just;
 
 TEST(MarkingDeque) {
   CcTest::InitializeVM();
-  MarkingDeque s;
+  MarkingDeque s(CcTest::i_isolate()->heap());
   s.SetUp();
   s.StartUsing();
   Address original_address = reinterpret_cast<Address>(&s);
@@ -69,6 +69,7 @@ TEST(MarkingDeque) {
 
   CHECK_EQ(original_address, current_address);
   s.StopUsing();
+  CcTest::i_isolate()->cancelable_task_manager()->CancelAndWait();
   s.TearDown();
 }
 

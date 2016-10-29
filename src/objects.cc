@@ -1352,8 +1352,14 @@ MaybeHandle<Object> Object::GetPropertyWithAccessor(LookupIterator* it) {
     Handle<Object> result = args.Call(call_fun, name);
     RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, Object);
     if (result.is_null()) return isolate->factory()->undefined_value();
-    // Rebox handle before return.
-    return handle(*result, isolate);
+    Handle<Object> reboxed_result = handle(*result, isolate);
+    if (info->replace_on_access() && receiver->IsJSReceiver()) {
+      args.Call(reinterpret_cast<GenericNamedPropertySetterCallback>(
+                    &Accessors::ReconfigureToDataProperty),
+                name, result);
+      RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, Object);
+    }
+    return reboxed_result;
   }
 
   // Regular accessor.
@@ -12205,6 +12211,9 @@ void JSFunction::MarkForBaseline() {
   set_code_no_write_barrier(
       isolate->builtins()->builtin(Builtins::kCompileBaseline));
   // No write barrier required, since the builtin is part of the root set.
+  if (FLAG_mark_shared_functions_for_tier_up) {
+    shared()->set_marked_for_tier_up(true);
+  }
 }
 
 void JSFunction::MarkForOptimization() {
@@ -12215,16 +12224,13 @@ void JSFunction::MarkForOptimization() {
   set_code_no_write_barrier(
       isolate->builtins()->builtin(Builtins::kCompileOptimized));
   // No write barrier required, since the builtin is part of the root set.
+  if (FLAG_mark_shared_functions_for_tier_up) {
+    shared()->set_marked_for_tier_up(true);
+  }
 }
 
 
 void JSFunction::AttemptConcurrentOptimization() {
-  if (FLAG_optimize_shared_functions) {
-    // Mark the shared function for optimization regardless of whether the
-    // optimization is concurrent or not.
-    shared()->set_was_marked_for_optimization(true);
-  }
-
   Isolate* isolate = GetIsolate();
   if (!isolate->concurrent_recompilation_enabled() ||
       isolate->bootstrapper()->IsActive()) {
@@ -12245,6 +12251,11 @@ void JSFunction::AttemptConcurrentOptimization() {
   set_code_no_write_barrier(
       isolate->builtins()->builtin(Builtins::kCompileOptimizedConcurrent));
   // No write barrier required, since the builtin is part of the root set.
+  if (FLAG_mark_shared_functions_for_tier_up) {
+    // TODO(leszeks): The compilation isn't concurrent if we trigger it using
+    // this bit.
+    shared()->set_marked_for_tier_up(true);
+  }
 }
 
 // static
@@ -19837,11 +19848,6 @@ void Module::StoreExport(Handle<Module> module, Handle<String> name,
 Handle<Object> Module::LoadExport(Handle<Module> module, Handle<String> name) {
   Isolate* isolate = module->GetIsolate();
   Handle<Object> object(module->exports()->Lookup(name), isolate);
-
-  // TODO(neis): Namespace imports are not yet implemented.  Trying to use this
-  // feature may crash here.
-  if (!object->IsCell()) UNIMPLEMENTED();
-
   return handle(Handle<Cell>::cast(object)->value(), isolate);
 }
 

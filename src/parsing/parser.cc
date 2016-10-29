@@ -1154,7 +1154,8 @@ ZoneList<const Parser::NamedImport*>* Parser::ParseNamedImports(
       return nullptr;
     }
 
-    DeclareModuleImport(local_name, position(), CHECK_OK);
+    DeclareVariable(local_name, CONST, kNeedsInitialization, position(),
+                    CHECK_OK);
 
     NamedImport* import =
         new (zone()) NamedImport(import_name, local_name, location);
@@ -1204,7 +1205,8 @@ void Parser::ParseImportDeclaration(bool* ok) {
     import_default_binding =
         ParseIdentifier(kDontAllowRestrictedIdentifiers, CHECK_OK_VOID);
     import_default_binding_loc = scanner()->location();
-    DeclareModuleImport(import_default_binding, pos, CHECK_OK_VOID);
+    DeclareVariable(import_default_binding, CONST, kNeedsInitialization, pos,
+                    CHECK_OK_VOID);
   }
 
   // Parse NameSpaceImport or NamedImports if present.
@@ -1475,29 +1477,16 @@ Declaration* Parser::DeclareVariable(const AstRawString* name,
       name, NORMAL_VARIABLE, scanner()->location().beg_pos);
   Declaration* declaration =
       factory()->NewVariableDeclaration(proxy, this->scope(), pos);
-  Declare(declaration, DeclarationDescriptor::NORMAL, mode, init, CHECK_OK);
+  Declare(declaration, DeclarationDescriptor::NORMAL, mode, init, ok, nullptr,
+          scanner()->location().end_pos);
+  if (!*ok) return nullptr;
   return declaration;
-}
-
-Declaration* Parser::DeclareModuleImport(const AstRawString* name, int pos,
-                                         bool* ok) {
-  DCHECK_EQ(MODULE_SCOPE, scope()->scope_type());
-  Declaration* decl =
-      DeclareVariable(name, CONST, kNeedsInitialization, pos, CHECK_OK);
-  // Allocate imports eagerly as hole check elimination logic in scope
-  // analisys depends on identifying imports.
-  // TODO(adamk): It's weird to allocate imports long before everything
-  // else. We should find a different way of filtering out imports
-  // during hole check elimination.
-  decl->proxy()->var()->AllocateTo(VariableLocation::MODULE,
-                                   Variable::kModuleImportIndex);
-  return decl;
 }
 
 Variable* Parser::Declare(Declaration* declaration,
                           DeclarationDescriptor::Kind declaration_kind,
                           VariableMode mode, InitializationFlag init, bool* ok,
-                          Scope* scope) {
+                          Scope* scope, int var_end_pos) {
   if (scope == nullptr) {
     scope = this->scope();
   }
@@ -1506,11 +1495,18 @@ Variable* Parser::Declare(Declaration* declaration,
       declaration, mode, init, allow_harmony_restrictive_generators(),
       &sloppy_mode_block_scope_function_redefinition, ok);
   if (!*ok) {
+    // If we only have the start position of a proxy, we can't highlight the
+    // whole variable name.  Pretend its length is 1 so that we highlight at
+    // least the first character.
+    Scanner::Location loc(declaration->proxy()->position(),
+                          var_end_pos != kNoSourcePosition
+                              ? var_end_pos
+                              : declaration->proxy()->position() + 1);
     if (declaration_kind == DeclarationDescriptor::NORMAL) {
-      ReportMessage(MessageTemplate::kVarRedeclaration,
-                    declaration->proxy()->raw_name());
+      ReportMessageAt(loc, MessageTemplate::kVarRedeclaration,
+                      declaration->proxy()->raw_name());
     } else {
-      ReportMessage(MessageTemplate::kParamDupe);
+      ReportMessageAt(loc, MessageTemplate::kParamDupe);
     }
     return nullptr;
   }

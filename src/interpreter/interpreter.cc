@@ -544,12 +544,28 @@ compiler::Node* Interpreter::BuildLoadContextSlot(
   return __ LoadContextSlot(slot_context, slot_index);
 }
 
+compiler::Node* Interpreter::BuildLoadCurrentContextSlot(
+    InterpreterAssembler* assembler) {
+  Node* slot_index = __ BytecodeOperandIdx(0);
+  Node* slot_context = __ GetContext();
+  return __ LoadContextSlot(slot_context, slot_index);
+}
+
 // LdaContextSlot <context> <slot_index> <depth>
 //
 // Load the object in |slot_index| of the context at |depth| in the context
 // chain starting at |context| into the accumulator.
 void Interpreter::DoLdaContextSlot(InterpreterAssembler* assembler) {
   Node* result = BuildLoadContextSlot(assembler);
+  __ SetAccumulator(result);
+  __ Dispatch();
+}
+
+// LdaCurrentContextSlot <slot_index>
+//
+// Load the object in |slot_index| of the current context into the accumulator.
+void Interpreter::DoLdaCurrentContextSlot(InterpreterAssembler* assembler) {
+  Node* result = BuildLoadCurrentContextSlot(assembler);
   __ SetAccumulator(result);
   __ Dispatch();
 }
@@ -565,6 +581,16 @@ void Interpreter::DoLdrContextSlot(InterpreterAssembler* assembler) {
   __ Dispatch();
 }
 
+// LdrCurrentContextSlot <slot_index> <reg>
+//
+// Load the object in |slot_index| of the current context into register |reg|.
+void Interpreter::DoLdrCurrentContextSlot(InterpreterAssembler* assembler) {
+  Node* result = BuildLoadCurrentContextSlot(assembler);
+  Node* destination = __ BytecodeOperandReg(1);
+  __ StoreRegister(result, destination);
+  __ Dispatch();
+}
+
 // StaContextSlot <context> <slot_index> <depth>
 //
 // Stores the object in the accumulator into |slot_index| of the context at
@@ -576,6 +602,18 @@ void Interpreter::DoStaContextSlot(InterpreterAssembler* assembler) {
   Node* slot_index = __ BytecodeOperandIdx(1);
   Node* depth = __ BytecodeOperandUImm(2);
   Node* slot_context = __ GetContextAtDepth(context, depth);
+  __ StoreContextSlot(slot_context, slot_index, value);
+  __ Dispatch();
+}
+
+// StaCurrentContextSlot <slot_index>
+//
+// Stores the object in the accumulator into |slot_index| of the current
+// context.
+void Interpreter::DoStaCurrentContextSlot(InterpreterAssembler* assembler) {
+  Node* value = __ GetAccumulator();
+  Node* slot_index = __ BytecodeOperandIdx(0);
+  Node* slot_context = __ GetContext();
   __ StoreContextSlot(slot_context, slot_index, value);
   __ Dispatch();
 }
@@ -1623,6 +1661,17 @@ void Interpreter::DoJSCall(InterpreterAssembler* assembler,
 // |arg_count| arguments in subsequent registers. Collect type feedback
 // into |feedback_slot_id|
 void Interpreter::DoCall(InterpreterAssembler* assembler) {
+  DoJSCall(assembler, TailCallMode::kDisallow);
+}
+
+// CallProperty <callable> <receiver> <arg_count> <feedback_slot_id>
+//
+// Call a JSfunction or Callable in |callable| with the |receiver| and
+// |arg_count| arguments in subsequent registers. Collect type feedback into
+// |feedback_slot_id|. The callable is known to be a property of the receiver.
+void Interpreter::DoCallProperty(InterpreterAssembler* assembler) {
+  // TODO(leszeks): Look into making the interpreter use the fact that the
+  // receiver is non-null.
   DoJSCall(assembler, TailCallMode::kDisallow);
 }
 

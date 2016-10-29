@@ -616,8 +616,8 @@ MaybeHandle<Code> GetOptimizedCode(Handle<JSFunction> function,
   DCHECK_IMPLIES(ignition_osr, !osr_ast_id.IsNone());
   DCHECK_IMPLIES(ignition_osr, FLAG_ignition_osr);
 
-  // Flag combination --ignition-osr --no-turbo-from-bytecode is unsupported.
-  if (ignition_osr && !FLAG_turbo_from_bytecode) return MaybeHandle<Code>();
+  // Shared function no longer needs to be tiered up
+  shared->set_marked_for_tier_up(false);
 
   Handle<Code> cached_code;
   // TODO(4764): When compiling for OSR from bytecode, BailoutId might derive
@@ -672,7 +672,7 @@ MaybeHandle<Code> GetOptimizedCode(Handle<JSFunction> function,
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.compile"), "V8.OptimizeCode");
 
   // TurboFan can optimize directly from existing bytecode.
-  if (FLAG_turbo_from_bytecode && use_turbofan && ShouldUseIgnition(info)) {
+  if (use_turbofan && ShouldUseIgnition(info)) {
     if (info->is_osr() && !ignition_osr) return MaybeHandle<Code>();
     if (!Compiler::EnsureBytecode(info)) {
       if (isolate->has_pending_exception()) isolate->clear_pending_exception();
@@ -785,10 +785,9 @@ class InterpreterActivationsFinder : public ThreadVisitor,
     JavaScriptFrameIterator it(isolate, top);
     for (; !it.done(); it.Advance()) {
       JavaScriptFrame* frame = it.frame();
-      if (FLAG_turbo_from_bytecode && FLAG_ignition_osr &&
-          frame->is_optimized() && frame->function()->shared() == shared_) {
-        // If we are able to optimize functions directly from bytecode, then
-        // there might be optimized OSR code active on the stack that is not
+      if (FLAG_ignition_osr && frame->is_optimized() &&
+          frame->function()->shared() == shared_) {
+        // There might be optimized OSR code active on the stack that is not
         // reachable through a function. We count this as an activation.
         has_activations_ = true;
       }
@@ -835,12 +834,9 @@ bool HasInterpreterActivations(
     Isolate* isolate, InterpreterActivationsFinder* activations_finder) {
   activations_finder->VisitThread(isolate, isolate->thread_local_top());
   isolate->thread_manager()->IterateArchivedThreads(activations_finder);
-  if (FLAG_turbo_from_bytecode) {
-    // If we are able to optimize functions directly from bytecode, then there
-    // might be optimized functions that rely on bytecode being around. We need
-    // to prevent switching the given function to baseline code in those cases.
-    Deoptimizer::VisitAllOptimizedFunctions(isolate, activations_finder);
-  }
+  // There might be optimized functions that rely on bytecode being around. We
+  // need to prevent switching the given function to baseline code.
+  Deoptimizer::VisitAllOptimizedFunctions(isolate, activations_finder);
   return activations_finder->has_activations();
 }
 
@@ -851,6 +847,9 @@ MaybeHandle<Code> GetBaselineCode(Handle<JSFunction> function) {
   Zone zone(isolate->allocator(), ZONE_NAME);
   ParseInfo parse_info(&zone, handle(function->shared()));
   CompilationInfo info(&parse_info, function);
+
+  // Function no longer needs to be tiered up
+  function->shared()->set_marked_for_tier_up(false);
 
   // Reset profiler ticks, function is no longer considered hot.
   if (function->shared()->HasBytecodeArray()) {
@@ -959,21 +958,43 @@ MaybeHandle<Code> GetLazyCode(Handle<JSFunction> function) {
     return cached_code;
   }
 
-  if (function->shared()->was_marked_for_optimization()) {
-    DCHECK(FLAG_optimize_shared_functions);
+  if (function->shared()->marked_for_tier_up()) {
+    DCHECK(FLAG_mark_shared_functions_for_tier_up);
 
-    function->shared()->set_was_marked_for_optimization(false);
+    function->shared()->set_marked_for_tier_up(false);
 
-    if (FLAG_trace_opt) {
-      PrintF("[optimizing function ");
-      function->PrintName();
-      PrintF(" eagerly because shared function was previously marked]\n");
-    }
+    switch (Compiler::NextCompilationTier(*function)) {
+      case Compiler::BASELINE: {
+        if (FLAG_trace_opt) {
+          PrintF("[recompiling function ");
+          function->ShortPrint();
+          PrintF(
+              " to baseline eagerly (shared function marked for tier up)]\n");
+        }
 
-    Handle<Code> opt_code;
-    if (GetOptimizedCode(function, Compiler::NOT_CONCURRENT)
-            .ToHandle(&opt_code)) {
-      return opt_code;
+        Handle<Code> code;
+        if (!GetBaselineCode(function).ToHandle(&code)) {
+          return code;
+        }
+        break;
+      }
+      case Compiler::OPTIMIZED: {
+        if (FLAG_trace_opt) {
+          PrintF("[optimizing method ");
+          function->ShortPrint();
+          PrintF(" eagerly (shared function marked for tier up)]\n");
+        }
+
+        Handle<Code> code;
+        // TODO(leszeks): Look into performing this compilation concurrently.
+        if (!GetOptimizedCode(function, Compiler::NOT_CONCURRENT)
+                 .ToHandle(&code)) {
+          return code;
+        }
+        break;
+      }
+      default:
+        UNREACHABLE();
     }
   }
 
@@ -1344,7 +1365,7 @@ bool Compiler::EnsureDeoptimizationSupport(CompilationInfo* info) {
 Compiler::CompilationTier Compiler::NextCompilationTier(JSFunction* function) {
   Handle<SharedFunctionInfo> shared(function->shared(), function->GetIsolate());
   if (shared->code()->is_interpreter_trampoline_builtin()) {
-    if (FLAG_turbo_from_bytecode && UseTurboFan(shared)) {
+    if (UseTurboFan(shared)) {
       return OPTIMIZED;
     } else {
       return BASELINE;

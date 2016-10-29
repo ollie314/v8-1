@@ -275,8 +275,8 @@ DEFINE_BOOL(track_field_types, true, "track field types")
 DEFINE_IMPLICATION(track_field_types, track_fields)
 DEFINE_IMPLICATION(track_field_types, track_heap_object_fields)
 DEFINE_BOOL(smi_binop, true, "support smi representation in binary operations")
-DEFINE_BOOL(optimize_shared_functions, false,
-            "mark shared functions for optimization")
+DEFINE_BOOL(mark_shared_functions_for_tier_up, false,
+            "mark shared functions for tier up")
 
 // Flags for optimization types.
 DEFINE_BOOL(optimize_for_size, false,
@@ -427,7 +427,6 @@ DEFINE_BOOL(omit_map_checks_for_leaf_maps, true,
 DEFINE_BOOL(turbo, false, "enable TurboFan compiler")
 DEFINE_IMPLICATION(turbo, turbo_asm_deoptimization)
 DEFINE_IMPLICATION(turbo, turbo_loop_peeling)
-DEFINE_BOOL(turbo_from_bytecode, true, "enable building graphs from bytecode")
 DEFINE_BOOL(turbo_sp_frame_access, false,
             "use stack pointer-relative access to frame wherever possible")
 DEFINE_BOOL(turbo_preprocess_ranges, true,
@@ -528,6 +527,8 @@ DEFINE_BOOL(wasm_eh_prototype, false,
             "enable prototype exception handling opcodes for wasm")
 DEFINE_BOOL(wasm_mv_prototype, false,
             "enable prototype multi-value support for wasm")
+DEFINE_BOOL(wasm_atomics_prototype, false,
+            "enable prototype atomic opcodes for wasm")
 
 DEFINE_BOOL(wasm_trap_handler, false,
             "use signal handlers to catch out of bounds memory access in wasm"
@@ -885,6 +886,9 @@ DEFINE_BOOL(print_all_exceptions, false,
 
 // runtime.cc
 DEFINE_BOOL(runtime_call_stats, false, "report runtime call counts and times")
+DEFINE_INT(runtime_stats, 0,
+           "internal usage only for controlling runtime statistics")
+DEFINE_VALUE_IMPLICATION(runtime_call_stats, runtime_stats, 1)
 
 // snapshot-common.cc
 DEFINE_BOOL(profile_deserialization, false,
@@ -1160,6 +1164,14 @@ DEFINE_IMPLICATION(print_all_code, trace_codegen)
 #define FLAG FLAG_FULL
 
 //
+// Predictable mode related flags.
+//
+
+DEFINE_BOOL(predictable, false, "enable predictable mode")
+DEFINE_IMPLICATION(predictable, single_threaded)
+DEFINE_NEG_IMPLICATION(predictable, memory_reducer)
+
+//
 // Threading related flags.
 //
 
@@ -1168,13 +1180,6 @@ DEFINE_NEG_IMPLICATION(single_threaded, concurrent_recompilation)
 DEFINE_NEG_IMPLICATION(single_threaded, concurrent_sweeping)
 DEFINE_NEG_IMPLICATION(single_threaded, parallel_compaction)
 
-//
-// Predictable mode related flags.
-//
-
-DEFINE_BOOL(predictable, false, "enable predictable mode")
-DEFINE_IMPLICATION(predictable, single_threaded)
-DEFINE_NEG_IMPLICATION(predictable, memory_reducer)
 
 #undef FLAG
 

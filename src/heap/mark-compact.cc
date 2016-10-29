@@ -58,6 +58,7 @@ MarkCompactCollector::MarkCompactCollector(Heap* heap)
       compacting_(false),
       black_allocation_(false),
       have_code_to_deoptimize_(false),
+      marking_deque_(heap),
       code_flusher_(nullptr),
       sweeper_(heap) {
 }
@@ -637,6 +638,9 @@ void MarkCompactCollector::CollectEvacuationCandidates(PagedSpace* space) {
   std::vector<LiveBytesPagePair> pages;
   pages.reserve(number_of_pages);
 
+  DCHECK(!sweeping_in_progress());
+  DCHECK(!FLAG_concurrent_sweeping ||
+         sweeper().IsSweepingCompleted(space->identity()));
   for (Page* p : *space) {
     if (p->NeverEvacuate()) continue;
     // Invariant: Evacuation candidates are just created when marking is
@@ -1635,7 +1639,7 @@ class MarkCompactCollector::EvacuateVisitorBase
       DCHECK_OBJECT_SIZE(size);
       DCHECK(IsAligned(size, kPointerSize));
       heap_->CopyBlock(dst_addr, src_addr, size);
-      if ((mode == kProfiled) && FLAG_ignition && dst->IsBytecodeArray()) {
+      if ((mode == kProfiled) && dst->IsBytecodeArray()) {
         PROFILE(heap_->isolate(),
                 CodeMoveEvent(AbstractCode::cast(src), dst_addr));
       }
@@ -2117,9 +2121,12 @@ void MarkingDeque::SetUp() {
   }
 }
 
-void MarkingDeque::TearDown() { delete backing_store_; }
+void MarkingDeque::TearDown() {
+  delete backing_store_;
+}
 
 void MarkingDeque::StartUsing() {
+  base::LockGuard<base::Mutex> guard(&mutex_);
   if (in_use_) {
     // This can happen in mark-compact GC if the incremental marker already
     // started using the marking deque.
@@ -2139,11 +2146,16 @@ void MarkingDeque::StartUsing() {
 }
 
 void MarkingDeque::StopUsing() {
+  base::LockGuard<base::Mutex> guard(&mutex_);
   DCHECK(IsEmpty());
   DCHECK(!overflowed_);
   top_ = bottom_ = mask_ = 0;
-  Uncommit();
   in_use_ = false;
+  if (FLAG_concurrent_sweeping) {
+    StartUncommitTask();
+  } else {
+    Uncommit();
+  }
 }
 
 void MarkingDeque::Clear() {
@@ -2153,7 +2165,7 @@ void MarkingDeque::Clear() {
 }
 
 void MarkingDeque::Uncommit() {
-  DCHECK(in_use_);
+  DCHECK(!in_use_);
   bool success = backing_store_->Uncommit(backing_store_->address(),
                                           backing_store_committed_size_);
   backing_store_committed_size_ = 0;
@@ -2172,6 +2184,15 @@ void MarkingDeque::EnsureCommitted() {
   }
   if (backing_store_committed_size_ == 0) {
     V8::FatalProcessOutOfMemory("MarkingDeque::EnsureCommitted");
+  }
+}
+
+void MarkingDeque::StartUncommitTask() {
+  if (!uncommit_task_pending_) {
+    uncommit_task_pending_ = true;
+    UncommitTask* task = new UncommitTask(heap_->isolate(), this);
+    V8::GetCurrentPlatform()->CallOnBackgroundThread(
+        task, v8::Platform::kShortRunningTask);
   }
 }
 

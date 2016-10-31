@@ -934,19 +934,11 @@ void Shell::RealmSharedSet(Local<String> property,
   data->realm_shared_.Reset(isolate, value);
 }
 
-
-void Shell::Print(const v8::FunctionCallbackInfo<v8::Value>& args) {
-  Write(args);
-  printf("\n");
-  fflush(stdout);
-}
-
-
-void Shell::Write(const v8::FunctionCallbackInfo<v8::Value>& args) {
+void WriteToFile(FILE* file, const v8::FunctionCallbackInfo<v8::Value>& args) {
   for (int i = 0; i < args.Length(); i++) {
     HandleScope handle_scope(args.GetIsolate());
     if (i != 0) {
-      printf(" ");
+      fprintf(file, " ");
     }
 
     // Explicitly catch potential exceptions in toString().
@@ -964,14 +956,32 @@ void Shell::Write(const v8::FunctionCallbackInfo<v8::Value>& args) {
     }
 
     v8::String::Utf8Value str(str_obj);
-    int n = static_cast<int>(fwrite(*str, sizeof(**str), str.length(), stdout));
+    int n = static_cast<int>(fwrite(*str, sizeof(**str), str.length(), file));
     if (n != str.length()) {
       printf("Error in fwrite\n");
-      Exit(1);
+      Shell::Exit(1);
     }
   }
 }
 
+void WriteAndFlush(FILE* file,
+                   const v8::FunctionCallbackInfo<v8::Value>& args) {
+  WriteToFile(file, args);
+  fprintf(file, "\n");
+  fflush(file);
+}
+
+void Shell::Print(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  WriteAndFlush(stdout, args);
+}
+
+void Shell::PrintErr(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  WriteAndFlush(stderr, args);
+}
+
+void Shell::Write(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  WriteToFile(stdout, args);
+}
 
 void Shell::Read(const v8::FunctionCallbackInfo<v8::Value>& args) {
   String::Utf8Value file(args[0]);
@@ -1387,6 +1397,10 @@ Local<ObjectTemplate> Shell::CreateGlobalTemplate(Isolate* isolate) {
       String::NewFromUtf8(isolate, "print", NewStringType::kNormal)
           .ToLocalChecked(),
       FunctionTemplate::New(isolate, Print));
+  global_template->Set(
+      String::NewFromUtf8(isolate, "printErr", NewStringType::kNormal)
+          .ToLocalChecked(),
+      FunctionTemplate::New(isolate, PrintErr));
   global_template->Set(
       String::NewFromUtf8(isolate, "write", NewStringType::kNormal)
           .ToLocalChecked(),
@@ -1808,11 +1822,9 @@ class InspectorFrontend final : public v8_inspector::V8Inspector::Channel {
     if (callback->IsFunction()) {
       v8::TryCatch try_catch(isolate_);
       Local<Value> args[] = {message};
-      if (Local<Function>::Cast(callback)
-              ->Call(context, Undefined(isolate_), 1, args)
-              .IsEmpty()) {
-        try_catch.ReThrow();
-      }
+      MaybeLocal<Value> result = Local<Function>::Cast(callback)->Call(
+          context, Undefined(isolate_), 1, args);
+      CHECK(!result.IsEmpty());  // Listeners may not throw.
     }
   }
 

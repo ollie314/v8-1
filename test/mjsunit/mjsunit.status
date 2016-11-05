@@ -172,7 +172,7 @@
   'numops-fuzz-part*': [PASS, ['mode == debug', SLOW]],
   'readonly': [PASS, SLOW],
   'regress/regress-1200351': [PASS, SLOW],
-  'regress/regress-crbug-474297': [PASS, ['mode == debug', SLOW]],
+  'regress/regress-crbug-474297': [PASS, ['gc_stress == False', SKIP]],
   'es6/tail-call-megatest*': [PASS, SLOW, FAST_VARIANTS, ['tsan', SKIP]],
 
   # case-insensitive unicode regexp relies on case mapping provided by ICU.
@@ -640,83 +640,15 @@
 }],  # variant == turbofan_opt
 
 ##############################################################################
-['variant == ignition', {
+['variant == ignition or variant == ignition_staging', {
+  # TODO(5587): fails to liveedit evaled code.
   'debug-liveedit-double-call': [FAIL],
-
-  # Might trigger stack overflow.
-  'unicode-test': [SKIP],
-
-  # TODO(4680): Test doesn't know about three tier compiler pipeline.
-  'assert-opt-and-deopt': [SKIP],
-
-  # Fails because concurrent compilation is not triggered on bytecode.
-  # Check in Runtime_OptimizeFunctionOnNextCall.
-  'compiler/manual-concurrent-recompile': [FAIL],
-  'regress/regress-embedded-cons-string': [FAIL],
-  'regress/regress-prepare-break-while-recompile': [FAIL],
-
 }],  # variant == ignition
-
-['variant == ignition and arch == arm64', {
-  # TODO(rmcilroy,4680): Arm64 specific timeouts.
-  'asm/construct-double': [SKIP],
-  'compiler/osr-one': [SKIP],
-  'compiler/osr-two': [SKIP],
-  'wasm/asm-wasm-i32': [SKIP],
-  'wasm/asm-wasm-u32': [SKIP],
-}],  # variant == ignition and arch == arm64
-
-['variant == ignition and arch == arm', {
-  # TODO(rmcilroy,4680): Arm specific timeouts.
-  'compiler/osr-one': [SKIP],
-  'compiler/osr-two': [SKIP],
-  'regress/regress-1257': [SKIP],
-}],  # variant == ignition and arch == arm
-
-['variant == ignition and msan', {
-  # TODO(mythria,4680): All of these tests have large loops and hence slow
-  # and timeout.
-  'compiler/osr-big': [SKIP],
-  'compiler/osr-nested': [SKIP],
-  'regress/regress-298269': [SKIP],
-  'regress/regress-crbug-319860': [SKIP],
-  'regress/regress-deep-proto': [SKIP],
-  'try': [SKIP],
-  # Too slow for interpreter and msan.
-  'es6/tail-call-megatest*': [SKIP],
-}],  # variant == ignition and msan
-
-##############################################################################
-['variant == ignition_staging', {
-  'assert-opt-and-deopt': [SKIP],
-  'debug-liveedit-double-call': [FAIL],
-
-  # Fails because concurrent compilation is not triggered on bytecode.
-  # Check in Runtime_OptimizeFunctionOnNextCall.
-  'compiler/manual-concurrent-recompile': [FAIL],
-  'regress/regress-embedded-cons-string': [FAIL],
-  'regress/regress-prepare-break-while-recompile': [FAIL],
-
-  # Flaky.
-  'asm/int32div': [SKIP],
-  'asm/int32mod': [SKIP],
-  'compiler/uint32': [SKIP],
-  'regress/regress-454725': [SKIP],
-
-  # Might trigger stack overflow.
-  'unicode-test': [SKIP],
-
-}],  # variant == ignition_staging
 
 ##############################################################################
 ['variant == ignition_turbofan', {
+  # TODO(5587): fails to liveedit evaled code.
   'debug-liveedit-double-call': [FAIL],
-
-  # Might trigger stack overflow.
-  'unicode-test': [SKIP],
-
-  'wasm/asm-wasm-f32': [PASS, ['arch in [arm64]', SKIP]],
-  'wasm/asm-wasm-f64': [PASS, ['arch in [arm64]', SKIP]],
 
   # TODO(rmcilroy,titzer): Times out after
   # https://codereview.chromium.org/1951013002 .
@@ -727,37 +659,7 @@
 
   # TODO(rmcilroy): Flaky OOM.
   'unicodelctest-no-optimization': [SKIP],
-
 }],  # variant == ignition_turbofan
-
-['variant == ignition_turbofan and arch == arm64', {
-  # TODO(rmcilroy,4680): Arm64 specific timeouts.
-  'asm/construct-double': [SKIP],
-  'compiler/osr-one': [SKIP],
-  'compiler/osr-two': [SKIP],
-  'wasm/asm-wasm-i32': [SKIP],
-  'wasm/asm-wasm-u32': [SKIP],
-}],  # variant == ignition_turbofan and arch == arm64
-
-['variant == ignition_turbofan and arch == arm', {
-  # TODO(rmcilroy,4680): Arm specific timeouts.
-  'compiler/osr-one': [SKIP],
-  'compiler/osr-two': [SKIP],
-  'regress/regress-1257': [SKIP],
-}],  # variant == ignition_turbofan and arch == arm
-
-['variant == ignition_turbofan and msan', {
-  # TODO(mythria,4680): All of these tests have large loops and hence slow
-  # and timeout.
-  'compiler/osr-big': [SKIP],
-  'compiler/osr-nested': [SKIP],
-  'regress/regress-298269': [SKIP],
-  'regress/regress-crbug-319860': [SKIP],
-  'regress/regress-deep-proto': [SKIP],
-  'try': [SKIP],
-  # Too slow for interpreter and msan.
-  'es6/tail-call-megatest*': [SKIP],
-}],  # variant == ignition_turbofan and msan
 
 ##############################################################################
 ['variant != ignition and variant != ignition_staging and variant != ignition_turbofan', {

@@ -13820,34 +13820,23 @@ void ApiTestFuzzer::CallTest() {
            test_number_);
 }
 
-// Lets not be needlessly self-referential.
-TEST(Threading1) {
-  ApiTestFuzzer::SetUp(ApiTestFuzzer::FIRST_PART);
-  ApiTestFuzzer::RunAllTests();
-  ApiTestFuzzer::TearDown();
-}
+#define THREADING_TEST(INDEX, NAME)            \
+  TEST(Threading##INDEX) {                     \
+    ApiTestFuzzer::SetUp(ApiTestFuzzer::NAME); \
+    ApiTestFuzzer::RunAllTests();              \
+    ApiTestFuzzer::TearDown();                 \
+  }
 
+THREADING_TEST(1, FIRST_PART)
+THREADING_TEST(2, SECOND_PART)
+THREADING_TEST(3, THIRD_PART)
+THREADING_TEST(4, FOURTH_PART)
+THREADING_TEST(5, FIFTH_PART)
+THREADING_TEST(6, SIXTH_PART)
+THREADING_TEST(7, SEVENTH_PART)
+THREADING_TEST(8, EIGHTH_PART)
 
-TEST(Threading2) {
-  ApiTestFuzzer::SetUp(ApiTestFuzzer::SECOND_PART);
-  ApiTestFuzzer::RunAllTests();
-  ApiTestFuzzer::TearDown();
-}
-
-
-TEST(Threading3) {
-  ApiTestFuzzer::SetUp(ApiTestFuzzer::THIRD_PART);
-  ApiTestFuzzer::RunAllTests();
-  ApiTestFuzzer::TearDown();
-}
-
-
-TEST(Threading4) {
-  ApiTestFuzzer::SetUp(ApiTestFuzzer::FOURTH_PART);
-  ApiTestFuzzer::RunAllTests();
-  ApiTestFuzzer::TearDown();
-}
-
+#undef THREADING_TEST
 
 static void ThrowInJS(const v8::FunctionCallbackInfo<v8::Value>& args) {
   v8::Isolate* isolate = args.GetIsolate();
@@ -14637,7 +14626,7 @@ static bool FunctionNameIs(const char* expected,
   // "LazyCompile:<type><function_name>" or Function:<type><function_name>,
   // where the type is one of "*", "~" or "".
   static const char* kPreamble;
-  if (!i::FLAG_lazy || (i::FLAG_ignition && i::FLAG_ignition_eager)) {
+  if (!i::FLAG_lazy) {
     kPreamble = "Function:";
   } else {
     kPreamble = "LazyCompile:";
@@ -15368,7 +15357,7 @@ THREADED_TEST(AccessChecksReenabledCorrectly) {
 // Tests that ScriptData can be serialized and deserialized.
 TEST(PreCompileSerialization) {
   // Producing cached parser data while parsing eagerly is not supported.
-  if (!i::FLAG_lazy || (i::FLAG_ignition && i::FLAG_ignition_eager)) return;
+  if (!i::FLAG_lazy) return;
 
   v8::V8::Initialize();
   LocalContext env;
@@ -24833,7 +24822,7 @@ TEST(InvalidParserCacheData) {
   v8::V8::Initialize();
   v8::HandleScope scope(CcTest::isolate());
   LocalContext context;
-  if (i::FLAG_lazy && !(i::FLAG_ignition && i::FLAG_ignition_eager)) {
+  if (i::FLAG_lazy) {
     // Cached parser data is not consumed while parsing eagerly.
     TestInvalidCacheData(v8::ScriptCompiler::kConsumeParserCache);
   }
@@ -24849,7 +24838,7 @@ TEST(InvalidCodeCacheData) {
 
 TEST(ParserCacheRejectedGracefully) {
   // Producing cached parser data while parsing eagerly is not supported.
-  if (!i::FLAG_lazy || (i::FLAG_ignition && i::FLAG_ignition_eager)) return;
+  if (!i::FLAG_lazy) return;
 
   i::FLAG_min_preparse_length = 0;
   v8::V8::Initialize();
@@ -25940,13 +25929,93 @@ TEST(EvalInAccessCheckedContext) {
   context1->Exit();
 }
 
+THREADED_TEST(ImmutableProtoWithParent) {
+  LocalContext context;
+  v8::Isolate* isolate = context->GetIsolate();
+  v8::HandleScope handle_scope(isolate);
+
+  Local<v8::FunctionTemplate> parent = v8::FunctionTemplate::New(isolate);
+
+  Local<v8::FunctionTemplate> templ = v8::FunctionTemplate::New(isolate);
+  templ->Inherit(parent);
+  templ->PrototypeTemplate()->SetImmutableProto();
+
+  Local<v8::Function> function =
+      templ->GetFunction(context.local()).ToLocalChecked();
+  Local<v8::Object> instance =
+      function->NewInstance(context.local()).ToLocalChecked();
+  Local<v8::Object> prototype =
+      instance->Get(context.local(), v8_str("__proto__"))
+          .ToLocalChecked()
+          ->ToObject(context.local())
+          .ToLocalChecked();
+
+  // Look up the prototype
+  Local<v8::Value> original_proto =
+      prototype->Get(context.local(), v8_str("__proto__")).ToLocalChecked();
+
+  // Setting the prototype (e.g., to null) throws
+  CHECK(
+      prototype->SetPrototype(context.local(), v8::Null(isolate)).IsNothing());
+
+  // The original prototype is still there
+  Local<Value> new_proto =
+      prototype->Get(context.local(), v8_str("__proto__")).ToLocalChecked();
+  CHECK(new_proto->IsObject());
+  CHECK(new_proto.As<v8::Object>()
+            ->Equals(context.local(), original_proto)
+            .FromJust());
+}
+
 TEST(InternalFieldsOnGlobalProxy) {
   v8::Isolate* isolate = CcTest::isolate();
   v8::HandleScope scope(isolate);
 
   v8::Local<v8::ObjectTemplate> obj_template = v8::ObjectTemplate::New(isolate);
+  obj_template->SetInternalFieldCount(1);
 
   v8::Local<v8::Context> context = Context::New(isolate, nullptr, obj_template);
   v8::Local<v8::Object> global = context->Global();
-  CHECK_EQ(v8::Context::kProxyInternalFieldCount, global->InternalFieldCount());
+  CHECK_EQ(1, global->InternalFieldCount());
+}
+
+THREADED_TEST(ImmutableProtoGlobal) {
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope handle_scope(isolate);
+  Local<ObjectTemplate> global_template = ObjectTemplate::New(isolate);
+  global_template->SetImmutableProto();
+  v8::Local<Context> context = Context::New(isolate, 0, global_template);
+  Context::Scope context_scope(context);
+  v8::Local<Value> result = CompileRun(
+      "global = this;"
+      "(function() {"
+      "  try {"
+      "    global.__proto__ = {};"
+      "    return 0;"
+      "  } catch (e) {"
+      "    return 1;"
+      "  }"
+      "})()");
+  CHECK(result->Equals(context, v8::Integer::New(CcTest::isolate(), 1))
+            .FromJust());
+}
+
+THREADED_TEST(MutableProtoGlobal) {
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope handle_scope(isolate);
+  Local<ObjectTemplate> global_template = ObjectTemplate::New(isolate);
+  v8::Local<Context> context = Context::New(isolate, 0, global_template);
+  Context::Scope context_scope(context);
+  v8::Local<Value> result = CompileRun(
+      "global = this;"
+      "(function() {"
+      "  try {"
+      "    global.__proto__ = {};"
+      "    return 0;"
+      "  } catch (e) {"
+      "    return 1;"
+      "  }"
+      "})()");
+  CHECK(result->Equals(context, v8::Integer::New(CcTest::isolate(), 0))
+            .FromJust());
 }

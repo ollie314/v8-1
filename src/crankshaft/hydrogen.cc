@@ -5340,6 +5340,7 @@ void HOptimizedGraphBuilder::VisitVariableProxy(VariableProxy* expr) {
       }
 
       LookupIterator it(global, variable->name(), LookupIterator::OWN);
+      it.TryLookupCachedProperty();
       if (CanInlineGlobalPropertyAccess(variable, &it, LOAD)) {
         InlineGlobalPropertyLoad(&it, expr->id());
         return;
@@ -6151,6 +6152,18 @@ HValue* HOptimizedGraphBuilder::BuildMonomorphicAccess(
   }
 
   if (info->IsAccessorConstant()) {
+    MaybeHandle<Name> maybe_name =
+        FunctionTemplateInfo::TryGetCachedPropertyName(isolate(),
+                                                       info->accessor());
+    if (!maybe_name.is_null()) {
+      Handle<Name> name = maybe_name.ToHandleChecked();
+      PropertyAccessInfo cache_info(this, LOAD, info->map(), name);
+      // Load new target.
+      if (cache_info.CanAccessMonomorphic()) {
+        return BuildLoadNamedField(&cache_info, checked_object);
+      }
+    }
+
     Push(checked_object);
     int argument_count = 1;
     if (!info->IsLoad()) {
@@ -8117,11 +8130,10 @@ bool HOptimizedGraphBuilder::TryInline(Handle<JSFunction> target,
   }
 
   // All declarations must be inlineable.
-  ZoneList<Declaration*>* decls = target_info.scope()->declarations();
-  int decl_count = decls->length();
-  for (int i = 0; i < decl_count; ++i) {
-    if (decls->at(i)->IsFunctionDeclaration() ||
-        !decls->at(i)->proxy()->var()->IsStackAllocated()) {
+  Declaration::List* decls = target_info.scope()->declarations();
+  for (Declaration* decl : *decls) {
+    if (decl->IsFunctionDeclaration() ||
+        !decl->proxy()->var()->IsStackAllocated()) {
       TraceInline(target, caller, "target has non-trivial declaration");
       return false;
     }
@@ -8894,7 +8906,7 @@ bool HOptimizedGraphBuilder::TryInlineBuiltinMethodCall(
 
 bool HOptimizedGraphBuilder::TryInlineApiFunctionCall(Call* expr,
                                                       HValue* receiver) {
-  if (FLAG_runtime_call_stats) return false;
+  if (V8_UNLIKELY(FLAG_runtime_stats)) return false;
   Handle<JSFunction> function = expr->target();
   int argc = expr->arguments()->length();
   SmallMapList receiver_maps;
@@ -8907,7 +8919,7 @@ bool HOptimizedGraphBuilder::TryInlineApiMethodCall(
     Call* expr,
     HValue* receiver,
     SmallMapList* receiver_maps) {
-  if (FLAG_runtime_call_stats) return false;
+  if (V8_UNLIKELY(FLAG_runtime_stats)) return false;
   Handle<JSFunction> function = expr->target();
   int argc = expr->arguments()->length();
   return TryInlineApiCall(function, receiver, receiver_maps, argc, expr->id(),
@@ -8917,7 +8929,7 @@ bool HOptimizedGraphBuilder::TryInlineApiMethodCall(
 bool HOptimizedGraphBuilder::TryInlineApiGetter(Handle<Object> function,
                                                 Handle<Map> receiver_map,
                                                 BailoutId ast_id) {
-  if (FLAG_runtime_call_stats) return false;
+  if (V8_UNLIKELY(FLAG_runtime_stats)) return false;
   SmallMapList receiver_maps(1, zone());
   receiver_maps.Add(receiver_map, zone());
   return TryInlineApiCall(function,
@@ -8941,7 +8953,7 @@ bool HOptimizedGraphBuilder::TryInlineApiCall(
     Handle<Object> function, HValue* receiver, SmallMapList* receiver_maps,
     int argc, BailoutId ast_id, ApiCallType call_type,
     TailCallMode syntactic_tail_call_mode) {
-  if (FLAG_runtime_call_stats) return false;
+  if (V8_UNLIKELY(FLAG_runtime_stats)) return false;
   if (function->IsJSFunction() &&
       Handle<JSFunction>::cast(function)->context()->native_context() !=
           top_info()->closure()->context()->native_context()) {
@@ -11821,9 +11833,8 @@ void HOptimizedGraphBuilder::VisitSuperCallReference(SuperCallReference* expr) {
   return Bailout(kSuperReference);
 }
 
-
 void HOptimizedGraphBuilder::VisitDeclarations(
-    ZoneList<Declaration*>* declarations) {
+    Declaration::List* declarations) {
   DCHECK(globals_.is_empty());
   AstVisitor<HOptimizedGraphBuilder>::VisitDeclarations(declarations);
   if (!globals_.is_empty()) {

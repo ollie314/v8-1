@@ -962,7 +962,7 @@ Handle<JSGlobalObject> Genesis::CreateNewGlobals(
     Handle<Code> code = isolate()->builtins()->Illegal();
     global_proxy_function =
         factory()->NewFunction(name, code, JS_GLOBAL_PROXY_TYPE,
-                               JSGlobalProxy::kSizeWithInternalFields);
+                               JSGlobalProxy::SizeWithInternalFields(0));
   } else {
     Handle<ObjectTemplateInfo> data =
         v8::Utils::OpenHandle(*global_proxy_template);
@@ -2519,23 +2519,20 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     const PropertyAttributes attributes =
       static_cast<PropertyAttributes>(DONT_ENUM | DONT_DELETE | READ_ONLY);
 
-    // Create the ThrowTypeError functions.
+    // Create the ThrowTypeError function.
     Handle<AccessorPair> callee = factory->NewAccessorPair();
-    Handle<AccessorPair> caller = factory->NewAccessorPair();
 
     Handle<JSFunction> poison = GetStrictArgumentsPoisonFunction();
 
-    // Install the ThrowTypeError functions.
+    // Install the ThrowTypeError function.
     callee->set_getter(*poison);
     callee->set_setter(*poison);
-    caller->set_getter(*poison);
-    caller->set_setter(*poison);
 
     // Create the map. Allocate one in-object field for length.
     Handle<Map> map = factory->NewMap(
         JS_ARGUMENTS_TYPE, JSStrictArgumentsObject::kSize, FAST_ELEMENTS);
     // Create the descriptor array for the arguments object.
-    Map::EnsureDescriptorSlack(map, 3);
+    Map::EnsureDescriptorSlack(map, 2);
 
     {  // length
       DataDescriptor d(factory->length_string(),
@@ -2545,11 +2542,6 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     }
     {  // callee
       AccessorConstantDescriptor d(factory->callee_string(), callee,
-                                   attributes);
-      map->AppendDescriptor(&d);
-    }
-    {  // caller
-      AccessorConstantDescriptor d(factory->caller_string(), caller,
                                    attributes);
       map->AppendDescriptor(&d);
     }
@@ -3237,7 +3229,6 @@ EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_regexp_named_captures)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_regexp_property)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_function_sent)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_tailcalls)
-EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_restrictive_declarations)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_string_padding)
 #ifdef V8_I18N_SUPPORT
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(datetime_format_to_parts)
@@ -3797,7 +3788,6 @@ bool Genesis::InstallExperimentalNatives() {
                                                nullptr};
   static const char* harmony_do_expressions_natives[] = {nullptr};
   static const char* harmony_regexp_lookbehind_natives[] = {nullptr};
-  static const char* harmony_restrictive_declarations_natives[] = {nullptr};
   static const char* harmony_regexp_named_captures_natives[] = {nullptr};
   static const char* harmony_regexp_property_natives[] = {nullptr};
   static const char* harmony_function_sent_natives[] = {nullptr};
@@ -4026,7 +4016,7 @@ bool Genesis::InstallExtensions(Handle<Context> native_context,
           InstallExtension(isolate, "v8/gc", &extension_states)) &&
          (!FLAG_expose_externalize_string ||
           InstallExtension(isolate, "v8/externalize", &extension_states)) &&
-         (!FLAG_track_gc_object_stats ||
+         (!FLAG_gc_stats ||
           InstallExtension(isolate, "v8/statistics", &extension_states)) &&
          (!FLAG_expose_trigger_failure ||
           InstallExtension(isolate, "v8/trigger-failure", &extension_states)) &&
@@ -4368,7 +4358,12 @@ Genesis::Genesis(Isolate* isolate,
   // and initialize it later in CreateNewGlobals.
   Handle<JSGlobalProxy> global_proxy;
   if (!maybe_global_proxy.ToHandle(&global_proxy)) {
-    global_proxy = isolate->factory()->NewUninitializedJSGlobalProxy();
+    const int internal_field_count =
+        !global_proxy_template.IsEmpty()
+            ? global_proxy_template->InternalFieldCount()
+            : 0;
+    global_proxy = isolate->factory()->NewUninitializedJSGlobalProxy(
+        JSGlobalProxy::SizeWithInternalFields(internal_field_count));
   }
 
   // We can only de-serialize a context if the isolate was initialized from
@@ -4477,9 +4472,12 @@ Genesis::Genesis(Isolate* isolate,
     return;
   }
 
+  const int proxy_size = JSGlobalProxy::SizeWithInternalFields(
+      global_proxy_template->InternalFieldCount());
+
   Handle<JSGlobalProxy> global_proxy;
   if (!maybe_global_proxy.ToHandle(&global_proxy)) {
-    global_proxy = factory()->NewUninitializedJSGlobalProxy();
+    global_proxy = factory()->NewUninitializedJSGlobalProxy(proxy_size);
   }
 
   // CreateNewGlobals.
@@ -4496,10 +4494,9 @@ Genesis::Genesis(Isolate* isolate,
       isolate->factory()->NewFunctionFromSharedFunctionInfo(
           initial_map, shared, factory()->undefined_value());
   DCHECK_EQ(global_proxy_data->internal_field_count(),
-            v8::Context::kProxyInternalFieldCount);
+            global_proxy_template->InternalFieldCount());
   Handle<Map> global_proxy_map = isolate->factory()->NewMap(
-      JS_GLOBAL_PROXY_TYPE, JSGlobalProxy::kSizeWithInternalFields,
-      FAST_HOLEY_SMI_ELEMENTS);
+      JS_GLOBAL_PROXY_TYPE, proxy_size, FAST_HOLEY_SMI_ELEMENTS);
   JSFunction::SetInitialMap(global_proxy_function, global_proxy_map,
                             factory()->null_value());
   global_proxy_map->set_is_access_check_needed(true);

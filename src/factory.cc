@@ -1512,12 +1512,6 @@ Handle<ScopeInfo> Factory::NewScopeInfo(int length) {
   return scope_info;
 }
 
-Handle<ModuleInfoEntry> Factory::NewModuleInfoEntry() {
-  Handle<FixedArray> array = NewFixedArray(ModuleInfoEntry::kLength, TENURED);
-  array->set_map_no_write_barrier(*module_info_entry_map());
-  return Handle<ModuleInfoEntry>::cast(array);
-}
-
 Handle<ModuleInfo> Factory::NewModuleInfo() {
   Handle<FixedArray> array = NewFixedArray(ModuleInfo::kLength, TENURED);
   array->set_map_no_write_barrier(*module_info_map());
@@ -2178,12 +2172,10 @@ Handle<JSProxy> Factory::NewJSProxy(Handle<JSReceiver> target,
   return result;
 }
 
-
-Handle<JSGlobalProxy> Factory::NewUninitializedJSGlobalProxy() {
+Handle<JSGlobalProxy> Factory::NewUninitializedJSGlobalProxy(int size) {
   // Create an empty shell of a JSGlobalProxy that needs to be reinitialized
   // via ReinitializeJSGlobalProxy later.
-  Handle<Map> map =
-      NewMap(JS_GLOBAL_PROXY_TYPE, JSGlobalProxy::kSizeWithInternalFields);
+  Handle<Map> map = NewMap(JS_GLOBAL_PROXY_TYPE, size);
   // Maintain invariant expected from any JSGlobalProxy.
   map->set_is_access_check_needed(true);
   CALL_HEAP_FUNCTION(

@@ -248,6 +248,47 @@ TEST_F(WasmModuleVerifyTest, ZeroGlobals) {
   if (result.val) delete result.val;
 }
 
+TEST_F(WasmModuleVerifyTest, ExportMutableGlobal) {
+  {
+    static const byte data[] = {
+        SECTION(Global, 6),  // --
+        1,
+        kLocalI32,                  // local type
+        0,                          // immutable
+        WASM_INIT_EXPR_I32V_1(13),  // init
+        SECTION(Export, 8),         // --
+        1,                          // Export count
+        4,                          // name length
+        'n',                        // --
+        'a',                        // --
+        'm',                        // --
+        'e',                        // --
+        kExternalGlobal,            // global
+        0,                          // global index
+    };
+    EXPECT_VERIFIES(data);
+  }
+  {
+    static const byte data[] = {
+        SECTION(Global, 6),         // --
+        1,                          // --
+        kLocalI32,                  // local type
+        1,                          // mutable
+        WASM_INIT_EXPR_I32V_1(13),  // init
+        SECTION(Export, 8),         // --
+        1,                          // Export count
+        4,                          // name length
+        'n',                        // --
+        'a',                        // --
+        'm',                        // --
+        'e',                        // --
+        kExternalGlobal,            // global
+        0,                          // global index
+    };
+    EXPECT_FAILURE(data);
+  }
+}
+
 static void AppendUint32v(std::vector<byte>& buffer, uint32_t val) {
   while (true) {
     uint32_t next = val >> 7;
@@ -376,6 +417,100 @@ TEST_F(WasmModuleVerifyTest, MultipleSignatures) {
   EXPECT_OFF_END_FAILURE(data, 1, sizeof(data));
 }
 
+TEST_F(WasmModuleVerifyTest, DataSegmentWithImmutableImportedGlobal) {
+  // Import 2 globals so that we can initialize data with a global index != 0.
+  const byte data[] = {
+      SECTION(Import, 15),  // section header
+      2,                    // number of imports
+      NAME_LENGTH(1),       // --
+      'm',                  // module name
+      NAME_LENGTH(1),       // --
+      'f',                  // global name
+      kExternalGlobal,      // import kind
+      kLocalI32,            // type
+      0,                    // mutability
+      NAME_LENGTH(1),       // --
+      'n',                  // module name
+      NAME_LENGTH(1),       // --
+      'g',                  // global name
+      kExternalGlobal,      // import kind
+      kLocalI32,            // type
+      0,                    // mutability
+      SECTION(Memory, 4),
+      ENTRY_COUNT(1),
+      kResizableMaximumFlag,
+      28,
+      28,
+      SECTION(Data, 9),
+      ENTRY_COUNT(1),
+      LINEAR_MEMORY_INDEX_0,
+      WASM_INIT_EXPR_GLOBAL(1),  // dest addr
+      U32V_1(3),                 // source size
+      'a',
+      'b',
+      'c'  // data bytes
+  };
+  ModuleResult result = DecodeModule(data, data + sizeof(data));
+  EXPECT_OK(result);
+  WasmInitExpr expr = result.val->data_segments.back().dest_addr;
+  EXPECT_EQ(WasmInitExpr::kGlobalIndex, expr.kind);
+  EXPECT_EQ(1, expr.val.global_index);
+  if (result.val) delete result.val;
+}
+
+TEST_F(WasmModuleVerifyTest, DataSegmentWithMutableImportedGlobal) {
+  // Only an immutable imported global can be used as an init_expr.
+  const byte data[] = {
+      SECTION(Import, 8),  // section header
+      1,                   // number of imports
+      NAME_LENGTH(1),      // --
+      'm',                 // module name
+      NAME_LENGTH(1),      // --
+      'f',                 // global name
+      kExternalGlobal,     // import kind
+      kLocalI32,           // type
+      1,                   // mutability
+      SECTION(Memory, 4),
+      ENTRY_COUNT(1),
+      kResizableMaximumFlag,
+      28,
+      28,
+      SECTION(Data, 9),
+      ENTRY_COUNT(1),
+      LINEAR_MEMORY_INDEX_0,
+      WASM_INIT_EXPR_GLOBAL(0),  // dest addr
+      U32V_1(3),                 // source size
+      'a',
+      'b',
+      'c'  // data bytes
+  };
+  EXPECT_FAILURE(data);
+}
+TEST_F(WasmModuleVerifyTest, DataSegmentWithImmutableGlobal) {
+  // Only an immutable imported global can be used as an init_expr.
+  const byte data[] = {
+      SECTION(Memory, 4),
+      ENTRY_COUNT(1),
+      kResizableMaximumFlag,
+      28,
+      28,
+      SECTION(Global, 8),  // --
+      1,
+      kLocalI32,                       // local type
+      0,                               // immutable
+      WASM_INIT_EXPR_I32V_3(0x9bbaa),  // init
+      SECTION(Data, 9),
+      ENTRY_COUNT(1),
+      LINEAR_MEMORY_INDEX_0,
+      WASM_INIT_EXPR_GLOBAL(0),  // dest addr
+      U32V_1(3),                 // source size
+      'a',
+      'b',
+      'c'  // data bytes
+  };
+  EXPECT_FAILURE(data);
+}
+
 TEST_F(WasmModuleVerifyTest, OneDataSegment) {
   const byte kDataSegmentSourceOffset = 24;
   const byte data[] = {
@@ -473,6 +608,37 @@ TEST_F(WasmModuleVerifyTest, TwoDataSegments) {
   }
 
   EXPECT_OFF_END_FAILURE(data, 14, sizeof(data));
+}
+
+TEST_F(WasmModuleVerifyTest, DataWithoutMemory) {
+  const byte data[] = {
+      SECTION(Data, 11),
+      ENTRY_COUNT(1),
+      LINEAR_MEMORY_INDEX_0,
+      WASM_INIT_EXPR_I32V_3(0x9bbaa),  // dest addr
+      U32V_1(3),                       // source size
+      'a',
+      'b',
+      'c'  // data bytes
+  };
+  EXPECT_FAILURE(data);
+}
+
+TEST_F(WasmModuleVerifyTest, MaxMaximumMemorySize) {
+  {
+    const byte data[] = {
+        SECTION(Memory, 6), ENTRY_COUNT(1), kResizableMaximumFlag, 0,
+        U32V_3(65536),
+    };
+    EXPECT_VERIFIES(data);
+  }
+  {
+    const byte data[] = {
+        SECTION(Memory, 6), ENTRY_COUNT(1), kResizableMaximumFlag, 0,
+        U32V_3(65537),
+    };
+    EXPECT_FAILURE(data);
+  }
 }
 
 TEST_F(WasmModuleVerifyTest, DataSegment_wrong_init_type) {
@@ -877,6 +1043,37 @@ TEST_F(WasmModuleVerifyTest, ImportTable_nosigs1) {
   EXPECT_VERIFIES(data);
 }
 
+TEST_F(WasmModuleVerifyTest, ImportTable_mutable_global) {
+  {
+    static const byte data[] = {
+        SECTION(Import, 8),  // section header
+        1,                   // number of imports
+        NAME_LENGTH(1),      // --
+        'm',                 // module name
+        NAME_LENGTH(1),      // --
+        'f',                 // global name
+        kExternalGlobal,     // import kind
+        kLocalI32,           // type
+        0,                   // mutability
+    };
+    EXPECT_VERIFIES(data);
+  }
+  {
+    static const byte data[] = {
+        SECTION(Import, 8),  // section header
+        1,                   // sig table
+        NAME_LENGTH(1),      // --
+        'm',                 // module name
+        NAME_LENGTH(1),      // --
+        'f',                 // global name
+        kExternalGlobal,     // import kind
+        kLocalI32,           // type
+        1,                   // mutability
+    };
+    EXPECT_FAILURE(data);
+  }
+}
+
 TEST_F(WasmModuleVerifyTest, ImportTable_nosigs2) {
   static const byte data[] = {
       SECTION(Import, 6),  1,    // sig table
@@ -1273,13 +1470,6 @@ TEST_F(WasmModuleVerifyTest, InitExpr_illegal) {
   EXPECT_INIT_EXPR_FAIL(WASM_SET_LOCAL(0, WASM_I32V_1(0)));
   EXPECT_INIT_EXPR_FAIL(WASM_I32_ADD(WASM_I32V_1(0), WASM_I32V_1(0)));
   EXPECT_INIT_EXPR_FAIL(WASM_IF_ELSE(WASM_ZERO, WASM_ZERO, WASM_ZERO));
-}
-
-TEST_F(WasmModuleVerifyTest, InitExpr_global) {
-  static const byte data[] = {WASM_INIT_EXPR_GLOBAL(37)};
-  WasmInitExpr expr = DecodeWasmInitExprForTesting(data, data + sizeof(data));
-  EXPECT_EQ(WasmInitExpr::kGlobalIndex, expr.kind);
-  EXPECT_EQ(37, expr.val.global_index);
 }
 
 TEST_F(WasmModuleVerifyTest, Multiple_Named_Sections) {

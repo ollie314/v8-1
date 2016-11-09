@@ -115,7 +115,7 @@ void IC::TraceIC(const char* type, Handle<Object> name, State old_state,
   if (maybe_function->IsJSFunction()) {
     JSFunction* function = JSFunction::cast(maybe_function);
     int code_offset = 0;
-    if (function->code()->is_interpreter_trampoline_builtin()) {
+    if (function->IsInterpreted()) {
       code_offset = InterpretedFrame::GetBytecodeOffset(fp());
     } else {
       code_offset =
@@ -868,6 +868,21 @@ int InitPrototypeChecks(Isolate* isolate, Handle<Map> receiver_map,
   HandleScope scope(isolate);
   int checks_count = 0;
 
+  if (receiver_map->IsPrimitiveMap() || receiver_map->IsJSGlobalProxyMap()) {
+    // The validity cell check for primitive and global proxy receivers does
+    // not guarantee that certain native context ever had access to other
+    // native context. However, a handler created for one native context could
+    // be used in other native context through the megamorphic stub cache.
+    // So we record the original native context to which this handler
+    // corresponds.
+    if (fill_array) {
+      Handle<Context> native_context = isolate->native_context();
+      array->set(LoadHandler::kFirstPrototypeIndex + checks_count,
+                 native_context->self_weak_cell());
+    }
+    checks_count++;
+  }
+
   // Create/count entries for each global or dictionary prototype appeared in
   // the prototype chain contains from receiver till holder.
   for (PrototypeIterator iter(receiver_map); !iter.IsAtEnd(); iter.Advance()) {
@@ -917,9 +932,13 @@ Handle<Object> LoadIC::LoadFromPrototype(Handle<Map> receiver_map,
                                          Handle<Object> smi_handler) {
   int checks_count = GetPrototypeCheckCount(receiver_map, holder);
   DCHECK_LE(0, checks_count);
+  DCHECK(!receiver_map->IsJSGlobalObjectMap());
 
-  if (receiver_map->IsJSGlobalObjectMap()) {
-    UNREACHABLE();
+  if (receiver_map->IsPrimitiveMap() || receiver_map->IsJSGlobalProxyMap()) {
+    DCHECK(!receiver_map->is_dictionary_map());
+    DCHECK_LE(1, checks_count);  // For native context.
+    smi_handler =
+        LoadHandler::EnableAccessCheckOnReceiver(isolate(), smi_handler);
   } else if (receiver_map->is_dictionary_map()) {
     smi_handler =
         LoadHandler::EnableNegativeLookupOnReceiver(isolate(), smi_handler);
@@ -955,6 +974,13 @@ Handle<Object> LoadIC::LoadNonExistent(Handle<Map> receiver_map,
 
   Handle<Object> smi_handler = LoadHandler::LoadNonExistent(
       isolate(), receiver_map->is_dictionary_map());
+
+  if (receiver_map->IsPrimitiveMap() || receiver_map->IsJSGlobalProxyMap()) {
+    DCHECK(!receiver_map->is_dictionary_map());
+    DCHECK_LE(1, checks_count);  // For native context.
+    smi_handler =
+        LoadHandler::EnableAccessCheckOnReceiver(isolate(), smi_handler);
+  }
 
   Handle<Object> validity_cell =
       Map::GetOrCreatePrototypeChainValidityCell(receiver_map, isolate());
@@ -1339,16 +1365,32 @@ Handle<Object> LoadIC::GetMapIndependentHandler(LookupIterator* lookup) {
           }
           // Ruled out by IsCompatibleReceiver() above.
           DCHECK(AccessorInfo::IsCompatibleReceiverMap(isolate(), info, map));
-          if (!holder->HasFastProperties()) return slow_stub();
-          if (receiver_is_holder) {
-            TRACE_HANDLER_STATS(isolate(), LoadIC_LoadApiGetterStub);
-            int index = lookup->GetAccessorIndex();
-            LoadApiGetterStub stub(isolate(), true, index);
-            return stub.GetCode();
-          }
-          if (info->is_sloppy() && !receiver->IsJSReceiver()) {
+          if (!holder->HasFastProperties() ||
+              (info->is_sloppy() && !receiver->IsJSReceiver())) {
+            DCHECK(!holder->HasFastProperties() || !receiver_is_holder);
             TRACE_HANDLER_STATS(isolate(), LoadIC_SlowStub);
             return slow_stub();
+          }
+          if (FLAG_tf_load_ic_stub) {
+            Handle<Object> smi_handler = LoadHandler::LoadApiGetter(
+                isolate(), lookup->GetAccessorIndex());
+            if (receiver_is_holder) {
+              TRACE_HANDLER_STATS(isolate(), LoadIC_LoadApiGetterDH);
+              return smi_handler;
+            }
+            if (kind() != Code::LOAD_GLOBAL_IC) {
+              TRACE_HANDLER_STATS(isolate(),
+                                  LoadIC_LoadApiGetterFromPrototypeDH);
+              return LoadFromPrototype(map, holder, lookup->name(),
+                                       smi_handler);
+            }
+          } else {
+            if (receiver_is_holder) {
+              TRACE_HANDLER_STATS(isolate(), LoadIC_LoadApiGetterStub);
+              int index = lookup->GetAccessorIndex();
+              LoadApiGetterStub stub(isolate(), true, index);
+              return stub.GetCode();
+            }
           }
           break;  // Custom-compiled handler.
         }

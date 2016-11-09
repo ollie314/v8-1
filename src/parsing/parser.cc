@@ -285,7 +285,8 @@ FunctionLiteral* Parser::DefaultConstructor(const AstRawString* name,
       name, function_scope, body, materialized_literal_count,
       expected_property_count, parameter_count, parameter_count,
       FunctionLiteral::kNoDuplicateParameters,
-      FunctionLiteral::kAnonymousExpression, default_eager_compile_hint(), pos);
+      FunctionLiteral::kAnonymousExpression, default_eager_compile_hint(), pos,
+      true);
 
   function_literal->set_requires_class_field_init(requires_class_field_init);
 
@@ -502,7 +503,7 @@ Literal* Parser::ExpressionFromLiteral(Token::Value token, int pos) {
     case Token::FALSE_LITERAL:
       return factory()->NewBooleanLiteral(false, pos);
     case Token::SMI: {
-      int value = scanner()->smi_value();
+      uint32_t value = scanner()->smi_value();
       return factory()->NewSmiLiteral(value, pos);
     }
     case Token::NUMBER: {
@@ -586,15 +587,17 @@ Expression* Parser::NewV8Intrinsic(const AstRawString* name,
 
 Parser::Parser(ParseInfo* info)
     : ParserBase<Parser>(info->zone(), &scanner_, info->stack_limit(),
-                         info->extension(), info->ast_value_factory(), NULL),
+                         info->extension(), info->ast_value_factory()),
       scanner_(info->unicode_cache()),
-      reusable_preparser_(NULL),
-      original_scope_(NULL),
-      target_stack_(NULL),
+      reusable_preparser_(nullptr),
+      original_scope_(nullptr),
+      mode_(PARSE_EAGERLY),  // Lazy mode must be set explicitly.
+      target_stack_(nullptr),
       compile_options_(info->compile_options()),
       cached_parse_data_(nullptr),
       total_preparse_skipped_(0),
-      parsing_on_main_thread_(true) {
+      parsing_on_main_thread_(true),
+      log_(nullptr) {
   // Even though we were passed ParseInfo, we should not store it in
   // Parser - this makes sure that Isolate is not accidentally accessed via
   // ParseInfo during background parsing.
@@ -679,10 +682,10 @@ FunctionLiteral* Parser::ParseProgram(Isolate* isolate, ParseInfo* info) {
   fni_ = new (zone()) FuncNameInferrer(ast_value_factory(), zone());
 
   // Initialize parser state.
-  CompleteParserRecorder recorder;
+  ParserLogger logger;
 
   if (produce_cached_parse_data()) {
-    log_ = &recorder;
+    log_ = &logger;
   } else if (consume_cached_parse_data()) {
     cached_parse_data_->Initialize();
   }
@@ -702,7 +705,7 @@ FunctionLiteral* Parser::ParseProgram(Isolate* isolate, ParseInfo* info) {
   }
   HandleSourceURLComments(isolate, info->script());
 
-  if (FLAG_trace_parse && result != NULL) {
+  if (FLAG_trace_parse && result != nullptr) {
     double ms = timer.Elapsed().InMillisecondsF();
     if (info->is_eval()) {
       PrintF("[parsing eval");
@@ -715,10 +718,10 @@ FunctionLiteral* Parser::ParseProgram(Isolate* isolate, ParseInfo* info) {
     }
     PrintF(" - took %0.3f ms]\n", ms);
   }
-  if (produce_cached_parse_data()) {
-    if (result != NULL) *info->cached_data() = recorder.GetScriptData();
-    log_ = NULL;
+  if (produce_cached_parse_data() && result != nullptr) {
+    *info->cached_data() = logger.GetScriptData();
   }
+  log_ = nullptr;
   return result;
 }
 
@@ -2568,11 +2571,11 @@ FunctionLiteral* Parser::ParseFunctionLiteral(
   // parenthesis before the function means that it will be called
   // immediately). bar can be parsed lazily, but we need to parse it in a mode
   // that tracks unresolved variables.
-  DCHECK_IMPLIES(mode() == PARSE_LAZILY, FLAG_lazy);
-  DCHECK_IMPLIES(mode() == PARSE_LAZILY, allow_lazy());
-  DCHECK_IMPLIES(mode() == PARSE_LAZILY, extension_ == nullptr);
+  DCHECK_IMPLIES(parse_lazily(), FLAG_lazy);
+  DCHECK_IMPLIES(parse_lazily(), allow_lazy());
+  DCHECK_IMPLIES(parse_lazily(), extension_ == nullptr);
 
-  bool can_preparse = mode() == PARSE_LAZILY &&
+  bool can_preparse = parse_lazily() &&
                       eager_compile_hint == FunctionLiteral::kShouldLazyCompile;
 
   bool is_lazy_top_level_function =
@@ -2720,7 +2723,7 @@ FunctionLiteral* Parser::ParseFunctionLiteral(
   FunctionLiteral* function_literal = factory()->NewFunctionLiteral(
       function_name, scope, body, materialized_literal_count,
       expected_property_count, num_parameters, function_length,
-      duplicate_parameters, function_type, eager_compile_hint, pos);
+      duplicate_parameters, function_type, eager_compile_hint, pos, true);
   function_literal->set_function_token_position(function_token_pos);
   if (should_be_used_once_hint)
     function_literal->set_should_be_used_once_hint();
@@ -2774,9 +2777,8 @@ Parser::LazyParsingResult Parser::SkipFunction(
   }
   // With no cached data, we partially parse the function, without building an
   // AST. This gathers the data needed to build a lazy function.
-  SingletonLogger logger;
   PreParser::PreParseResult result = ParseFunctionWithPreParser(
-      kind, function_scope, &logger, is_inner_function, may_abort);
+      kind, function_scope, is_inner_function, may_abort);
 
   // Return immediately if pre-parser decided to abort parsing.
   if (result == PreParser::kPreParseAbort) return kLazyParsingAborted;
@@ -2786,25 +2788,23 @@ Parser::LazyParsingResult Parser::SkipFunction(
     *ok = false;
     return kLazyParsingComplete;
   }
-  if (logger.has_error()) {
-    ReportMessageAt(Scanner::Location(logger.start(), logger.end()),
-                    logger.message(), logger.argument_opt(),
-                    logger.error_type());
+  PreParserLogger* logger = reusable_preparser_->logger();
+  if (logger->has_error()) {
+    ReportMessageAt(Scanner::Location(logger->start(), logger->end()),
+                    logger->message(), logger->argument_opt(),
+                    logger->error_type());
     *ok = false;
     return kLazyParsingComplete;
   }
-  function_scope->set_end_position(logger.end());
+  function_scope->set_end_position(logger->end());
   Expect(Token::RBRACE, CHECK_OK_VALUE(kLazyParsingComplete));
   total_preparse_skipped_ +=
       function_scope->end_position() - function_scope->start_position();
-  *num_parameters = logger.num_parameters();
-  *function_length = logger.function_length();
-  *has_duplicate_parameters = logger.has_duplicate_parameters();
-  *materialized_literal_count = logger.literals();
-  *expected_property_count = logger.properties();
-  SetLanguageMode(function_scope, logger.language_mode());
-  if (logger.uses_super_property()) function_scope->RecordSuperPropertyUsage();
-  if (logger.calls_eval()) function_scope->RecordEvalCall();
+  *num_parameters = logger->num_parameters();
+  *function_length = logger->function_length();
+  *has_duplicate_parameters = logger->has_duplicate_parameters();
+  *materialized_literal_count = logger->literals();
+  *expected_property_count = logger->properties();
   if (!is_inner_function && produce_cached_parse_data()) {
     DCHECK(log_);
     log_->LogFunction(
@@ -3287,13 +3287,13 @@ ZoneList<Statement*>* Parser::ParseEagerFunctionBody(
 }
 
 PreParser::PreParseResult Parser::ParseFunctionWithPreParser(
-    FunctionKind kind, DeclarationScope* function_scope,
-    SingletonLogger* logger, bool is_inner_function, bool may_abort) {
+    FunctionKind kind, DeclarationScope* function_scope, bool is_inner_function,
+    bool may_abort) {
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.compile"), "V8.PreParse");
 
   if (reusable_preparser_ == NULL) {
-    reusable_preparser_ = new PreParser(zone(), &scanner_, ast_value_factory(),
-                                        NULL, stack_limit_);
+    reusable_preparser_ =
+        new PreParser(zone(), &scanner_, ast_value_factory(), stack_limit_);
     reusable_preparser_->set_allow_lazy(true);
 #define SET_ALLOW(name) reusable_preparser_->set_allow_##name(allow_##name());
     SET_ALLOW(natives);
@@ -3309,8 +3309,8 @@ PreParser::PreParseResult Parser::ParseFunctionWithPreParser(
   DCHECK(!is_inner_function || !may_abort);
 
   PreParser::PreParseResult result = reusable_preparser_->PreParseFunction(
-      kind, function_scope, parsing_module_, logger, is_inner_function,
-      may_abort, use_counts_);
+      kind, function_scope, parsing_module_, is_inner_function, may_abort,
+      use_counts_);
   return result;
 }
 
@@ -3417,7 +3417,8 @@ FunctionLiteral* Parser::SynthesizeClassFieldInitializer(int count) {
       initializer_state.expected_property_count(), 0, count,
       FunctionLiteral::kNoDuplicateParameters,
       FunctionLiteral::kAnonymousExpression,
-      FunctionLiteral::kShouldLazyCompile, initializer_scope->start_position());
+      FunctionLiteral::kShouldLazyCompile, initializer_scope->start_position(),
+      true);
   function_literal->set_is_class_field_initializer(true);
   return function_literal;
 }
@@ -3809,8 +3810,8 @@ void Parser::ParseOnBackground(ParseInfo* info) {
   DCHECK(info->literal() == NULL);
   FunctionLiteral* result = NULL;
 
-  CompleteParserRecorder recorder;
-  if (produce_cached_parse_data()) log_ = &recorder;
+  ParserLogger logger;
+  if (produce_cached_parse_data()) log_ = &logger;
 
   std::unique_ptr<Utf16CharacterStream> stream;
   Utf16CharacterStream* stream_ptr;
@@ -3847,7 +3848,7 @@ void Parser::ParseOnBackground(ParseInfo* info) {
   // care of calling Parser::Internalize just before compilation.
 
   if (produce_cached_parse_data()) {
-    if (result != NULL) *info->cached_data() = recorder.GetScriptData();
+    if (result != NULL) *info->cached_data() = logger.GetScriptData();
     log_ = NULL;
   }
 }
@@ -3922,9 +3923,9 @@ Expression* Parser::CloseTemplateLiteral(TemplateLiteralState* state, int start,
             const_cast<ZoneList<Expression*>*>(raw_strings), raw_idx, pos),
         zone());
 
-    // Ensure hash is suitable as a Smi value
+    // Truncate hash to Smi-range.
     Smi* hash_obj = Smi::cast(Internals::IntToSmi(static_cast<int>(hash)));
-    args->Add(factory()->NewSmiLiteral(hash_obj->value(), pos), zone());
+    args->Add(factory()->NewNumberLiteral(hash_obj->value(), pos), zone());
 
     Expression* call_site = factory()->NewCallRuntime(
         Context::GET_TEMPLATE_CALL_SITE_INDEX, args, start);

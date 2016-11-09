@@ -19,19 +19,27 @@ class LoadHandler {
   enum Kind { kForElements, kForFields, kForConstants, kForNonExistent };
   class KindBits : public BitField<Kind, 0, 2> {};
 
+  // Defines whether access rights check should be done on receiver object.
+  // Applicable to kForFields, kForConstants and kForNonExistent kinds only when
+  // loading value from prototype chain. Ignored when loading from holder.
+  class DoAccessCheckOnReceiverBits
+      : public BitField<bool, KindBits::kNext, 1> {};
+
   // Defines whether negative lookup check should be done on receiver object.
   // Applicable to kForFields, kForConstants and kForNonExistent kinds only when
   // loading value from prototype chain. Ignored when loading from holder.
   class DoNegativeLookupOnReceiverBits
-      : public BitField<bool, KindBits::kNext, 1> {};
+      : public BitField<bool, DoAccessCheckOnReceiverBits::kNext, 1> {};
 
   //
   // Encoding when KindBits contains kForConstants.
   //
 
+  class IsAccessorInfoBits
+      : public BitField<bool, DoNegativeLookupOnReceiverBits::kNext, 1> {};
   // +2 here is because each descriptor entry occupies 3 slots in array.
   class DescriptorValueIndexBits
-      : public BitField<unsigned, DoNegativeLookupOnReceiverBits::kNext,
+      : public BitField<unsigned, IsAccessorInfoBits::kNext,
                         kDescriptorIndexBitCount + 2> {};
   // Make sure we don't overflow the smi.
   STATIC_ASSERT(DescriptorValueIndexBits::kNext <= kSmiValueSize);
@@ -80,6 +88,14 @@ class LoadHandler {
 
   // Creates a Smi-handler for loading a constant from fast object.
   static inline Handle<Object> LoadConstant(Isolate* isolate, int descriptor);
+
+  // Creates a Smi-handler for loading an Api getter property from fast object.
+  static inline Handle<Object> LoadApiGetter(Isolate* isolate, int descriptor);
+
+  // Sets DoAccessCheckOnReceiverBits in given Smi-handler. The receiver
+  // check is a part of a prototype chain check.
+  static inline Handle<Object> EnableAccessCheckOnReceiver(
+      Isolate* isolate, Handle<Object> smi_handler);
 
   // Sets DoNegativeLookupOnReceiverBits in given Smi-handler. The receiver
   // check is a part of a prototype chain check.

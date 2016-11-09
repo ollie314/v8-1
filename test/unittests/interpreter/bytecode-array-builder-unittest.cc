@@ -310,11 +310,7 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
 
   // Emit loads which will be transformed to Ldr equivalents by the peephole
   // optimizer.
-  builder.LoadNamedProperty(reg, name, 0)
-      .StoreAccumulatorInRegister(reg)
-      .LoadKeyedProperty(reg, 0)
-      .StoreAccumulatorInRegister(reg)
-      .LoadContextSlot(reg, 1, 0)
+  builder.LoadContextSlot(reg, 1, 0)
       .StoreAccumulatorInRegister(reg)
       .LoadContextSlot(Register::current_context(), 1, 0)
       .StoreAccumulatorInRegister(reg)
@@ -332,7 +328,15 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .CreateArrayLiteral(factory->NewFixedArray(2), 0, 0)
       .CreateObjectLiteral(factory->NewFixedArray(2), 0, 0, reg);
 
-  // Emit generator operations
+  // Emit load and store operations for module variables.
+  builder.LoadModuleVariable(-1, 42)
+      .LoadModuleVariable(0, 42)
+      .LoadModuleVariable(1, 42)
+      .StoreModuleVariable(-1, 42)
+      .StoreModuleVariable(0, 42)
+      .StoreModuleVariable(1, 42);
+
+  // Emit generator operations.
   builder.SuspendGenerator(reg)
       .ResumeGenerator(reg);
 
@@ -388,8 +392,6 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
 
   if (!FLAG_ignition_peephole) {
     // Insert entries for bytecodes only emitted by peephole optimizer.
-    scorecard[Bytecodes::ToByte(Bytecode::kLdrNamedProperty)] = 1;
-    scorecard[Bytecodes::ToByte(Bytecode::kLdrKeyedProperty)] = 1;
     scorecard[Bytecodes::ToByte(Bytecode::kLdrGlobal)] = 1;
     scorecard[Bytecodes::ToByte(Bytecode::kLdrContextSlot)] = 1;
     scorecard[Bytecodes::ToByte(Bytecode::kLdrCurrentContextSlot)] = 1;

@@ -177,6 +177,7 @@ struct V8_EXPORT_PRIVATE WasmModule {
   static const uint32_t kPageSize = 0x10000;    // Page size, 64kb.
   static const uint32_t kMinMemPages = 1;       // Minimum memory size = 64kb
   static const size_t kV8MaxPages = 16384;      // Maximum memory size = 1gb
+  static const size_t kSpecMaxPages = 65536;    // Maximum according to the spec
   static const size_t kV8MaxTableSize = 16 * 1024 * 1024;
 
   Zone* owned_zone;
@@ -184,6 +185,7 @@ struct V8_EXPORT_PRIVATE WasmModule {
   const byte* module_end = nullptr;    // end address for the module bytes
   uint32_t min_mem_pages = 0;  // minimum size of the memory in 64k pages
   uint32_t max_mem_pages = 0;  // maximum size of the memory in 64k pages
+  bool has_memory = false;     // true if the memory was defined or imported
   bool mem_export = false;     // true if the memory is exported
   // TODO(wasm): reconcile start function index being an int with
   // the fact that we index on uint32_t, so we may technically not be
@@ -405,6 +407,7 @@ class WasmCompiledModule : public FixedArray {
   MACRO(OBJECT, ByteArray, asm_js_offset_tables)      \
   MACRO(OBJECT, JSArrayBuffer, memory)                \
   MACRO(SMALL_NUMBER, uint32_t, min_mem_pages)        \
+  MACRO(SMALL_NUMBER, uint32_t, max_mem_pages)        \
   MACRO(WEAK_LINK, WasmCompiledModule, next_instance) \
   MACRO(WEAK_LINK, WasmCompiledModule, prev_instance) \
   MACRO(WEAK_LINK, JSObject, owning_instance)         \

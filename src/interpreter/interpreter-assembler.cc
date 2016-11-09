@@ -485,21 +485,6 @@ Node* InterpreterAssembler::LoadAndUntagConstantPoolEntry(Node* index) {
   }
 }
 
-Node* InterpreterAssembler::LoadContextSlot(Node* context, Node* slot_index) {
-  Node* offset =
-      IntPtrAdd(WordShl(slot_index, kPointerSizeLog2),
-                IntPtrConstant(Context::kHeaderSize - kHeapObjectTag));
-  return Load(MachineType::AnyTagged(), context, offset);
-}
-
-Node* InterpreterAssembler::StoreContextSlot(Node* context, Node* slot_index,
-                                             Node* value) {
-  Node* offset =
-      IntPtrAdd(WordShl(slot_index, kPointerSizeLog2),
-                IntPtrConstant(Context::kHeaderSize - kHeapObjectTag));
-  return Store(MachineRepresentation::kTagged, context, offset, value);
-}
-
 Node* InterpreterAssembler::LoadTypeFeedbackVector() {
   Node* function = LoadRegister(Register::function_closure());
   Node* literals = LoadObjectField(function, JSFunction::kLiteralsOffset);
@@ -1174,8 +1159,9 @@ Node* InterpreterAssembler::TruncateTaggedToWord32WithFeedback(
         // We do not require an Or with earlier feedback here because once we
         // convert the value to a number, we cannot reach this path. We can
         // only reach this path on the first pass when the feedback is kNone.
-        Assert(Word32Equal(var_type_feedback->value(),
-                           Int32Constant(BinaryOperationFeedback::kNone)));
+        CSA_ASSERT(this,
+                   Word32Equal(var_type_feedback->value(),
+                               Int32Constant(BinaryOperationFeedback::kNone)));
 
         Label if_valueisoddball(this),
             if_valueisnotoddball(this, Label::kDeferred);

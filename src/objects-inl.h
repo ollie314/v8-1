@@ -5781,6 +5781,8 @@ ACCESSORS(JSFixedArrayIterator, initial_next, JSFunction, kNextOffset)
 
 ACCESSORS(Module, code, Object, kCodeOffset)
 ACCESSORS(Module, exports, ObjectHashTable, kExportsOffset)
+ACCESSORS(Module, regular_exports, FixedArray, kRegularExportsOffset)
+ACCESSORS(Module, regular_imports, FixedArray, kRegularImportsOffset)
 ACCESSORS(Module, module_namespace, HeapObject, kModuleNamespaceOffset)
 ACCESSORS(Module, requested_modules, FixedArray, kRequestedModulesOffset)
 SMI_ACCESSORS(Module, hash, kHashOffset)
@@ -6263,6 +6265,10 @@ void SharedFunctionInfo::ReplaceCode(Code* value) {
   if (is_compiled()) set_never_compiled(false);
 }
 
+bool SharedFunctionInfo::IsInterpreted() const {
+  return code()->is_interpreter_trampoline_builtin();
+}
+
 bool SharedFunctionInfo::HasBaselineCode() const {
   return code()->kind() == Code::FUNCTION;
 }
@@ -6504,6 +6510,10 @@ bool JSFunction::IsOptimized() {
   return code()->kind() == Code::OPTIMIZED_FUNCTION;
 }
 
+bool JSFunction::IsInterpreted() {
+  return code()->is_interpreter_trampoline_builtin();
+}
+
 bool JSFunction::IsMarkedForBaseline() {
   return code() ==
          GetIsolate()->builtins()->builtin(Builtins::kCompileBaseline);
@@ -6549,11 +6559,10 @@ void Map::InobjectSlackTrackingStep() {
 }
 
 AbstractCode* JSFunction::abstract_code() {
-  Code* code = this->code();
-  if (code->is_interpreter_trampoline_builtin()) {
+  if (IsInterpreted()) {
     return AbstractCode::cast(shared()->bytecode_array());
   } else {
-    return AbstractCode::cast(code);
+    return AbstractCode::cast(code());
   }
 }
 

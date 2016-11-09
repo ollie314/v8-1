@@ -14,6 +14,7 @@ namespace internal {
 
 
 class AstRawString;
+class ModuleInfo;
 class ModuleInfoEntry;
 
 class ModuleDescriptor : public ZoneObject {
@@ -85,10 +86,12 @@ class ModuleDescriptor : public ZoneObject {
     int module_request;
 
     // Import/export entries that are associated with a MODULE-allocated
-    // variable use the cell_index value to encode the location of their cell.
-    // Negative values are used for imports and positive values for exports.
-    // For entries that are not associated with a MODULE-allocated variable,
-    // cell_index is 0.
+    // variable (i.e. regular_imports and regular_exports after Validate) use
+    // the cell_index value to encode the location of their cell.  During
+    // variable allocation, this will be be copied into the variable's index
+    // field.
+    // Entries that are not associated with a MODULE-allocated variable have
+    // GetCellIndexKind(cell_index) == kInvalid.
     int cell_index;
 
     // TODO(neis): Remove local_name component?
@@ -107,6 +110,9 @@ class ModuleDescriptor : public ZoneObject {
     static Entry* Deserialize(Isolate* isolate, AstValueFactory* avfactory,
                               Handle<ModuleInfoEntry> entry);
   };
+
+  enum CellIndexKind { kInvalid, kExport, kImport };
+  static CellIndexKind GetCellIndexKind(int cell_index);
 
   // Module requests.
   const ZoneMap<const AstRawString*, int>& module_requests() const {
@@ -169,7 +175,7 @@ class ModuleDescriptor : public ZoneObject {
   Handle<FixedArray> SerializeRegularExports(Isolate* isolate,
                                              Zone* zone) const;
   void DeserializeRegularExports(Isolate* isolate, AstValueFactory* avfactory,
-                                 Handle<FixedArray> data);
+                                 Handle<ModuleInfo> module_info);
 
  private:
   // TODO(neis): Use STL datastructure instead of ZoneList?

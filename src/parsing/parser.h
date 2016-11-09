@@ -134,7 +134,6 @@ class ParseData {
 // JAVASCRIPT PARSING
 
 class Parser;
-class SingletonLogger;
 
 
 struct ParserFormalParameters : FormalParametersBase {
@@ -235,6 +234,22 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
     return scope()->AllowsLazyParsingWithoutUnresolvedVariables(
         original_scope_);
   }
+
+  bool parse_lazily() const { return mode_ == PARSE_LAZILY; }
+  enum Mode { PARSE_LAZILY, PARSE_EAGERLY };
+
+  class ParsingModeScope BASE_EMBEDDED {
+   public:
+    ParsingModeScope(Parser* parser, Mode mode)
+        : parser_(parser), old_mode_(parser->mode_) {
+      parser_->mode_ = mode;
+    }
+    ~ParsingModeScope() { parser_->mode_ = old_mode_; }
+
+   private:
+    Parser* parser_;
+    Mode old_mode_;
+  };
 
   // Runtime encoding of different completion modes.
   enum CompletionKind {
@@ -523,7 +538,6 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
 
   PreParser::PreParseResult ParseFunctionWithPreParser(FunctionKind kind,
                                                        DeclarationScope* scope,
-                                                       SingletonLogger* logger,
                                                        bool is_inner_function,
                                                        bool may_abort);
 
@@ -1121,6 +1135,7 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   Scanner scanner_;
   PreParser* reusable_preparser_;
   Scope* original_scope_;  // for ES5 function declarations in sloppy eval
+  Mode mode_;
 
   friend class ParserTarget;
   friend class ParserTargetScope;
@@ -1137,6 +1152,7 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   int total_preparse_skipped_;
 
   bool parsing_on_main_thread_;
+  ParserLogger* log_;
 };
 
 // ----------------------------------------------------------------------------

@@ -57,6 +57,7 @@
   V(StateValues)          \
   V(TypedStateValues)     \
   V(ObjectState)          \
+  V(TypedObjectState)     \
   V(Call)                 \
   V(Parameter)            \
   V(OsrValue)             \
@@ -280,6 +281,7 @@
   V(NumberToBoolean)                   \
   V(NumberToInt32)                     \
   V(NumberToUint32)                    \
+  V(NumberToUint8Clamped)              \
   V(NumberSilenceNaN)
 
 #define SIMPLIFIED_OTHER_OP_LIST(V) \

@@ -1109,6 +1109,20 @@ WASM_EXEC_TEST(I32ReinterpretF32) {
   }
 }
 
+WASM_EXEC_TEST(LoadMaxUint32Offset) {
+  TestingModule module(execution_mode);
+  module.AddMemoryElems<int32_t>(8);
+  WasmRunner<int32_t> r(&module);
+
+  BUILD(r, kExprI8Const, 0,  // index
+        static_cast<byte>(v8::internal::wasm::WasmOpcodes::LoadStoreOpcodeOf(
+            MachineType::Int32(), false)),  // --
+        0,                                  // alignment
+        U32V_5(0xffffffff));                // offset
+
+  CHECK_TRAP32(r.Call());
+}
+
 WASM_EXEC_TEST(LoadStoreLoad) {
   TestingModule module(execution_mode);
   int32_t* memory = module.AddMemoryElems<int32_t>(8);
@@ -2670,28 +2684,6 @@ WASM_EXEC_TEST(MultipleCallIndirect) {
   CHECK_TRAP(r.Call(1, 2, 0));
   CHECK_TRAP(r.Call(2, 0, 1));
   CHECK_TRAP(r.Call(2, 1, 0));
-}
-
-WASM_EXEC_TEST(CallIndirect_NoTable) {
-  TestSignatures sigs;
-  TestingModule module(execution_mode);
-
-  // One function.
-  WasmFunctionCompiler t1(sigs.i_ii(), &module);
-  BUILD(t1, WASM_I32_ADD(WASM_GET_LOCAL(0), WASM_GET_LOCAL(1)));
-  t1.CompileAndAdd(/*sig_index*/ 1);
-
-  // Signature table.
-  module.AddSignature(sigs.f_ff());
-  module.AddSignature(sigs.i_ii());
-
-  // Builder the caller function.
-  WasmRunner<int32_t> r(&module, MachineType::Int32());
-  BUILD(r, WASM_CALL_INDIRECT2(1, WASM_GET_LOCAL(0), WASM_I8(66), WASM_I8(22)));
-
-  CHECK_TRAP(r.Call(0));
-  CHECK_TRAP(r.Call(1));
-  CHECK_TRAP(r.Call(2));
 }
 
 WASM_EXEC_TEST(CallIndirect_EmptyTable) {

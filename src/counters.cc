@@ -301,7 +301,8 @@ void RuntimeCallStats::Leave(RuntimeCallStats* stats, RuntimeCallTimer* timer) {
     // buried one that's leaving. We don't care about keeping nested timings
     // accurate, just avoid crashing by keeping the chain intact.
     RuntimeCallTimer* next = stats->current_timer_.Value();
-    while (next->parent() != timer) next = next->parent();
+    while (next && next->parent() != timer) next = next->parent();
+    if (next == nullptr) return;
     next->parent_.SetValue(timer->Stop());
   }
 }
@@ -309,9 +310,10 @@ void RuntimeCallStats::Leave(RuntimeCallStats* stats, RuntimeCallTimer* timer) {
 // static
 void RuntimeCallStats::CorrectCurrentCounterId(RuntimeCallStats* stats,
                                                CounterId counter_id) {
-  DCHECK_NOT_NULL(stats->current_timer_.Value());
-  RuntimeCallCounter* counter = &(stats->*counter_id);
-  stats->current_timer_.Value()->counter_ = counter;
+  RuntimeCallTimer* timer = stats->current_timer_.Value();
+  // When RCS are enabled dynamically there might be no current timer set up.
+  if (timer == nullptr) return;
+  timer->counter_ = &(stats->*counter_id);
 }
 
 void RuntimeCallStats::Print(std::ostream& os) {
@@ -346,6 +348,14 @@ void RuntimeCallStats::Print(std::ostream& os) {
 void RuntimeCallStats::Reset() {
   if (V8_LIKELY(FLAG_runtime_stats == 0)) return;
 
+  // In tracing, we only what to trace the time spent on top level trace events,
+  // if runtime counter stack is not empty, we should clear the whole runtime
+  // counter stack, and then reset counters so that we can dump counters into
+  // top level trace events accurately.
+  while (current_timer_.Value()) {
+    current_timer_.SetValue(current_timer_.Value()->Stop());
+  }
+
 #define RESET_COUNTER(name) this->name.Reset();
   FOR_EACH_MANUAL_COUNTER(RESET_COUNTER)
 #undef RESET_COUNTER
@@ -370,9 +380,6 @@ void RuntimeCallStats::Reset() {
 }
 
 void RuntimeCallStats::Dump(v8::tracing::TracedValue* value) {
-  if (current_timer_.Value() != nullptr) {
-    current_timer_.Value()->Elapsed();
-  }
 #define DUMP_COUNTER(name) \
   if (this->name.count > 0) this->name.Dump(value);
   FOR_EACH_MANUAL_COUNTER(DUMP_COUNTER)

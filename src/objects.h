@@ -7319,6 +7319,14 @@ class SharedFunctionInfo: public HeapObject {
   // a Code object or a BytecodeArray.
   inline AbstractCode* abstract_code();
 
+  // Tells whether or not this shared function info is interpreted.
+  //
+  // Note: function->IsInterpreted() does not necessarily return the same value
+  // as function->shared()->IsInterpreted() because the shared function info
+  // could tier up to baseline via a different function closure. The interpreter
+  // entry stub will "self-heal" this divergence when the function is executed.
+  inline bool IsInterpreted() const;
+
   inline void ReplaceCode(Code* code);
   inline bool HasBaselineCode() const;
 
@@ -8109,6 +8117,12 @@ class ModuleInfo : public FixedArray {
   inline FixedArray* namespace_imports() const;
   inline FixedArray* regular_imports() const;
 
+  // Accessors for [regular_exports].
+  int RegularExportCount() const;
+  String* RegularExportLocalName(int i) const;
+  int RegularExportCellIndex(int i) const;
+  FixedArray* RegularExportExportNames(int i) const;
+
   static Handle<ModuleInfoEntry> LookupRegularImport(Handle<ModuleInfo> info,
                                                      Handle<String> local_name);
 
@@ -8118,6 +8132,7 @@ class ModuleInfo : public FixedArray {
 
  private:
   friend class Factory;
+  friend class ModuleDescriptor;
   enum {
     kModuleRequestsIndex,
     kSpecialExportsIndex,
@@ -8125,6 +8140,12 @@ class ModuleInfo : public FixedArray {
     kNamespaceImportsIndex,
     kRegularImportsIndex,
     kLength
+  };
+  enum {
+    kRegularExportLocalNameOffset,
+    kRegularExportCellIndexOffset,
+    kRegularExportExportNamesOffset,
+    kRegularExportLength
   };
   DISALLOW_IMPLICIT_CONSTRUCTORS(ModuleInfo);
 };
@@ -8166,7 +8187,15 @@ class Module : public Struct {
   // Module::ModuleVerify() for the precise invariant.
   DECL_ACCESSORS(code, Object)
 
-  // The export table.
+  // Arrays of cells corresponding to regular exports and regular imports.
+  // A cell's position in the array is determined by the cell index of the
+  // associated module entry (which coincides with the variable index of the
+  // associated variable).
+  DECL_ACCESSORS(regular_exports, FixedArray)
+  DECL_ACCESSORS(regular_imports, FixedArray)
+
+  // The complete export table, mapping an export name to its cell.
+  // TODO(neis): We may want to remove the regular exports from the table.
   DECL_ACCESSORS(exports, ObjectHashTable)
 
   // Hash for this object (a random non-zero Smi).
@@ -8197,12 +8226,9 @@ class Module : public Struct {
   // Implementation of spec operation ModuleEvaluation.
   static MUST_USE_RESULT MaybeHandle<Object> Evaluate(Handle<Module> module);
 
-  static Handle<Object> LoadExport(Handle<Module> module, Handle<String> name);
-  static void StoreExport(Handle<Module> module, Handle<String> name,
-                          Handle<Object> value);
-
-  static Handle<Object> LoadImport(Handle<Module> module, Handle<String> name,
-                                   int module_request);
+  static Handle<Object> LoadVariable(Handle<Module> module, int cell_index);
+  static void StoreVariable(Handle<Module> module, int cell_index,
+                            Handle<Object> value);
 
   // Get the namespace object for [module_request] of [module].  If it doesn't
   // exist yet, it is created.
@@ -8211,7 +8237,9 @@ class Module : public Struct {
 
   static const int kCodeOffset = HeapObject::kHeaderSize;
   static const int kExportsOffset = kCodeOffset + kPointerSize;
-  static const int kHashOffset = kExportsOffset + kPointerSize;
+  static const int kRegularExportsOffset = kExportsOffset + kPointerSize;
+  static const int kRegularImportsOffset = kRegularExportsOffset + kPointerSize;
+  static const int kHashOffset = kRegularImportsOffset + kPointerSize;
   static const int kModuleNamespaceOffset = kHashOffset + kPointerSize;
   static const int kRequestedModulesOffset =
       kModuleNamespaceOffset + kPointerSize;
@@ -8220,7 +8248,8 @@ class Module : public Struct {
  private:
   enum { kEvaluatedBit };
 
-  static void CreateExport(Handle<Module> module, Handle<FixedArray> names);
+  static void CreateExport(Handle<Module> module, int cell_index,
+                           Handle<FixedArray> names);
   static void CreateIndirectExport(Handle<Module> module, Handle<String> name,
                                    Handle<ModuleInfoEntry> entry);
 
@@ -8331,6 +8360,14 @@ class JSFunction: public JSObject {
 
   // Tells whether this function inlines the given shared function info.
   bool Inlines(SharedFunctionInfo* candidate);
+
+  // Tells whether or not this function is interpreted.
+  //
+  // Note: function->IsInterpreted() does not necessarily return the same value
+  // as function->shared()->IsInterpreted() because the shared function info
+  // could tier up to baseline via a different function closure. The interpreter
+  // entry stub will "self-heal" this divergence when the function is executed.
+  inline bool IsInterpreted();
 
   // Tells whether or not this function has been optimized.
   inline bool IsOptimized();

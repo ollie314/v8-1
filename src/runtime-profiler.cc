@@ -26,9 +26,6 @@ static const int kProfilerTicksBeforeBaseline = 1;
 // Number of times a function has to be seen on the stack before it is
 // optimized.
 static const int kProfilerTicksBeforeOptimization = 2;
-// Number of times a interpreted function has to be seen on the stack before
-// it is optimized (with Turbofan, ignition is only optimized with Turbofan).
-static const int kProfilerTicksBeforeOptimizingInterpretedFunction = 4;
 // If the function optimization was disabled due to high deoptimization count,
 // but the function is hot and has been seen on the stack this number of times,
 // then we try to reenable optimization for this function.
@@ -39,7 +36,6 @@ static const int kProfilerTicksBeforeReenablingOptimization = 250;
 static const int kTicksWhenNotEnoughTypeInfo = 100;
 // We only have one byte to store the number of ticks.
 STATIC_ASSERT(kProfilerTicksBeforeOptimization < 256);
-STATIC_ASSERT(kProfilerTicksBeforeOptimizingInterpretedFunction < 256);
 STATIC_ASSERT(kProfilerTicksBeforeReenablingOptimization < 256);
 STATIC_ASSERT(kTicksWhenNotEnoughTypeInfo < 256);
 
@@ -114,8 +110,7 @@ static void GetICCounts(JSFunction* function, int* ic_with_type_info_count,
   // Harvest vector-ics as well
   TypeFeedbackVector* vector = function->feedback_vector();
   int with = 0, gen = 0, type_vector_ic_count = 0;
-  const bool is_interpreted =
-      function->shared()->code()->is_interpreter_trampoline_builtin();
+  const bool is_interpreted = function->shared()->IsInterpreted();
 
   vector->ComputeCounts(&with, &gen, &type_vector_ic_count, is_interpreted);
   *ic_total_count += type_vector_ic_count;
@@ -161,11 +156,7 @@ void RuntimeProfiler::Baseline(JSFunction* function,
                                OptimizationReason reason) {
   DCHECK_NE(reason, OptimizationReason::kDoNotOptimize);
   TraceRecompile(function, OptimizationReasonToString(reason), "baseline");
-
-  // TODO(4280): Fix this to check function is compiled for the interpreter
-  // once we have a standard way to check that. For now function will only
-  // have a bytecode array if compiled for the interpreter.
-  DCHECK(function->shared()->HasBytecodeArray());
+  DCHECK(function->shared()->IsInterpreted());
   function->MarkForBaseline();
 }
 
@@ -403,7 +394,7 @@ OptimizationReason RuntimeProfiler::ShouldOptimizeIgnition(
   SharedFunctionInfo* shared = function->shared();
   int ticks = shared->profiler_ticks();
 
-  if (ticks >= kProfilerTicksBeforeOptimizingInterpretedFunction) {
+  if (ticks >= kProfilerTicksBeforeOptimization) {
     int typeinfo, generic, total, type_percentage, generic_percentage;
     GetICCounts(function, &typeinfo, &generic, &total, &type_percentage,
                 &generic_percentage);
@@ -468,7 +459,7 @@ void RuntimeProfiler::MarkCandidatesForOptimization() {
 
     Compiler::CompilationTier next_tier =
         Compiler::NextCompilationTier(function);
-    if (function->shared()->code()->is_interpreter_trampoline_builtin()) {
+    if (function->shared()->IsInterpreted()) {
       if (next_tier == Compiler::BASELINE) {
         MaybeBaselineIgnition(function, frame);
       } else {

@@ -161,7 +161,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                                 compiler::Node* offset);
   compiler::Node* IsRegularHeapObjectSize(compiler::Node* size);
 
-  void Assert(compiler::Node* condition, const char* string = nullptr,
+  typedef std::function<compiler::Node*()> ConditionBody;
+  void Assert(ConditionBody condition_body, const char* string = nullptr,
               const char* file = nullptr, int line = 0);
 
   // Check a value for smi-ness
@@ -331,7 +332,12 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
 
   // Context manipulation
   compiler::Node* LoadContextElement(compiler::Node* context, int slot_index);
+  compiler::Node* LoadContextElement(compiler::Node* context,
+                                     compiler::Node* slot_index);
   compiler::Node* StoreContextElement(compiler::Node* context, int slot_index,
+                                      compiler::Node* value);
+  compiler::Node* StoreContextElement(compiler::Node* context,
+                                      compiler::Node* slot_index,
                                       compiler::Node* value);
   compiler::Node* LoadNativeContext(compiler::Node* context);
 
@@ -612,6 +618,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   compiler::Node* IsStringInstanceType(compiler::Node* instance_type);
   compiler::Node* IsString(compiler::Node* object);
   compiler::Node* IsJSObject(compiler::Node* object);
+  compiler::Node* IsJSGlobalProxy(compiler::Node* object);
   compiler::Node* IsJSReceiverInstanceType(compiler::Node* instance_type);
   compiler::Node* IsJSReceiver(compiler::Node* object);
   compiler::Node* IsMap(compiler::Node* object);
@@ -1107,6 +1114,10 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   // TypedArray/ArrayBuffer helpers
   compiler::Node* IsDetachedBuffer(compiler::Node* buffer);
 
+  compiler::Node* ElementOffsetFromIndex(compiler::Node* index,
+                                         ElementsKind kind, ParameterMode mode,
+                                         int base_size = 0);
+
  private:
   friend class CodeStubArguments;
 
@@ -1166,10 +1177,6 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   void BranchIfPrototypesHaveNoElements(compiler::Node* receiver_map,
                                         Label* definitely_no_elements,
                                         Label* possibly_elements);
-
-  compiler::Node* ElementOffsetFromIndex(compiler::Node* index,
-                                         ElementsKind kind, ParameterMode mode,
-                                         int base_size = 0);
 
   compiler::Node* AllocateRawAligned(compiler::Node* size_in_bytes,
                                      AllocationFlags flags,
@@ -1257,14 +1264,20 @@ class CodeStubArguments {
   compiler::Node* fp_;
 };
 
-#define CSA_ASSERT(x) Assert((x), #x, __FILE__, __LINE__)
+#ifdef DEBUG
+#define CSA_ASSERT(csa, x) \
+  (csa)->Assert([&] { return (x); }, #x, __FILE__, __LINE__)
+#else
+#define CSA_ASSERT(csa, x) ((void)0)
+#endif
+
 #ifdef ENABLE_SLOW_DCHECKS
-#define CSA_SLOW_ASSERT(x)               \
-  if (FLAG_enable_slow_asserts) {        \
-    Assert((x), #x, __FILE__, __LINE__); \
+#define CSA_SLOW_ASSERT(csa, x)                                 \
+  if (FLAG_enable_slow_asserts) {                               \
+    (csa)->Assert([&] { return (x); }, #x, __FILE__, __LINE__); \
   }
 #else
-#define CSA_SLOW_ASSERT(x)
+#define CSA_SLOW_ASSERT(csa, x) ((void)0)
 #endif
 
 DEFINE_OPERATORS_FOR_FLAGS(CodeStubAssembler::AllocationFlags);

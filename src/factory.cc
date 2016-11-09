@@ -1632,16 +1632,6 @@ Handle<JSObject> Factory::NewJSObject(Handle<JSFunction> constructor,
 }
 
 
-Handle<JSObject> Factory::NewJSObjectWithMemento(
-    Handle<JSFunction> constructor,
-    Handle<AllocationSite> site) {
-  JSFunction::EnsureHasInitialMap(constructor);
-  CALL_HEAP_FUNCTION(
-      isolate(),
-      isolate()->heap()->AllocateJSObject(*constructor, NOT_TENURED, *site),
-      JSObject);
-}
-
 Handle<JSObject> Factory::NewJSObjectWithNullProto() {
   Handle<JSObject> result = NewJSObject(isolate()->object_function());
   Handle<Map> new_map =
@@ -1816,7 +1806,11 @@ Handle<Module> Factory::NewModule(Handle<SharedFunctionInfo> code) {
   Handle<ModuleInfo> module_info(code->scope_info()->ModuleDescriptorInfo(),
                                  isolate());
   Handle<ObjectHashTable> exports =
-      ObjectHashTable::New(isolate(), module_info->regular_exports()->length());
+      ObjectHashTable::New(isolate(), module_info->RegularExportCount());
+  Handle<FixedArray> regular_exports =
+      NewFixedArray(module_info->RegularExportCount());
+  Handle<FixedArray> regular_imports =
+      NewFixedArray(module_info->regular_imports()->length());
   int requested_modules_length = module_info->module_requests()->length();
   Handle<FixedArray> requested_modules =
       requested_modules_length > 0 ? NewFixedArray(requested_modules_length)
@@ -1825,6 +1819,8 @@ Handle<Module> Factory::NewModule(Handle<SharedFunctionInfo> code) {
   Handle<Module> module = Handle<Module>::cast(NewStruct(MODULE_TYPE));
   module->set_code(*code);
   module->set_exports(*exports);
+  module->set_regular_exports(*regular_exports);
+  module->set_regular_imports(*regular_imports);
   module->set_hash(isolate()->GenerateIdentityHash(Smi::kMaxValue));
   module->set_module_namespace(isolate()->heap()->undefined_value());
   module->set_requested_modules(*requested_modules);

@@ -18,7 +18,7 @@ function receive(message) {
 class DebugWrapper {
   constructor() {
     // Message dictionary storing {id, message} pairs.
-    this.receivedMessages = {};
+    this.receivedMessages = new Map();
 
     // Each message dispatched by the Debug wrapper is assigned a unique number
     // using nextMessageId.
@@ -29,14 +29,42 @@ class DebugWrapper {
 
     // TODO(jgruber): Determine which of these are still required and possible.
     // Debug events which can occur in the V8 JavaScript engine.
-    this.DebugEvent = { Break: 1
-                      , Exception: 2
-                      , NewFunction: 3
-                      , BeforeCompile: 4
-                      , AfterCompile: 5
-                      , CompileError: 6
-                      , AsyncTaskEvent: 7
+    this.DebugEvent = { Break: 1,
+                        Exception: 2,
+                        NewFunction: 3,
+                        BeforeCompile: 4,
+                        AfterCompile: 5,
+                        CompileError: 6,
+                        AsyncTaskEvent: 7
                       };
+
+    // The different types of steps.
+    this.StepAction = { StepOut: 0,
+                        StepNext: 1,
+                        StepIn: 2,
+                        StepFrame: 3,
+                      };
+
+    // A copy of the scope types from runtime-debug.cc.
+    // NOTE: these constants should be backward-compatible, so
+    // add new ones to the end of this list.
+    this.ScopeType = { Global:  0,
+                       Local:   1,
+                       With:    2,
+                       Closure: 3,
+                       Catch:   4,
+                       Block:   5,
+                       Script:  6,
+                       Eval:    7,
+                       Module:  8
+                     };
+
+    // Types of exceptions that can be broken upon.
+    this.ExceptionBreak = { Caught : 0,
+                            Uncaught: 1 };
+
+    // Store the current script id so we can skip corresponding break events.
+    this.thisScriptId = %FunctionGetScriptId(receive);
 
     // Register as the active wrapper.
     assertTrue(activeWrapper === undefined);
@@ -51,6 +79,39 @@ class DebugWrapper {
   stepOver() { this.sendMessageForMethodChecked("Debugger.stepOver"); }
   stepInto() { this.sendMessageForMethodChecked("Debugger.stepInto"); }
   stepOut() { this.sendMessageForMethodChecked("Debugger.stepOut"); }
+
+  setBreakOnException()  {
+    this.sendMessageForMethodChecked(
+        "Debugger.setPauseOnExceptions", { state : "all" });
+  }
+
+  clearBreakOnException()  {
+    const newState = this.isBreakOnUncaughtException() ? "uncaught" : "none";
+    this.sendMessageForMethodChecked(
+        "Debugger.setPauseOnExceptions", { state : newState });
+  }
+
+  isBreakOnException() {
+    return !!%IsBreakOnException(this.ExceptionBreak.Caught);
+  };
+
+  setBreakOnUncaughtException()  {
+    const newState = this.isBreakOnException() ? "all" : "uncaught";
+    this.sendMessageForMethodChecked(
+        "Debugger.setPauseOnExceptions", { state : newState });
+  }
+
+  clearBreakOnUncaughtException()  {
+    const newState = this.isBreakOnException() ? "all" : "none";
+    this.sendMessageForMethodChecked(
+        "Debugger.setPauseOnExceptions", { state : newState });
+  }
+
+  isBreakOnUncaughtException() {
+    return !!%IsBreakOnException(this.ExceptionBreak.Uncaught);
+  };
+
+  clearStepping() { %ClearStepping(); };
 
   // Returns the resulting breakpoint id.
   setBreakPoint(func, opt_line, opt_column, opt_condition) {
@@ -69,14 +130,15 @@ class DebugWrapper {
 
     const {msgid, msg} = this.createMessage(
         "Debugger.setBreakpoint",
-        { location : { scriptId : scriptid.toString()
-                     , lineNumber : loc.line
-                     , columnNumber : loc.column
+        { location : { scriptId : scriptid.toString(),
+                       lineNumber : loc.line,
+                       columnNumber : loc.column
                      }
         });
     this.sendMessage(msg);
 
-    const reply = this.receivedMessages[msgid];
+    const reply = this.takeReplyChecked(msgid);
+    assertTrue(reply.result !== undefined);
     const breakid = reply.result.breakpointId;
     assertTrue(breakid !== undefined);
 
@@ -87,7 +149,7 @@ class DebugWrapper {
     const {msgid, msg} = this.createMessage(
         "Debugger.removeBreakpoint", { breakpointId : breakid });
     this.sendMessage(msg);
-    assertTrue(this.receivedMessages[msgid] !== undefined);
+    this.takeReplyChecked(msgid);
   }
 
   // Returns the serialized result of the given expression. For example:
@@ -95,12 +157,12 @@ class DebugWrapper {
   evaluate(frameid, expression) {
     const {msgid, msg} = this.createMessage(
         "Debugger.evaluateOnCallFrame",
-        { callFrameId : frameid
-        , expression : expression
+        { callFrameId : frameid,
+          expression : expression
         });
     this.sendMessage(msg);
 
-    const reply = this.receivedMessages[msgid];
+    const reply = this.takeReplyChecked(msgid);
     return reply.result.result;
   }
 
@@ -117,7 +179,7 @@ class DebugWrapper {
       method: method,
       params: params,
     });
-    return {msgid: id, msg: msg};
+    return { msgid : id, msg: msg };
   }
 
   receiveMessage(message) {
@@ -125,7 +187,7 @@ class DebugWrapper {
 
     const parsedMessage = JSON.parse(message);
     if (parsedMessage.id !== undefined) {
-      this.receivedMessages[parsedMessage.id] = parsedMessage;
+      this.receivedMessages.set(parsedMessage.id, parsedMessage);
     }
 
     this.dispatchMessage(parsedMessage);
@@ -136,10 +198,72 @@ class DebugWrapper {
     send(message);
   }
 
-  sendMessageForMethodChecked(method) {
-    const {msgid, msg} = this.createMessage(method);
+  sendMessageForMethodChecked(method, params) {
+    const {msgid, msg} = this.createMessage(method, params);
     this.sendMessage(msg);
-    assertTrue(this.receivedMessages[msgid] !== undefined);
+    this.takeReplyChecked(msgid);
+  }
+
+  takeReplyChecked(msgid) {
+    const reply = this.receivedMessages.get(msgid);
+    assertTrue(reply !== undefined);
+    this.receivedMessages.delete(msgid);
+    return reply;
+  }
+
+  execStatePrepareStep(action) {
+    switch(action) {
+      case this.StepAction.StepOut: this.stepOut(); break;
+      case this.StepAction.StepNext: this.stepOver(); break;
+      case this.StepAction.StepIn: this.stepInto(); break;
+      default: %AbortJS("Unsupported StepAction"); break;
+    }
+  }
+
+  execStateScopeType(type) {
+    switch (type) {
+      case "global": return this.ScopeType.Global;
+      case "local": return this.ScopeType.Local;
+      case "with": return this.ScopeType.With;
+      case "closure": return this.ScopeType.Closure;
+      case "catch": return this.ScopeType.Catch;
+      case "block": return this.ScopeType.Block;
+      case "script": return this.ScopeType.Script;
+      default: %AbortJS("Unexpected scope type");
+    }
+  }
+
+  // Returns an array of property descriptors of the scope object.
+  // This is in contrast to the original API, which simply passed object
+  // mirrors.
+  execStateScopeObject(obj) {
+    const {msgid, msg} = this.createMessage(
+        "Runtime.getProperties", { objectId : obj.objectId });
+    this.sendMessage(msg);
+    const reply = this.takeReplyChecked(msgid);
+    return { value : () => reply.result.result };
+  }
+
+  execStateScope(scope) {
+    return { scopeType : () => this.execStateScopeType(scope.type),
+             scopeObject : () => this.execStateScopeObject(scope.object)
+           };
+  }
+
+  execStateFrame(frame) {
+    const scriptid = parseInt(frame.location.scriptId);
+    const line = frame.location.lineNumber;
+    const column = frame.location.columnNumber;
+    const loc = %ScriptLocationFromLine2(scriptid, line, column, 0);
+    const func = { name : () => frame.functionName };
+    return { sourceLineText : () => loc.sourceText,
+             functionName : () => frame.functionName,
+             func : () => func,
+             scopeCount : () => frame.scopeChain.length,
+             scope : (index) => this.execStateScope(frame.scopeChain[index]),
+             allScopes : () => frame.scopeChain.map(
+                 this.execStateScope.bind(this))
+           };
   }
 
   // --- Message handlers. -----------------------------------------------------
@@ -156,15 +280,37 @@ class DebugWrapper {
   handleDebuggerPaused(message) {
     const params = message.params;
 
+    var debugEvent;
+    switch (params.reason) {
+      case "exception":
+      case "promiseRejection":
+        debugEvent = this.DebugEvent.Exception;
+        break;
+      default:
+        // TODO(jgruber): More granularity.
+        debugEvent = this.DebugEvent.Break;
+        break;
+    }
+
+    // Skip break events in this file.
+    if (params.callFrames[0].location.scriptId == this.thisScriptId) return;
+
     // TODO(jgruber): Arguments as needed.
-    let execState = { frames: params.callFrames };
-    this.invokeListener(this.DebugEvent.Break, execState);
+    let execState = { frames : params.callFrames,
+                      prepareStep : this.execStatePrepareStep.bind(this),
+                      frame : (index) => this.execStateFrame(
+                          index ? params.callFrames[index]
+                                : params.callFrames[0]),
+                      frameCount : () => params.callFrames.length
+                    };
+    let eventData = this.execStateFrame(params.callFrames[0]);
+    this.invokeListener(debugEvent, execState, eventData);
   }
 
   handleDebuggerScriptParsed(message) {
     const params = message.params;
-    let eventData = { scriptId : params.scriptId
-                    , eventType : this.DebugEvent.AfterCompile
+    let eventData = { scriptId : params.scriptId,
+                      eventType : this.DebugEvent.AfterCompile
                     }
 
     // TODO(jgruber): Arguments as needed. Still completely missing exec_state,
@@ -179,3 +325,19 @@ class DebugWrapper {
     }
   }
 }
+
+// Simulate the debug object generated by --expose-debug-as debug.
+var debug = { instance : undefined };
+
+Object.defineProperty(debug, 'Debug', { get: function() {
+  if (!debug.instance) {
+    debug.instance = new DebugWrapper();
+    debug.instance.enable();
+  }
+  return debug.instance;
+}});
+
+Object.defineProperty(debug, 'ScopeType', { get: function() {
+  const instance = debug.Debug;
+  return instance.ScopeType;
+}});

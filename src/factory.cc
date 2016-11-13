@@ -962,6 +962,14 @@ Handle<Context> Factory::NewBlockContext(Handle<JSFunction> function,
   return context;
 }
 
+Handle<Context> Factory::NewPromiseResolvingFunctionContext(int length) {
+  DCHECK_GE(length, Context::MIN_CONTEXT_SLOTS);
+  Handle<FixedArray> array = NewFixedArray(length);
+  array->set_map_no_write_barrier(*function_context_map());
+  Handle<Context> context = Handle<Context>::cast(array);
+  context->set_extension(*the_hole_value());
+  return context;
+}
 
 Handle<Struct> Factory::NewStruct(InstanceType type) {
   CALL_HEAP_FUNCTION(
@@ -973,7 +981,8 @@ Handle<Struct> Factory::NewStruct(InstanceType type) {
 Handle<PromiseResolveThenableJobInfo> Factory::NewPromiseResolveThenableJobInfo(
     Handle<JSReceiver> thenable, Handle<JSReceiver> then,
     Handle<JSFunction> resolve, Handle<JSFunction> reject,
-    Handle<Object> debug_id, Handle<Object> debug_name) {
+    Handle<Object> debug_id, Handle<Object> debug_name,
+    Handle<Context> context) {
   Handle<PromiseResolveThenableJobInfo> result =
       Handle<PromiseResolveThenableJobInfo>::cast(
           NewStruct(PROMISE_RESOLVE_THENABLE_JOB_INFO_TYPE));
@@ -983,6 +992,7 @@ Handle<PromiseResolveThenableJobInfo> Factory::NewPromiseResolveThenableJobInfo(
   result->set_reject(*reject);
   result->set_debug_id(*debug_id);
   result->set_debug_name(*debug_name);
+  result->set_context(*context);
   return result;
 }
 

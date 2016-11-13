@@ -73,6 +73,7 @@
 #include "src/version.h"
 #include "src/vm-state-inl.h"
 #include "src/wasm/wasm-module.h"
+#include "src/wasm/wasm-objects.h"
 #include "src/wasm/wasm-result.h"
 
 namespace v8 {
@@ -2972,6 +2973,17 @@ Maybe<bool> ValueSerializer::Delegate::WriteHostObject(Isolate* v8_isolate,
   return Nothing<bool>();
 }
 
+void* ValueSerializer::Delegate::ReallocateBufferMemory(void* old_buffer,
+                                                        size_t size,
+                                                        size_t* actual_size) {
+  *actual_size = size;
+  return realloc(old_buffer, size);
+}
+
+void ValueSerializer::Delegate::FreeBufferMemory(void* buffer) {
+  return free(buffer);
+}
+
 struct ValueSerializer::PrivateData {
   explicit PrivateData(i::Isolate* i, ValueSerializer::Delegate* delegate)
       : isolate(i), serializer(i, delegate) {}
@@ -3002,6 +3014,10 @@ Maybe<bool> ValueSerializer::WriteValue(Local<Context> context,
 
 std::vector<uint8_t> ValueSerializer::ReleaseBuffer() {
   return private_->serializer.ReleaseBuffer();
+}
+
+std::pair<uint8_t*, size_t> ValueSerializer::Release() {
+  return private_->serializer.Release();
 }
 
 void ValueSerializer::TransferArrayBuffer(uint32_t transfer_id,
@@ -3097,11 +3113,6 @@ Maybe<bool> ValueDeserializer::ReadHeader(Local<Context> context) {
   }
 
   return Just(true);
-}
-
-Maybe<bool> ValueDeserializer::ReadHeader() {
-  Isolate* isolate = reinterpret_cast<Isolate*>(private_->isolate);
-  return ReadHeader(isolate->GetEnteredContext());
 }
 
 void ValueDeserializer::SetSupportsLegacyWireFormat(
@@ -7237,8 +7248,8 @@ MaybeLocal<Proxy> Proxy::New(Local<Context> context, Local<Object> local_target,
 Local<String> WasmCompiledModule::GetWasmWireBytes() {
   i::Handle<i::JSObject> obj =
       i::Handle<i::JSObject>::cast(Utils::OpenHandle(this));
-  i::Handle<i::wasm::WasmCompiledModule> compiled_part =
-      i::handle(i::wasm::WasmCompiledModule::cast(obj->GetInternalField(0)));
+  i::Handle<i::WasmCompiledModule> compiled_part =
+      i::handle(i::WasmCompiledModule::cast(obj->GetInternalField(0)));
   i::Handle<i::String> wire_bytes = compiled_part->module_bytes();
   return Local<String>::Cast(Utils::ToLocal(wire_bytes));
 }
@@ -7246,8 +7257,8 @@ Local<String> WasmCompiledModule::GetWasmWireBytes() {
 WasmCompiledModule::SerializedModule WasmCompiledModule::Serialize() {
   i::Handle<i::JSObject> obj =
       i::Handle<i::JSObject>::cast(Utils::OpenHandle(this));
-  i::Handle<i::wasm::WasmCompiledModule> compiled_part =
-      i::handle(i::wasm::WasmCompiledModule::cast(obj->GetInternalField(0)));
+  i::Handle<i::WasmCompiledModule> compiled_part =
+      i::handle(i::WasmCompiledModule::cast(obj->GetInternalField(0)));
 
   std::unique_ptr<i::ScriptData> script_data =
       i::WasmCompiledModuleSerializer::SerializeWasmModule(obj->GetIsolate(),
@@ -7273,11 +7284,11 @@ MaybeLocal<WasmCompiledModule> WasmCompiledModule::Deserialize(
   if (!maybe_compiled_part.ToHandle(&compiled_part)) {
     return MaybeLocal<WasmCompiledModule>();
   }
-  i::Handle<i::wasm::WasmCompiledModule> compiled_module =
-      handle(i::wasm::WasmCompiledModule::cast(*compiled_part));
+  i::Handle<i::WasmCompiledModule> compiled_module =
+      handle(i::WasmCompiledModule::cast(*compiled_part));
   return Local<WasmCompiledModule>::Cast(
-      Utils::ToLocal(i::wasm::CreateWasmModuleObject(
-          i_isolate, compiled_module, i::wasm::ModuleOrigin::kWasmOrigin)));
+      Utils::ToLocal(i::Handle<i::JSObject>::cast(
+          i::WasmModuleObject::New(i_isolate, compiled_module))));
 }
 
 MaybeLocal<WasmCompiledModule> WasmCompiledModule::DeserializeOrCompile(
@@ -8880,22 +8891,16 @@ int DebugInterface::Script::ColumnOffset() const {
 }
 
 std::vector<int> DebugInterface::Script::LineEnds() const {
-  i::Isolate* isolate = Utils::OpenHandle(this)->GetIsolate();
+  i::Handle<i::Script> script = Utils::OpenHandle(this);
+  i::Isolate* isolate = script->GetIsolate();
   i::HandleScope scope(isolate);
-  i::Script::InitLineEnds(Utils::OpenHandle(this));
-  i::Handle<i::Object> line_ends_obj(Utils::OpenHandle(this)->line_ends(),
-                                     isolate);
-  std::vector<int> result;
-  if (!line_ends_obj->IsFixedArray()) return result;
-  i::Handle<i::FixedArray> line_ends =
-      i::Handle<i::FixedArray>::cast(line_ends_obj);
+  i::Script::InitLineEnds(script);
+  CHECK(script->line_ends()->IsFixedArray());
+  i::Handle<i::FixedArray> line_ends(i::FixedArray::cast(script->line_ends()));
+  std::vector<int> result(line_ends->length());
   for (int i = 0; i < line_ends->length(); ++i) {
-    i::Handle<i::Object> line_end = i::FixedArray::get(*line_ends, i, isolate);
-    if (line_end->IsSmi()) {
-      result.push_back(i::Handle<i::Smi>::cast(line_end)->value());
-    } else {
-      result.push_back(0);
-    }
+    i::Smi* line_end = i::Smi::cast(line_ends->get(i));
+    result[i] = line_end->value();
   }
   return result;
 }

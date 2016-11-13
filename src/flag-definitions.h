@@ -201,8 +201,6 @@ DEFINE_IMPLICATION(es_staging, move_object_start)
   V(harmony_do_expressions, "harmony do-expressions")                   \
   V(harmony_regexp_named_captures, "harmony regexp named captures")     \
   V(harmony_regexp_property, "harmony unicode regexp property classes") \
-  V(harmony_trailing_commas,                                            \
-    "harmony trailing commas in function parameter lists")              \
   V(harmony_class_fields, "harmony public fields in class literals")
 
 // Features that are complete (but still behind --harmony/es-staging flag).
@@ -211,6 +209,8 @@ DEFINE_IMPLICATION(es_staging, move_object_start)
   V(harmony_restrictive_generators,                         \
     "harmony restrictions on generator declarations")       \
   V(harmony_tailcalls, "harmony tail calls")                \
+  V(harmony_trailing_commas,                                \
+    "harmony trailing commas in function parameter lists")  \
   V(harmony_string_padding, "harmony String-padding methods")
 
 #ifdef V8_I18N_SUPPORT
@@ -248,6 +248,11 @@ HARMONY_STAGED(FLAG_STAGED_FEATURES)
 HARMONY_SHIPPING(FLAG_SHIPPING_FEATURES)
 #undef FLAG_SHIPPING_FEATURES
 
+DEFINE_BOOL(future, false,
+            "Implies all staged features that we want to ship in the "
+            "not-too-far future")
+DEFINE_IMPLICATION(future, ignition_staging)
+
 // Flags for experimental implementation features.
 DEFINE_BOOL(allocation_site_pretenuring, true,
             "pretenure with allocation sites")
@@ -269,7 +274,7 @@ DEFINE_BOOL(track_field_types, true, "track field types")
 DEFINE_IMPLICATION(track_field_types, track_fields)
 DEFINE_IMPLICATION(track_field_types, track_heap_object_fields)
 DEFINE_BOOL(smi_binop, true, "support smi representation in binary operations")
-DEFINE_BOOL(mark_shared_functions_for_tier_up, false,
+DEFINE_BOOL(mark_shared_functions_for_tier_up, true,
             "mark shared functions for tier up")
 
 // Flags for optimization types.
@@ -287,11 +292,10 @@ DEFINE_BOOL(string_slices, true, "use string slices")
 DEFINE_BOOL(ignition, false, "use ignition interpreter")
 DEFINE_BOOL(ignition_staging, false, "use ignition with all staged features")
 DEFINE_IMPLICATION(ignition_staging, ignition)
-DEFINE_IMPLICATION(ignition_staging, ignition_osr)
 DEFINE_STRING(ignition_filter, "*", "filter for ignition interpreter")
 DEFINE_BOOL(ignition_deadcode, true,
             "use ignition dead code elimination optimizer")
-DEFINE_BOOL(ignition_osr, false, "enable support for OSR from ignition code")
+DEFINE_BOOL(ignition_osr, true, "enable support for OSR from ignition code")
 DEFINE_BOOL(ignition_peephole, true, "use ignition peephole optimizer")
 DEFINE_BOOL(ignition_reo, true, "use ignition register equivalence optimizer")
 DEFINE_BOOL(ignition_filter_expression_positions, true,
@@ -728,6 +732,8 @@ DEFINE_INT(min_progress_during_incremental_marking_finalization, 32,
            "least this many unmarked objects")
 DEFINE_INT(max_incremental_marking_finalization_rounds, 3,
            "at most try this many times to finalize incremental marking")
+DEFINE_BOOL(minor_mc, false, "perform young generation mark compact GCs")
+DEFINE_NEG_IMPLICATION(minor_mc, incremental_marking)
 DEFINE_BOOL(black_allocation, false, "use black allocation")
 DEFINE_BOOL(concurrent_sweeping, true, "use concurrent sweeping")
 DEFINE_BOOL(parallel_compaction, true, "use parallel compaction")
@@ -754,8 +760,6 @@ DEFINE_BOOL(verify_heap, false, "verify heap pointers before and after GC")
 #endif
 DEFINE_BOOL(move_object_start, true, "enable moving of object starts")
 DEFINE_BOOL(memory_reducer, true, "use memory reducer")
-DEFINE_BOOL(scavenge_reclaim_unmodified_objects, true,
-            "remove unmodified and unreferenced objects")
 DEFINE_INT(heap_growing_percent, 0,
            "specifies heap growing factor as (1 + heap_growing_percent/100)")
 
@@ -789,8 +793,6 @@ DEFINE_BOOL(use_ic, true, "use inline caching")
 DEFINE_BOOL(trace_ic, false, "trace inline cache state transitions")
 DEFINE_BOOL_READONLY(tf_load_ic_stub, true, "use TF LoadIC stub")
 DEFINE_BOOL(tf_store_ic_stub, true, "use TF StoreIC stub")
-DEFINE_BOOL(store_ic_smi_handlers, true, "use data based StoreIC handlers")
-DEFINE_IMPLICATION(store_ic_smi_handlers, tf_store_ic_stub)
 
 // macro-assembler-ia32.cc
 DEFINE_BOOL(native_code_counters, false,

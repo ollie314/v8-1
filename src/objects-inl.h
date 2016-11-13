@@ -1670,18 +1670,6 @@ AllocationSiteMode AllocationSite::GetMode(
   return DONT_TRACK_ALLOCATION_SITE;
 }
 
-
-AllocationSiteMode AllocationSite::GetMode(ElementsKind from,
-                                           ElementsKind to) {
-  if (IsFastSmiElementsKind(from) &&
-      IsMoreGeneralElementsKindTransition(from, to)) {
-    return TRACK_ALLOCATION_SITE;
-  }
-
-  return DONT_TRACK_ALLOCATION_SITE;
-}
-
-
 inline bool AllocationSite::CanTrack(InstanceType type) {
   if (FLAG_allocation_site_pretenuring) {
     return type == JS_ARRAY_TYPE ||
@@ -5055,6 +5043,7 @@ inline bool Code::is_hydrogen_stub() {
 inline bool Code::is_interpreter_trampoline_builtin() {
   Builtins* builtins = GetIsolate()->builtins();
   return this == *builtins->InterpreterEntryTrampoline() ||
+         this == *builtins->InterpreterEnterBytecodeAdvance() ||
          this == *builtins->InterpreterEnterBytecodeDispatch();
 }
 
@@ -5709,6 +5698,7 @@ ACCESSORS(PromiseResolveThenableJobInfo, resolve, JSFunction, kResolveOffset)
 ACCESSORS(PromiseResolveThenableJobInfo, reject, JSFunction, kRejectOffset)
 ACCESSORS(PromiseResolveThenableJobInfo, debug_id, Object, kDebugIdOffset)
 ACCESSORS(PromiseResolveThenableJobInfo, debug_name, Object, kDebugNameOffset)
+ACCESSORS(PromiseResolveThenableJobInfo, context, Context, kContextOffset);
 
 ACCESSORS(PromiseReactionJobInfo, value, Object, kValueOffset);
 ACCESSORS(PromiseReactionJobInfo, tasks, Object, kTasksOffset);

@@ -2245,10 +2245,6 @@ Node* CodeStubAssembler::GrowElementsCapacity(
   // Allocate the new backing store.
   Node* new_elements = AllocateFixedArray(to_kind, new_capacity, mode);
 
-  // Fill in the added capacity in the new store with holes.
-  FillFixedArrayWithValue(to_kind, new_elements, capacity, new_capacity,
-                          Heap::kTheHoleValueRootIndex, mode);
-
   // Copy the elements from the old elements store to the new.
   // The size-check above guarantees that the |new_elements| is allocated
   // in new space so we can skip the write barrier.
@@ -5278,6 +5274,7 @@ void CodeStubAssembler::EmitFastElementsBoundsCheck(Node* object,
                                                     Node* is_jsarray_condition,
                                                     Label* miss) {
   Variable var_length(this, MachineType::PointerRepresentation());
+  Comment("Fast elements bounds check");
   Label if_array(this), length_loaded(this, &var_length);
   GotoIf(is_jsarray_condition, &if_array);
   {
@@ -5302,7 +5299,7 @@ void CodeStubAssembler::EmitElementLoad(Node* object, Node* elements,
                                         Label* out_of_bounds, Label* miss) {
   Label if_typed_array(this), if_fast_packed(this), if_fast_holey(this),
       if_fast_double(this), if_fast_holey_double(this), if_nonfast(this),
-      if_dictionary(this), unreachable(this);
+      if_dictionary(this);
   GotoIf(
       IntPtrGreaterThan(elements_kind, IntPtrConstant(LAST_FAST_ELEMENTS_KIND)),
       &if_nonfast);
@@ -5431,13 +5428,13 @@ void CodeStubAssembler::EmitElementLoad(Node* object, Node* elements,
         UINT8_ELEMENTS,  UINT8_CLAMPED_ELEMENTS, INT8_ELEMENTS,
         UINT16_ELEMENTS, INT16_ELEMENTS,         UINT32_ELEMENTS,
         INT32_ELEMENTS,  FLOAT32_ELEMENTS,       FLOAT64_ELEMENTS};
-    const int kTypedElementsKindCount = LAST_FIXED_TYPED_ARRAY_ELEMENTS_KIND -
-                                        FIRST_FIXED_TYPED_ARRAY_ELEMENTS_KIND +
-                                        1;
+    const size_t kTypedElementsKindCount =
+        LAST_FIXED_TYPED_ARRAY_ELEMENTS_KIND -
+        FIRST_FIXED_TYPED_ARRAY_ELEMENTS_KIND + 1;
     DCHECK_EQ(kTypedElementsKindCount, arraysize(elements_kinds));
     DCHECK_EQ(kTypedElementsKindCount, arraysize(elements_kind_labels));
     Switch(elements_kind, miss, elements_kinds, elements_kind_labels,
-           static_cast<size_t>(kTypedElementsKindCount));
+           kTypedElementsKindCount);
     Bind(&uint8_elements);
     {
       Comment("UINT8_ELEMENTS");  // Handles UINT8_CLAMPED_ELEMENTS too.
@@ -6887,23 +6884,23 @@ void CodeStubAssembler::TrapAllocationMemento(Node* object,
 
   Node* new_space_top_address = ExternalConstant(
       ExternalReference::new_space_allocation_top_address(isolate()));
-  const int kMementoMapOffset = JSArray::kSize - kHeapObjectTag;
+  const int kMementoMapOffset = JSArray::kSize;
   const int kMementoLastWordOffset =
       kMementoMapOffset + AllocationMemento::kSize - kPointerSize;
 
   // Bail out if the object is not in new space.
   Node* object_page = PageFromAddress(object);
   {
-    const int mask =
-        (1 << MemoryChunk::IN_FROM_SPACE) | (1 << MemoryChunk::IN_TO_SPACE);
-    Node* page_flags = Load(MachineType::IntPtr(), object_page);
-    GotoIf(
-        WordEqual(WordAnd(page_flags, IntPtrConstant(mask)), IntPtrConstant(0)),
-        &no_memento_found);
+    Node* page_flags = Load(MachineType::IntPtr(), object_page,
+                            IntPtrConstant(Page::kFlagsOffset));
+    GotoIf(WordEqual(WordAnd(page_flags,
+                             IntPtrConstant(MemoryChunk::kIsInNewSpaceMask)),
+                     IntPtrConstant(0)),
+           &no_memento_found);
   }
 
-  Node* memento_last_word =
-      IntPtrAdd(object, IntPtrConstant(kMementoLastWordOffset));
+  Node* memento_last_word = IntPtrAdd(
+      object, IntPtrConstant(kMementoLastWordOffset - kHeapObjectTag));
   Node* memento_last_word_page = PageFromAddress(memento_last_word);
 
   Node* new_space_top = Load(MachineType::Pointer(), new_space_top_address);

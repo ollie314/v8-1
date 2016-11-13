@@ -833,6 +833,7 @@ void IC::PatchCache(Handle<Name> name, Handle<Object> handler) {
 
 Handle<Code> KeyedStoreIC::ChooseMegamorphicStub(Isolate* isolate,
                                                  ExtraICState extra_state) {
+  DCHECK(!FLAG_tf_store_ic_stub);
   LanguageMode mode = StoreICState::GetLanguageMode(extra_state);
   return is_strict(mode)
              ? isolate->builtins()->KeyedStoreIC_Megamorphic_Strict()
@@ -1135,37 +1136,6 @@ StubCache* IC::stub_cache() {
 }
 
 void IC::UpdateMegamorphicCache(Map* map, Name* name, Object* handler) {
-  if (FLAG_store_ic_smi_handlers && handler->IsSmi() &&
-      (kind() == Code::STORE_IC || kind() == Code::KEYED_STORE_IC)) {
-    // TODO(ishell, jkummerow): Implement data handlers support in
-    // KeyedStoreIC_Megamorphic.
-    Handle<Map> map_handle(map, isolate());
-    Handle<Name> name_handle(name, isolate());
-    int config = Smi::cast(handler)->value();
-    int value_index = StoreHandler::DescriptorValueIndexBits::decode(config);
-    int descriptor = (value_index - DescriptorArray::kDescriptorValue -
-                      DescriptorArray::kFirstIndex) /
-                     DescriptorArray::kDescriptorSize;
-    if (map->instance_descriptors()->length()) {
-      PropertyDetails details =
-          map->instance_descriptors()->GetDetails(descriptor);
-      DCHECK_EQ(DATA, details.type());
-      DCHECK_EQ(name, map->instance_descriptors()->GetKey(descriptor));
-      Representation representation = details.representation();
-      FieldIndex index = FieldIndex::ForDescriptor(map, descriptor);
-      TRACE_HANDLER_STATS(isolate(), StoreIC_StoreFieldStub);
-      StoreFieldStub stub(isolate(), index, representation);
-      handler = *stub.GetCode();
-    } else {
-      // It must be a prototype map that some prototype used to have. This map
-      // check will never succeed so write a dummy smi to the cache.
-      DCHECK(!map->is_dictionary_map());
-      DCHECK(map->is_prototype_map());
-      handler = Smi::FromInt(1);
-    }
-    stub_cache()->Set(*name_handle, *map_handle, handler);
-    return;
-  }
   stub_cache()->Set(name, map, handler);
 }
 
@@ -1713,7 +1683,9 @@ MaybeHandle<Object> KeyedLoadIC::Load(Handle<Object> object,
     if ((object->IsJSObject() && key->IsSmi()) ||
         (object->IsString() && key->IsNumber())) {
       UpdateLoadElement(Handle<HeapObject>::cast(object));
-      TRACE_IC("LoadIC", key);
+      if (is_vector_set()) {
+        TRACE_IC("LoadIC", key);
+      }
     }
   }
 
@@ -2004,20 +1976,20 @@ Handle<Object> StoreIC::GetMapIndependentHandler(LookupIterator* lookup) {
 
       // -------------- Fields --------------
       if (lookup->property_details().type() == DATA) {
-        bool use_stub = true;
-        if (lookup->representation().IsHeapObject()) {
-          // Only use a generic stub if no types need to be tracked.
-          Handle<FieldType> field_type = lookup->GetFieldType();
-          use_stub = !field_type->IsClass();
-        }
-        if (use_stub) {
-          if (FLAG_store_ic_smi_handlers) {
-            TRACE_HANDLER_STATS(isolate(), StoreIC_StoreFieldDH);
-            int descriptor = lookup->GetFieldDescriptorIndex();
-            FieldIndex index = lookup->GetFieldIndex();
-            return StoreHandler::StoreField(isolate(), descriptor, index,
-                                            lookup->representation());
-          } else {
+        if (FLAG_tf_store_ic_stub) {
+          TRACE_HANDLER_STATS(isolate(), StoreIC_StoreFieldDH);
+          int descriptor = lookup->GetFieldDescriptorIndex();
+          FieldIndex index = lookup->GetFieldIndex();
+          return StoreHandler::StoreField(isolate(), descriptor, index,
+                                          lookup->representation());
+        } else {
+          bool use_stub = true;
+          if (lookup->representation().IsHeapObject()) {
+            // Only use a generic stub if no types need to be tracked.
+            Handle<FieldType> field_type = lookup->GetFieldType();
+            use_stub = !field_type->IsClass();
+          }
+          if (use_stub) {
             TRACE_HANDLER_STATS(isolate(), StoreIC_StoreFieldStub);
             StoreFieldStub stub(isolate(), lookup->GetFieldIndex(),
                                 lookup->representation());
@@ -2137,6 +2109,7 @@ Handle<Object> StoreIC::CompileHandler(LookupIterator* lookup,
 
       // -------------- Fields --------------
       if (lookup->property_details().type() == DATA) {
+        DCHECK(!FLAG_tf_store_ic_stub);
 #ifdef DEBUG
         bool use_stub = true;
         if (lookup->representation().IsHeapObject()) {
@@ -2282,7 +2255,6 @@ void KeyedStoreIC::UpdateStoreElement(Handle<Map> receiver_map,
     }
   }
 
-  TRACE_HANDLER_STATS(isolate(), KeyedStoreIC_Polymorphic);
   MapHandleList transitioned_maps(target_receiver_maps.length());
   CodeHandleList handlers(target_receiver_maps.length());
   PropertyICCompiler::ComputeKeyedStorePolymorphicHandlers(
@@ -2542,7 +2514,6 @@ void CallIC::HandleMiss(Handle<Object> function) {
 
 // Used from ic-<arch>.cc.
 RUNTIME_FUNCTION(Runtime_CallIC_Miss) {
-  TimerEventScope<TimerEventIcMiss> timer(isolate);
   HandleScope scope(isolate);
   DCHECK_EQ(3, args.length());
   // Runtime functions don't follow the IC's calling convention.
@@ -2559,7 +2530,6 @@ RUNTIME_FUNCTION(Runtime_CallIC_Miss) {
 
 // Used from ic-<arch>.cc.
 RUNTIME_FUNCTION(Runtime_LoadIC_Miss) {
-  TimerEventScope<TimerEventIcMiss> timer(isolate);
   HandleScope scope(isolate);
   DCHECK_EQ(4, args.length());
   // Runtime functions don't follow the IC's calling convention.
@@ -2599,7 +2569,6 @@ RUNTIME_FUNCTION(Runtime_LoadIC_Miss) {
 
 // Used from ic-<arch>.cc.
 RUNTIME_FUNCTION(Runtime_LoadGlobalIC_Miss) {
-  TimerEventScope<TimerEventIcMiss> timer(isolate);
   HandleScope scope(isolate);
   DCHECK_EQ(2, args.length());
   // Runtime functions don't follow the IC's calling convention.
@@ -2671,7 +2640,6 @@ RUNTIME_FUNCTION(Runtime_LoadGlobalIC_Slow) {
 
 // Used from ic-<arch>.cc
 RUNTIME_FUNCTION(Runtime_KeyedLoadIC_Miss) {
-  TimerEventScope<TimerEventIcMiss> timer(isolate);
   HandleScope scope(isolate);
   DCHECK_EQ(4, args.length());
   // Runtime functions don't follow the IC's calling convention.
@@ -2688,7 +2656,6 @@ RUNTIME_FUNCTION(Runtime_KeyedLoadIC_Miss) {
 
 
 RUNTIME_FUNCTION(Runtime_KeyedLoadIC_MissFromStubFailure) {
-  TimerEventScope<TimerEventIcMiss> timer(isolate);
   HandleScope scope(isolate);
   typedef LoadWithVectorDescriptor Descriptor;
   DCHECK_EQ(Descriptor::kParameterCount, args.length());
@@ -2707,7 +2674,6 @@ RUNTIME_FUNCTION(Runtime_KeyedLoadIC_MissFromStubFailure) {
 
 // Used from ic-<arch>.cc.
 RUNTIME_FUNCTION(Runtime_StoreIC_Miss) {
-  TimerEventScope<TimerEventIcMiss> timer(isolate);
   HandleScope scope(isolate);
   DCHECK_EQ(5, args.length());
   // Runtime functions don't follow the IC's calling convention.
@@ -2735,7 +2701,6 @@ RUNTIME_FUNCTION(Runtime_StoreIC_Miss) {
 
 // Used from ic-<arch>.cc.
 RUNTIME_FUNCTION(Runtime_KeyedStoreIC_Miss) {
-  TimerEventScope<TimerEventIcMiss> timer(isolate);
   HandleScope scope(isolate);
   DCHECK_EQ(5, args.length());
   // Runtime functions don't follow the IC's calling convention.
@@ -2771,7 +2736,6 @@ RUNTIME_FUNCTION(Runtime_KeyedStoreIC_Slow) {
 
 
 RUNTIME_FUNCTION(Runtime_ElementsTransitionAndStoreIC_Miss) {
-  TimerEventScope<TimerEventIcMiss> timer(isolate);
   HandleScope scope(isolate);
   // Runtime functions don't follow the IC's calling convention.
   Handle<Object> object = args.at<Object>(0);
@@ -2910,7 +2874,6 @@ MaybeHandle<Object> BinaryOpIC::Transition(
 
 
 RUNTIME_FUNCTION(Runtime_BinaryOpIC_Miss) {
-  TimerEventScope<TimerEventIcMiss> timer(isolate);
   HandleScope scope(isolate);
   DCHECK_EQ(2, args.length());
   typedef BinaryOpDescriptor Descriptor;
@@ -2923,7 +2886,6 @@ RUNTIME_FUNCTION(Runtime_BinaryOpIC_Miss) {
 
 
 RUNTIME_FUNCTION(Runtime_BinaryOpIC_MissWithAllocationSite) {
-  TimerEventScope<TimerEventIcMiss> timer(isolate);
   HandleScope scope(isolate);
   DCHECK_EQ(3, args.length());
   typedef BinaryOpWithAllocationSiteDescriptor Descriptor;
@@ -2987,7 +2949,6 @@ Code* CompareIC::UpdateCaches(Handle<Object> x, Handle<Object> y) {
 
 // Used from CompareICStub::GenerateMiss in code-stubs-<arch>.cc.
 RUNTIME_FUNCTION(Runtime_CompareIC_Miss) {
-  TimerEventScope<TimerEventIcMiss> timer(isolate);
   HandleScope scope(isolate);
   DCHECK(args.length() == 3);
   CompareIC ic(isolate, static_cast<Token::Value>(args.smi_at(2)));
@@ -3012,7 +2973,6 @@ Handle<Object> ToBooleanIC::ToBoolean(Handle<Object> object) {
 
 
 RUNTIME_FUNCTION(Runtime_ToBooleanIC_Miss) {
-  TimerEventScope<TimerEventIcMiss> timer(isolate);
   DCHECK(args.length() == 1);
   HandleScope scope(isolate);
   Handle<Object> object = args.at<Object>(0);

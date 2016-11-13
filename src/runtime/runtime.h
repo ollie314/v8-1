@@ -215,7 +215,8 @@ namespace internal {
   F(InterpreterTraceBytecodeEntry, 3, 1)  \
   F(InterpreterTraceBytecodeExit, 3, 1)   \
   F(InterpreterClearPendingMessage, 0, 1) \
-  F(InterpreterSetPendingMessage, 1, 1)
+  F(InterpreterSetPendingMessage, 1, 1)   \
+  F(InterpreterAdvanceBytecodeOffset, 2, 1)
 
 #define FOR_EACH_INTRINSIC_FUNCTION(F)     \
   F(FunctionGetName, 1, 1)                 \
@@ -293,7 +294,7 @@ namespace internal {
   F(CreateListFromArrayLike, 1, 1)                  \
   F(EnqueueMicrotask, 1, 1)                         \
   F(EnqueuePromiseReactionJob, 4, 1)                \
-  F(EnqueuePromiseResolveThenableJob, 4, 1)         \
+  F(EnqueuePromiseResolveThenableJob, 3, 1)         \
   F(GetAndResetRuntimeCallStats, -1 /* <= 2 */, 1)  \
   F(ExportExperimentalFromRuntime, 1, 1)            \
   F(ExportFromRuntime, 1, 1)                        \

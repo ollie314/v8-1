@@ -2215,8 +2215,12 @@ static bool AnWord(String* str) {
 
 Handle<String> String::SlowFlatten(Handle<ConsString> cons,
                                    PretenureFlag pretenure) {
-  DCHECK(AllowHeapAllocation::IsAllowed());
   DCHECK(cons->second()->length() != 0);
+
+  // TurboFan can create cons strings with empty first parts.
+  if (cons->first()->length() == 0) return handle(cons->second());
+
+  DCHECK(AllowHeapAllocation::IsAllowed());
   Isolate* isolate = cons->GetIsolate();
   int length = cons->length();
   PretenureFlag tenure = isolate->heap()->InNewSpace(*cons) ? pretenure
@@ -7985,12 +7989,31 @@ bool JSObject::IsExtensible(Handle<JSObject> object) {
   return object->map()->is_extensible();
 }
 
+namespace {
 
 template <typename Dictionary>
-static void ApplyAttributesToDictionary(Dictionary* dictionary,
-                                        const PropertyAttributes attributes) {
+void DictionaryDetailsAtPut(Isolate* isolate, Handle<Dictionary> dictionary,
+                            int entry, PropertyDetails details) {
+  dictionary->DetailsAtPut(entry, details);
+}
+
+template <>
+void DictionaryDetailsAtPut<GlobalDictionary>(
+    Isolate* isolate, Handle<GlobalDictionary> dictionary, int entry,
+    PropertyDetails details) {
+  Object* value = dictionary->ValueAt(entry);
+  DCHECK(value->IsPropertyCell());
+  value = PropertyCell::cast(value)->value();
+  if (value->IsTheHole(isolate)) return;
+  PropertyCell::PrepareForValue(dictionary, entry, handle(value, isolate),
+                                details);
+}
+
+template <typename Dictionary>
+void ApplyAttributesToDictionary(Isolate* isolate,
+                                 Handle<Dictionary> dictionary,
+                                 const PropertyAttributes attributes) {
   int capacity = dictionary->Capacity();
-  Isolate* isolate = dictionary->GetIsolate();
   for (int i = 0; i < capacity; i++) {
     Object* k = dictionary->KeyAt(i);
     if (dictionary->IsKey(isolate, k) &&
@@ -8005,11 +8028,12 @@ static void ApplyAttributesToDictionary(Dictionary* dictionary,
       }
       details = details.CopyAddAttributes(
           static_cast<PropertyAttributes>(attrs));
-      dictionary->DetailsAtPut(i, details);
+      DictionaryDetailsAtPut<Dictionary>(isolate, dictionary, i, details);
     }
   }
 }
 
+}  // namespace
 
 template <PropertyAttributes attrs>
 Maybe<bool> JSObject::PreventExtensionsWithTransition(
@@ -8098,9 +8122,13 @@ Maybe<bool> JSObject::PreventExtensionsWithTransition(
 
     if (attrs != NONE) {
       if (object->IsJSGlobalObject()) {
-        ApplyAttributesToDictionary(object->global_dictionary(), attrs);
+        Handle<GlobalDictionary> dictionary(object->global_dictionary(),
+                                            isolate);
+        ApplyAttributesToDictionary(isolate, dictionary, attrs);
       } else {
-        ApplyAttributesToDictionary(object->property_dictionary(), attrs);
+        Handle<NameDictionary> dictionary(object->property_dictionary(),
+                                          isolate);
+        ApplyAttributesToDictionary(isolate, dictionary, attrs);
       }
     }
   }
@@ -8124,11 +8152,12 @@ Maybe<bool> JSObject::PreventExtensionsWithTransition(
   }
 
   if (object->elements() != isolate->heap()->empty_slow_element_dictionary()) {
-    SeededNumberDictionary* dictionary = object->element_dictionary();
+    Handle<SeededNumberDictionary> dictionary(object->element_dictionary(),
+                                              isolate);
     // Make sure we never go back to the fast case
-    object->RequireSlowElements(dictionary);
+    object->RequireSlowElements(*dictionary);
     if (attrs != NONE) {
-      ApplyAttributesToDictionary(dictionary, attrs);
+      ApplyAttributesToDictionary(isolate, dictionary, attrs);
     }
   }
 
@@ -13375,23 +13404,17 @@ void Script::InitLineEnds(Handle<Script> script) {
   Isolate* isolate = script->GetIsolate();
   if (!script->line_ends()->IsUndefined(isolate)) return;
 
-  if (!script->source()->IsString()) {
-    DCHECK(script->source()->IsUndefined(isolate));
-    Handle<FixedArray> empty = isolate->factory()->NewFixedArray(0);
-    script->set_line_ends(*empty);
-    DCHECK(script->line_ends()->IsFixedArray());
-    return;
+  Object* src_obj = script->source();
+  if (!src_obj->IsString()) {
+    DCHECK(src_obj->IsUndefined(isolate));
+    script->set_line_ends(isolate->heap()->empty_fixed_array());
+  } else {
+    DCHECK(src_obj->IsString());
+    Handle<String> src(String::cast(src_obj), isolate);
+    Handle<FixedArray> array = String::CalculateLineEnds(src, true);
+    script->set_line_ends(*array);
   }
 
-  Handle<String> src(String::cast(script->source()), isolate);
-
-  Handle<FixedArray> array = String::CalculateLineEnds(src, true);
-
-  if (*array != isolate->heap()->empty_fixed_array()) {
-    array->set_map(isolate->heap()->fixed_cow_array_map());
-  }
-
-  script->set_line_ends(*array);
   DCHECK(script->line_ends()->IsFixedArray());
 }
 
@@ -15915,6 +15938,14 @@ bool AllocationSite::DigestTransitionFeedback(Handle<AllocationSite> site,
   return result;
 }
 
+AllocationSiteMode AllocationSite::GetMode(ElementsKind from, ElementsKind to) {
+  if (IsFastSmiElementsKind(from) &&
+      IsMoreGeneralElementsKindTransition(from, to)) {
+    return TRACK_ALLOCATION_SITE;
+  }
+
+  return DONT_TRACK_ALLOCATION_SITE;
+}
 
 const char* AllocationSite::PretenureDecisionName(PretenureDecision decision) {
   switch (decision) {
@@ -20279,7 +20310,7 @@ Handle<JSModuleNamespace> Module::GetModuleNamespace(Handle<Module> module) {
     DCHECK(exports->ValueAt(i)->IsCell());
     names.push_back(Handle<String>::cast(key));
   }
-  DCHECK_EQ(names.size(), exports->NumberOfElements());
+  DCHECK_EQ(static_cast<int>(names.size()), exports->NumberOfElements());
 
   // Sort them alphabetically.
   struct {

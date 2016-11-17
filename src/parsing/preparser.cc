@@ -133,7 +133,7 @@ PreParser::PreParseResult PreParser::PreParseFunction(
   } else if (stack_overflow()) {
     return kPreParseStackOverflow;
   } else if (!*ok) {
-    DCHECK(log_.has_error());
+    DCHECK(pending_error_handler_->has_pending_error());
   } else {
     DCHECK_EQ(Token::RBRACE, scanner()->peek());
 
@@ -179,6 +179,14 @@ PreParser::Expression PreParser::ParseFunctionLiteral(
     LanguageMode language_mode, bool* ok) {
   // Function ::
   //   '(' FormalParameterList? ')' '{' FunctionBody '}'
+  const RuntimeCallStats::CounterId counters[2][2] = {
+      {&RuntimeCallStats::PreParseWithVariableResolution,
+       &RuntimeCallStats::PreParseBackgroundWithVariableResolution},
+      {&RuntimeCallStats::PreParseNoVariableResolution,
+       &RuntimeCallStats::PreParseBackgroundNoVariableResolution}};
+  RuntimeCallTimerScope runtime_timer(
+      runtime_call_stats_,
+      counters[track_unresolved_variables_][parsing_on_main_thread_]);
 
   // Parse function body.
   PreParserStatementList body;

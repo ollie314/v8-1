@@ -302,9 +302,6 @@
   'built-ins/Function/prototype/toString/setter-object': [FAIL],
   'built-ins/Function/prototype/toString/unicode': [FAIL],
 
-  # https://bugs.chromium.org/p/v8/issues/detail?id=5012
-  # http://bugs.icu-project.org/trac/ticket/12671
-  'intl402/Intl/getCanonicalLocales/weird-cases': [FAIL],
   # https://github.com/tc39/test262/issues/743
   'intl402/Intl/getCanonicalLocales/main': [FAIL],
 
@@ -396,26 +393,9 @@
   'built-ins/Number/S9.3.1_A2_U180E': [FAIL],
 
   # https://bugs.chromium.org/p/v8/issues/detail?id=5051
-  'language/expressions/arrow-function/params-trailing-comma': [FAIL],
-  'language/expressions/arrow-function/params-trailing-comma-length': [FAIL],
-  'language/expressions/function/params-trailing-comma': [FAIL],
-  'language/expressions/function/params-trailing-comma-arguments': [FAIL],
-  'language/expressions/function/params-trailing-comma-length': [FAIL],
-  'language/expressions/generators/params-trailing-comma': [FAIL],
-  'language/expressions/generators/params-trailing-comma-arguments': [FAIL],
-  'language/expressions/generators/params-trailing-comma-length': [FAIL],
-  'language/expressions/object/method-definition/params-trailing-comma': [FAIL],
-  'language/expressions/object/method-definition/params-trailing-comma-arguments': [FAIL],
-  'language/expressions/object/method-definition/params-trailing-comma-length': [FAIL],
+  'language/expressions/call/trailing-comma': [FAIL],
   'language/statements/class/definition/params-trailing-comma': [FAIL],
   'language/statements/class/definition/params-trailing-comma-arguments': [FAIL],
-  'language/statements/class/definition/params-trailing-comma-length': [FAIL],
-  'language/statements/function/params-trailing-comma': [FAIL],
-  'language/statements/function/params-trailing-comma-arguments': [FAIL],
-  'language/statements/function/params-trailing-comma-length': [FAIL],
-  'language/statements/generators/params-trailing-comma': [FAIL],
-  'language/statements/generators/params-trailing-comma-arguments': [FAIL],
-  'language/statements/generators/params-trailing-comma-length': [FAIL],
 
   # https://bugs.chromium.org/p/v8/issues/detail?id=5326
   'language/expressions/super/call-new-target-undef': [FAIL],

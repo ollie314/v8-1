@@ -137,7 +137,7 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
   SkipPauseRequest didPause(v8::Local<v8::Context>,
                             v8::Local<v8::Value> exception,
                             const std::vector<String16>& hitBreakpoints,
-                            bool isPromiseRejection);
+                            bool isPromiseRejection, bool isUncaught);
   void didContinue();
   void didParseSource(std::unique_ptr<V8DebuggerScript>, bool success);
   void willExecuteScript(int scriptId);
@@ -162,8 +162,7 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
   void setPauseOnExceptionsImpl(int);
 
   std::unique_ptr<protocol::Debugger::Location> resolveBreakpoint(
-      const String16& breakpointId, const String16& scriptId,
-      const ScriptBreakpoint&, BreakpointSource);
+      const String16& breakpointId, const ScriptBreakpoint&, BreakpointSource);
   void removeBreakpointImpl(const String16& breakpointId);
   void clearBreakDetails();
 

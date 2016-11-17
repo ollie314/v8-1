@@ -219,10 +219,6 @@
   # Async function tests taking too long
   # https://bugs.chromium.org/p/v8/issues/detail?id=5411
   'harmony/async-function-debug-scopes': [SKIP],
-  'harmony/async-debug-caught-exception-cases0': [SKIP],
-  'harmony/async-debug-caught-exception-cases1': [SKIP],
-  'harmony/async-debug-caught-exception-cases2': [SKIP],
-  'harmony/async-debug-caught-exception-cases3': [SKIP],
 
   # TODO(mstarzinger): Takes too long with TF.
   'array-sort': [PASS, NO_VARIANTS],
@@ -239,9 +235,6 @@
   # Too slow for gc stress.
   'asm/embenchen/box2d': [SKIP],
 
-  # Issue 3723.
-  'regress/regress-3717': [SKIP],
-
   # BUG(v8:4237)
   'regress/regress-3976': [SKIP],
 
@@ -256,6 +249,9 @@
 
   # BUG(v8:4779): Crashes flakily with stress mode on arm64.
   'array-splice': [PASS, SLOW, ['arch == arm64', FAST_VARIANTS]],
+
+  # BUG(chromium:664490)
+  'debug-scopes': [SKIP],
 }],  # 'gc_stress == True'
 
 ##############################################################################
@@ -562,12 +558,21 @@
   # Too slow.
   'es6/tail-call-megatest*': [SKIP],
 
+  # Forced optimisation path tests.
+  'shared-function-tier-up-default': [SKIP],
+  'shared-function-tier-up-ignition': [SKIP],
+  'shared-function-tier-up-turbo': [SKIP],
+
   # Ongoing implementation of modules.
   # https://bugs.chromium.org/p/v8/issues/detail?id=1569
   # The deopt fuzzer currently does not respect the 'variant != ignition' rule
   # further down in this file, so we have to duplicate this here.
   # https://bugs.chromium.org/p/v8/issues/detail?id=5374
   'modules-*': [SKIP],
+
+  # Fails deopt_fuzzer due to --deopt_every_n_times or
+  # deopt_every_n_garbage_collections
+  'es6/array-iterator-turbo': [SKIP]
 }],  # 'deopt_fuzzer == True'
 
 ##############################################################################
@@ -594,30 +599,29 @@
 }],  # 'arch == ppc64'
 
 ##############################################################################
+['variant == nocrankshaft', {
+  'es6/array-iterator-turbo': [SKIP],
+}],  # variant == nocranshaft
+
+##############################################################################
 ['variant == stress', {
-  'debug-evaluate-locals-optimized': [FAIL],
-  'debug-evaluate-locals-optimized-double': [FAIL],
+  'es6/array-iterator-turbo': [SKIP],
+
   'ignition/regress-599001-verifyheap': [SKIP],
   'unicode-test': [SKIP],
 }],  # variant == stress
 
 ##############################################################################
 ['variant == turbofan_opt', {
+  'es6/array-iterator-turbo': [SKIP],
 
   # TODO(jarin/mstarzinger): Investigate debugger issues with TurboFan.
-  'debug-evaluate-closure': [FAIL],
   'debug-evaluate-locals': [FAIL],
   'debug-set-variable-value': [FAIL],
-  'debug-evaluate-locals-optimized': [FAIL],
-  'debug-evaluate-locals-optimized-double': [FAIL],
   'debug-liveedit-double-call': [FAIL],
-  'es6/debug-evaluate-blockscopes': [FAIL],
 
   # TODO(jgruber): Fails in --turbo --always-opt mode.
   'regress/regress-105': [FAIL],
-
-  # TODO(mstarzinger): Debugger cannot materialize de-materialized functions.
-  'regress/regress-crbug-323936': [FAIL],
 
   # Too slow.
   'big-object-literal': [SKIP],

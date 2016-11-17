@@ -41,6 +41,7 @@
   V(Float64Constant)          \
   V(ExternalConstant)         \
   V(NumberConstant)           \
+  V(PointerConstant)          \
   V(HeapConstant)             \
   V(RelocatableInt32Constant) \
   V(RelocatableInt64Constant)
@@ -127,6 +128,7 @@
   V(JSCreateArray)            \
   V(JSCreateClosure)          \
   V(JSCreateIterResultObject) \
+  V(JSCreateKeyValueArray)    \
   V(JSCreateLiteralArray)     \
   V(JSCreateLiteralObject)    \
   V(JSCreateLiteralRegExp)    \
@@ -158,6 +160,8 @@
   V(JSForInPrepare)                 \
   V(JSLoadMessage)                  \
   V(JSStoreMessage)                 \
+  V(JSLoadModule)                   \
+  V(JSStoreModule)                  \
   V(JSGeneratorStore)               \
   V(JSGeneratorRestoreContinuation) \
   V(JSGeneratorRestoreRegister)     \

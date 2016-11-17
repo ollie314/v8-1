@@ -469,40 +469,6 @@ Handle<AccessorInfo> Accessors::ScriptCompilationTypeInfo(
 
 
 //
-// Accessors::ScriptGetLineEnds
-//
-
-
-void Accessors::ScriptLineEndsGetter(
-    v8::Local<v8::Name> name,
-    const v8::PropertyCallbackInfo<v8::Value>& info) {
-  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(info.GetIsolate());
-  HandleScope scope(isolate);
-  Handle<Object> object = Utils::OpenHandle(*info.Holder());
-  Handle<Script> script(
-      Script::cast(Handle<JSValue>::cast(object)->value()), isolate);
-  Script::InitLineEnds(script);
-  DCHECK(script->line_ends()->IsFixedArray());
-  Handle<FixedArray> line_ends(FixedArray::cast(script->line_ends()));
-  // We do not want anyone to modify this array from JS.
-  DCHECK(*line_ends == isolate->heap()->empty_fixed_array() ||
-         line_ends->map() == isolate->heap()->fixed_cow_array_map());
-  Handle<JSArray> js_array =
-      isolate->factory()->NewJSArrayWithElements(line_ends);
-  info.GetReturnValue().Set(Utils::ToLocal(js_array));
-}
-
-
-Handle<AccessorInfo> Accessors::ScriptLineEndsInfo(
-      Isolate* isolate, PropertyAttributes attributes) {
-  Handle<String> name(isolate->factory()->InternalizeOneByteString(
-      STATIC_CHAR_VECTOR("line_ends")));
-  return MakeAccessor(isolate, name, &ScriptLineEndsGetter, nullptr,
-                      attributes);
-}
-
-
-//
 // Accessors::ScriptSourceUrl
 //
 
@@ -561,11 +527,10 @@ void Accessors::ScriptIsEmbedderDebugScriptGetter(
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(info.GetIsolate());
   DisallowHeapAllocation no_allocation;
   HandleScope scope(isolate);
-  Object* object = *Utils::OpenHandle(*info.Holder());
-  bool is_embedder_debug_script = Script::cast(JSValue::cast(object)->value())
-                                      ->origin_options()
-                                      .IsEmbedderDebugScript();
-  Object* res = *isolate->factory()->ToBoolean(is_embedder_debug_script);
+  Object* script_obj = *Utils::OpenHandle(*info.Holder());
+  Script* script = Script::cast(script_obj);
+  Script::Type type = static_cast<Script::Type>(script->type());
+  Object* res = *isolate->factory()->ToBoolean(type == Script::TYPE_INSPECTOR);
   info.GetReturnValue().Set(Utils::ToLocal(Handle<Object>(res, isolate)));
 }
 

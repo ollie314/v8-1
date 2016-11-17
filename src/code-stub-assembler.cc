@@ -5,25 +5,11 @@
 #include "src/code-factory.h"
 #include "src/frames-inl.h"
 #include "src/frames.h"
-#include "src/ic/handler-configuration.h"
-#include "src/ic/stub-cache.h"
 
 namespace v8 {
 namespace internal {
 
 using compiler::Node;
-
-CodeStubAssembler::CodeStubAssembler(Isolate* isolate, Zone* zone,
-                                     const CallInterfaceDescriptor& descriptor,
-                                     Code::Flags flags, const char* name,
-                                     size_t result_size)
-    : compiler::CodeAssembler(isolate, zone, descriptor, flags, name,
-                              result_size) {}
-
-CodeStubAssembler::CodeStubAssembler(Isolate* isolate, Zone* zone,
-                                     int parameter_count, Code::Flags flags,
-                                     const char* name)
-    : compiler::CodeAssembler(isolate, zone, parameter_count, flags, name) {}
 
 void CodeStubAssembler::Assert(ConditionBody codition_body, const char* message,
                                const char* file, int line) {
@@ -681,16 +667,11 @@ void CodeStubAssembler::BranchIfFastJSArray(Node* object, Node* context,
   Node* elements_kind = LoadMapElementsKind(map);
 
   // Bailout if receiver has slow elements.
-  GotoIf(
-      Int32GreaterThan(elements_kind, Int32Constant(LAST_FAST_ELEMENTS_KIND)),
-      if_false);
+  GotoUnless(IsFastElementsKind(elements_kind), if_false);
 
   // Check prototype chain if receiver does not have packed elements.
-  STATIC_ASSERT(FAST_HOLEY_SMI_ELEMENTS == (FAST_SMI_ELEMENTS | 1));
-  STATIC_ASSERT(FAST_HOLEY_ELEMENTS == (FAST_ELEMENTS | 1));
-  STATIC_ASSERT(FAST_HOLEY_DOUBLE_ELEMENTS == (FAST_DOUBLE_ELEMENTS | 1));
-  Node* holey_elements = Word32And(elements_kind, Int32Constant(1));
-  GotoIf(Word32Equal(holey_elements, Int32Constant(0)), if_true);
+  GotoUnless(IsHoleyFastElementsKind(elements_kind), if_true);
+
   BranchIfPrototypesHaveNoElements(map, if_true, if_false);
 }
 
@@ -2245,10 +2226,6 @@ Node* CodeStubAssembler::GrowElementsCapacity(
   // Allocate the new backing store.
   Node* new_elements = AllocateFixedArray(to_kind, new_capacity, mode);
 
-  // Fill in the added capacity in the new store with holes.
-  FillFixedArrayWithValue(to_kind, new_elements, capacity, new_capacity,
-                          Heap::kTheHoleValueRootIndex, mode);
-
   // Copy the elements from the old elements store to the new.
   // The size-check above guarantees that the |new_elements| is allocated
   // in new space so we can skip the write barrier.
@@ -2280,6 +2257,40 @@ void CodeStubAssembler::InitializeAllocationMemento(
   }
 }
 
+Node* CodeStubAssembler::TryTaggedToFloat64(Node* value,
+                                            Label* if_valueisnotnumber) {
+  Label out(this);
+  Variable var_result(this, MachineRepresentation::kFloat64);
+
+  // Check if the {value} is a Smi or a HeapObject.
+  Label if_valueissmi(this), if_valueisnotsmi(this);
+  Branch(TaggedIsSmi(value), &if_valueissmi, &if_valueisnotsmi);
+
+  Bind(&if_valueissmi);
+  {
+    // Convert the Smi {value}.
+    var_result.Bind(SmiToFloat64(value));
+    Goto(&out);
+  }
+
+  Bind(&if_valueisnotsmi);
+  {
+    // Check if {value} is a HeapNumber.
+    Label if_valueisheapnumber(this);
+    Branch(IsHeapNumberMap(LoadMap(value)), &if_valueisheapnumber,
+           if_valueisnotnumber);
+
+    Bind(&if_valueisheapnumber);
+    {
+      // Load the floating point value.
+      var_result.Bind(LoadHeapNumberValue(value));
+      Goto(&out);
+    }
+  }
+  Bind(&out);
+  return var_result.value();
+}
+
 Node* CodeStubAssembler::TruncateTaggedToFloat64(Node* context, Node* value) {
   // We might need to loop once due to ToNumber conversion.
   Variable var_value(this, MachineRepresentation::kTagged),
@@ -2289,42 +2300,23 @@ Node* CodeStubAssembler::TruncateTaggedToFloat64(Node* context, Node* value) {
   Goto(&loop);
   Bind(&loop);
   {
+    Label if_valueisnotnumber(this, Label::kDeferred);
+
     // Load the current {value}.
     value = var_value.value();
 
-    // Check if the {value} is a Smi or a HeapObject.
-    Label if_valueissmi(this), if_valueisnotsmi(this);
-    Branch(TaggedIsSmi(value), &if_valueissmi, &if_valueisnotsmi);
+    // Convert {value} to Float64 if it is a number and convert it to a number
+    // otherwise.
+    Node* const result = TryTaggedToFloat64(value, &if_valueisnotnumber);
+    var_result.Bind(result);
+    Goto(&done_loop);
 
-    Bind(&if_valueissmi);
+    Bind(&if_valueisnotnumber);
     {
-      // Convert the Smi {value}.
-      var_result.Bind(SmiToFloat64(value));
-      Goto(&done_loop);
-    }
-
-    Bind(&if_valueisnotsmi);
-    {
-      // Check if {value} is a HeapNumber.
-      Label if_valueisheapnumber(this),
-          if_valueisnotheapnumber(this, Label::kDeferred);
-      Branch(WordEqual(LoadMap(value), HeapNumberMapConstant()),
-             &if_valueisheapnumber, &if_valueisnotheapnumber);
-
-      Bind(&if_valueisheapnumber);
-      {
-        // Load the floating point value.
-        var_result.Bind(LoadHeapNumberValue(value));
-        Goto(&done_loop);
-      }
-
-      Bind(&if_valueisnotheapnumber);
-      {
-        // Convert the {value} to a Number first.
-        Callable callable = CodeFactory::NonNumberToNumber(isolate());
-        var_value.Bind(CallStub(callable, context, value));
-        Goto(&loop);
-      }
+      // Convert the {value} to a Number first.
+      Callable callable = CodeFactory::NonNumberToNumber(isolate());
+      var_value.Bind(CallStub(callable, context, value));
+      Goto(&loop);
     }
   }
   Bind(&done_loop);
@@ -4030,6 +4022,8 @@ Node* CodeStubAssembler::EntryToIndex(Node* entry, int field_index) {
 
 template Node* CodeStubAssembler::EntryToIndex<NameDictionary>(Node*, int);
 template Node* CodeStubAssembler::EntryToIndex<GlobalDictionary>(Node*, int);
+template Node* CodeStubAssembler::EntryToIndex<SeededNumberDictionary>(Node*,
+                                                                       int);
 
 Node* CodeStubAssembler::HashTableComputeCapacity(Node* at_least_space_for) {
   Node* capacity = IntPtrRoundUpToPowerOfTwo32(
@@ -5012,242 +5006,6 @@ compiler::Node* CodeStubAssembler::LoadReceiverMap(compiler::Node* receiver) {
   return var_receiver_map.value();
 }
 
-compiler::Node* CodeStubAssembler::TryMonomorphicCase(
-    compiler::Node* slot, compiler::Node* vector, compiler::Node* receiver_map,
-    Label* if_handler, Variable* var_handler, Label* if_miss) {
-  Comment("TryMonomorphicCase");
-  DCHECK_EQ(MachineRepresentation::kTagged, var_handler->rep());
-
-  // TODO(ishell): add helper class that hides offset computations for a series
-  // of loads.
-  int32_t header_size = FixedArray::kHeaderSize - kHeapObjectTag;
-  // Adding |header_size| with a separate IntPtrAdd rather than passing it
-  // into ElementOffsetFromIndex() allows it to be folded into a single
-  // [base, index, offset] indirect memory access on x64.
-  Node* offset =
-      ElementOffsetFromIndex(slot, FAST_HOLEY_ELEMENTS, SMI_PARAMETERS);
-  Node* feedback = Load(MachineType::AnyTagged(), vector,
-                        IntPtrAdd(offset, IntPtrConstant(header_size)));
-
-  // Try to quickly handle the monomorphic case without knowing for sure
-  // if we have a weak cell in feedback. We do know it's safe to look
-  // at WeakCell::kValueOffset.
-  GotoIf(WordNotEqual(receiver_map, LoadWeakCellValueUnchecked(feedback)),
-         if_miss);
-
-  Node* handler =
-      Load(MachineType::AnyTagged(), vector,
-           IntPtrAdd(offset, IntPtrConstant(header_size + kPointerSize)));
-
-  var_handler->Bind(handler);
-  Goto(if_handler);
-  return feedback;
-}
-
-void CodeStubAssembler::HandlePolymorphicCase(
-    compiler::Node* receiver_map, compiler::Node* feedback, Label* if_handler,
-    Variable* var_handler, Label* if_miss, int unroll_count) {
-  Comment("HandlePolymorphicCase");
-  DCHECK_EQ(MachineRepresentation::kTagged, var_handler->rep());
-
-  // Iterate {feedback} array.
-  const int kEntrySize = 2;
-
-  for (int i = 0; i < unroll_count; i++) {
-    Label next_entry(this);
-    Node* cached_map = LoadWeakCellValue(LoadFixedArrayElement(
-        feedback, IntPtrConstant(i * kEntrySize), 0, INTPTR_PARAMETERS));
-    GotoIf(WordNotEqual(receiver_map, cached_map), &next_entry);
-
-    // Found, now call handler.
-    Node* handler = LoadFixedArrayElement(
-        feedback, IntPtrConstant(i * kEntrySize + 1), 0, INTPTR_PARAMETERS);
-    var_handler->Bind(handler);
-    Goto(if_handler);
-
-    Bind(&next_entry);
-  }
-
-  // Loop from {unroll_count}*kEntrySize to {length}.
-  Node* init = IntPtrConstant(unroll_count * kEntrySize);
-  Node* length = LoadAndUntagFixedArrayBaseLength(feedback);
-  BuildFastLoop(
-      MachineType::PointerRepresentation(), init, length,
-      [receiver_map, feedback, if_handler, var_handler](CodeStubAssembler* csa,
-                                                        Node* index) {
-        Node* cached_map = csa->LoadWeakCellValue(
-            csa->LoadFixedArrayElement(feedback, index, 0, INTPTR_PARAMETERS));
-
-        Label next_entry(csa);
-        csa->GotoIf(csa->WordNotEqual(receiver_map, cached_map), &next_entry);
-
-        // Found, now call handler.
-        Node* handler = csa->LoadFixedArrayElement(
-            feedback, index, kPointerSize, INTPTR_PARAMETERS);
-        var_handler->Bind(handler);
-        csa->Goto(if_handler);
-
-        csa->Bind(&next_entry);
-      },
-      kEntrySize, IndexAdvanceMode::kPost);
-  // The loop falls through if no handler was found.
-  Goto(if_miss);
-}
-
-void CodeStubAssembler::HandleKeyedStorePolymorphicCase(
-    compiler::Node* receiver_map, compiler::Node* feedback, Label* if_handler,
-    Variable* var_handler, Label* if_transition_handler,
-    Variable* var_transition_map_cell, Label* if_miss) {
-  DCHECK_EQ(MachineRepresentation::kTagged, var_handler->rep());
-  DCHECK_EQ(MachineRepresentation::kTagged, var_transition_map_cell->rep());
-
-  const int kEntrySize = 3;
-
-  Node* init = IntPtrConstant(0);
-  Node* length = LoadAndUntagFixedArrayBaseLength(feedback);
-  BuildFastLoop(
-      MachineType::PointerRepresentation(), init, length,
-      [receiver_map, feedback, if_handler, var_handler, if_transition_handler,
-       var_transition_map_cell](CodeStubAssembler* csa, Node* index) {
-        Node* cached_map = csa->LoadWeakCellValue(
-            csa->LoadFixedArrayElement(feedback, index, 0, INTPTR_PARAMETERS));
-        Label next_entry(csa);
-        csa->GotoIf(csa->WordNotEqual(receiver_map, cached_map), &next_entry);
-
-        Node* maybe_transition_map_cell = csa->LoadFixedArrayElement(
-            feedback, index, kPointerSize, INTPTR_PARAMETERS);
-
-        var_handler->Bind(csa->LoadFixedArrayElement(
-            feedback, index, 2 * kPointerSize, INTPTR_PARAMETERS));
-        csa->GotoIf(
-            csa->WordEqual(maybe_transition_map_cell,
-                           csa->LoadRoot(Heap::kUndefinedValueRootIndex)),
-            if_handler);
-        var_transition_map_cell->Bind(maybe_transition_map_cell);
-        csa->Goto(if_transition_handler);
-
-        csa->Bind(&next_entry);
-      },
-      kEntrySize, IndexAdvanceMode::kPost);
-  // The loop falls through if no handler was found.
-  Goto(if_miss);
-}
-
-compiler::Node* CodeStubAssembler::StubCachePrimaryOffset(compiler::Node* name,
-                                                          compiler::Node* map) {
-  // See v8::internal::StubCache::PrimaryOffset().
-  STATIC_ASSERT(StubCache::kCacheIndexShift == Name::kHashShift);
-  // Compute the hash of the name (use entire hash field).
-  Node* hash_field = LoadNameHashField(name);
-  CSA_ASSERT(this,
-             Word32Equal(Word32And(hash_field,
-                                   Int32Constant(Name::kHashNotComputedMask)),
-                         Int32Constant(0)));
-
-  // Using only the low bits in 64-bit mode is unlikely to increase the
-  // risk of collision even if the heap is spread over an area larger than
-  // 4Gb (and not at all if it isn't).
-  Node* hash = Int32Add(hash_field, map);
-  // Base the offset on a simple combination of name and map.
-  hash = Word32Xor(hash, Int32Constant(StubCache::kPrimaryMagic));
-  uint32_t mask = (StubCache::kPrimaryTableSize - 1)
-                  << StubCache::kCacheIndexShift;
-  return ChangeUint32ToWord(Word32And(hash, Int32Constant(mask)));
-}
-
-compiler::Node* CodeStubAssembler::StubCacheSecondaryOffset(
-    compiler::Node* name, compiler::Node* seed) {
-  // See v8::internal::StubCache::SecondaryOffset().
-
-  // Use the seed from the primary cache in the secondary cache.
-  Node* hash = Int32Sub(seed, name);
-  hash = Int32Add(hash, Int32Constant(StubCache::kSecondaryMagic));
-  int32_t mask = (StubCache::kSecondaryTableSize - 1)
-                 << StubCache::kCacheIndexShift;
-  return ChangeUint32ToWord(Word32And(hash, Int32Constant(mask)));
-}
-
-enum CodeStubAssembler::StubCacheTable : int {
-  kPrimary = static_cast<int>(StubCache::kPrimary),
-  kSecondary = static_cast<int>(StubCache::kSecondary)
-};
-
-void CodeStubAssembler::TryProbeStubCacheTable(
-    StubCache* stub_cache, StubCacheTable table_id,
-    compiler::Node* entry_offset, compiler::Node* name, compiler::Node* map,
-    Label* if_handler, Variable* var_handler, Label* if_miss) {
-  StubCache::Table table = static_cast<StubCache::Table>(table_id);
-#ifdef DEBUG
-  if (FLAG_test_secondary_stub_cache && table == StubCache::kPrimary) {
-    Goto(if_miss);
-    return;
-  } else if (FLAG_test_primary_stub_cache && table == StubCache::kSecondary) {
-    Goto(if_miss);
-    return;
-  }
-#endif
-  // The {table_offset} holds the entry offset times four (due to masking
-  // and shifting optimizations).
-  const int kMultiplier = sizeof(StubCache::Entry) >> Name::kHashShift;
-  entry_offset = IntPtrMul(entry_offset, IntPtrConstant(kMultiplier));
-
-  // Check that the key in the entry matches the name.
-  Node* key_base =
-      ExternalConstant(ExternalReference(stub_cache->key_reference(table)));
-  Node* entry_key = Load(MachineType::Pointer(), key_base, entry_offset);
-  GotoIf(WordNotEqual(name, entry_key), if_miss);
-
-  // Get the map entry from the cache.
-  DCHECK_EQ(kPointerSize * 2, stub_cache->map_reference(table).address() -
-                                  stub_cache->key_reference(table).address());
-  Node* entry_map =
-      Load(MachineType::Pointer(), key_base,
-           IntPtrAdd(entry_offset, IntPtrConstant(kPointerSize * 2)));
-  GotoIf(WordNotEqual(map, entry_map), if_miss);
-
-  DCHECK_EQ(kPointerSize, stub_cache->value_reference(table).address() -
-                              stub_cache->key_reference(table).address());
-  Node* handler = Load(MachineType::TaggedPointer(), key_base,
-                       IntPtrAdd(entry_offset, IntPtrConstant(kPointerSize)));
-
-  // We found the handler.
-  var_handler->Bind(handler);
-  Goto(if_handler);
-}
-
-void CodeStubAssembler::TryProbeStubCache(
-    StubCache* stub_cache, compiler::Node* receiver, compiler::Node* name,
-    Label* if_handler, Variable* var_handler, Label* if_miss) {
-  Label try_secondary(this), miss(this);
-
-  Counters* counters = isolate()->counters();
-  IncrementCounter(counters->megamorphic_stub_cache_probes(), 1);
-
-  // Check that the {receiver} isn't a smi.
-  GotoIf(TaggedIsSmi(receiver), &miss);
-
-  Node* receiver_map = LoadMap(receiver);
-
-  // Probe the primary table.
-  Node* primary_offset = StubCachePrimaryOffset(name, receiver_map);
-  TryProbeStubCacheTable(stub_cache, kPrimary, primary_offset, name,
-                         receiver_map, if_handler, var_handler, &try_secondary);
-
-  Bind(&try_secondary);
-  {
-    // Probe the secondary table.
-    Node* secondary_offset = StubCacheSecondaryOffset(name, primary_offset);
-    TryProbeStubCacheTable(stub_cache, kSecondary, secondary_offset, name,
-                           receiver_map, if_handler, var_handler, &miss);
-  }
-
-  Bind(&miss);
-  {
-    IncrementCounter(counters->megamorphic_stub_cache_misses(), 1);
-    Goto(if_miss);
-  }
-}
-
 Node* CodeStubAssembler::TryToIntptr(Node* key, Label* miss) {
   Variable var_intptr_key(this, MachineType::PointerRepresentation());
   Label done(this, &var_intptr_key), key_is_smi(this);
@@ -5270,1107 +5028,6 @@ Node* CodeStubAssembler::TryToIntptr(Node* key, Label* miss) {
 
   Bind(&done);
   return var_intptr_key.value();
-}
-
-void CodeStubAssembler::EmitFastElementsBoundsCheck(Node* object,
-                                                    Node* elements,
-                                                    Node* intptr_index,
-                                                    Node* is_jsarray_condition,
-                                                    Label* miss) {
-  Variable var_length(this, MachineType::PointerRepresentation());
-  Label if_array(this), length_loaded(this, &var_length);
-  GotoIf(is_jsarray_condition, &if_array);
-  {
-    var_length.Bind(SmiUntag(LoadFixedArrayBaseLength(elements)));
-    Goto(&length_loaded);
-  }
-  Bind(&if_array);
-  {
-    var_length.Bind(SmiUntag(LoadJSArrayLength(object)));
-    Goto(&length_loaded);
-  }
-  Bind(&length_loaded);
-  GotoUnless(UintPtrLessThan(intptr_index, var_length.value()), miss);
-}
-
-void CodeStubAssembler::EmitElementLoad(Node* object, Node* elements,
-                                        Node* elements_kind, Node* intptr_index,
-                                        Node* is_jsarray_condition,
-                                        Label* if_hole, Label* rebox_double,
-                                        Variable* var_double_value,
-                                        Label* unimplemented_elements_kind,
-                                        Label* out_of_bounds, Label* miss) {
-  Label if_typed_array(this), if_fast_packed(this), if_fast_holey(this),
-      if_fast_double(this), if_fast_holey_double(this), if_nonfast(this),
-      if_dictionary(this), unreachable(this);
-  GotoIf(
-      IntPtrGreaterThan(elements_kind, IntPtrConstant(LAST_FAST_ELEMENTS_KIND)),
-      &if_nonfast);
-
-  EmitFastElementsBoundsCheck(object, elements, intptr_index,
-                              is_jsarray_condition, out_of_bounds);
-  int32_t kinds[] = {// Handled by if_fast_packed.
-                     FAST_SMI_ELEMENTS, FAST_ELEMENTS,
-                     // Handled by if_fast_holey.
-                     FAST_HOLEY_SMI_ELEMENTS, FAST_HOLEY_ELEMENTS,
-                     // Handled by if_fast_double.
-                     FAST_DOUBLE_ELEMENTS,
-                     // Handled by if_fast_holey_double.
-                     FAST_HOLEY_DOUBLE_ELEMENTS};
-  Label* labels[] = {// FAST_{SMI,}_ELEMENTS
-                     &if_fast_packed, &if_fast_packed,
-                     // FAST_HOLEY_{SMI,}_ELEMENTS
-                     &if_fast_holey, &if_fast_holey,
-                     // FAST_DOUBLE_ELEMENTS
-                     &if_fast_double,
-                     // FAST_HOLEY_DOUBLE_ELEMENTS
-                     &if_fast_holey_double};
-  Switch(elements_kind, unimplemented_elements_kind, kinds, labels,
-         arraysize(kinds));
-
-  Bind(&if_fast_packed);
-  {
-    Comment("fast packed elements");
-    Return(LoadFixedArrayElement(elements, intptr_index, 0, INTPTR_PARAMETERS));
-  }
-
-  Bind(&if_fast_holey);
-  {
-    Comment("fast holey elements");
-    Node* element =
-        LoadFixedArrayElement(elements, intptr_index, 0, INTPTR_PARAMETERS);
-    GotoIf(WordEqual(element, TheHoleConstant()), if_hole);
-    Return(element);
-  }
-
-  Bind(&if_fast_double);
-  {
-    Comment("packed double elements");
-    var_double_value->Bind(LoadFixedDoubleArrayElement(
-        elements, intptr_index, MachineType::Float64(), 0, INTPTR_PARAMETERS));
-    Goto(rebox_double);
-  }
-
-  Bind(&if_fast_holey_double);
-  {
-    Comment("holey double elements");
-    Node* value = LoadFixedDoubleArrayElement(elements, intptr_index,
-                                              MachineType::Float64(), 0,
-                                              INTPTR_PARAMETERS, if_hole);
-    var_double_value->Bind(value);
-    Goto(rebox_double);
-  }
-
-  Bind(&if_nonfast);
-  {
-    STATIC_ASSERT(LAST_ELEMENTS_KIND == LAST_FIXED_TYPED_ARRAY_ELEMENTS_KIND);
-    GotoIf(IntPtrGreaterThanOrEqual(
-               elements_kind,
-               IntPtrConstant(FIRST_FIXED_TYPED_ARRAY_ELEMENTS_KIND)),
-           &if_typed_array);
-    GotoIf(IntPtrEqual(elements_kind, IntPtrConstant(DICTIONARY_ELEMENTS)),
-           &if_dictionary);
-    Goto(unimplemented_elements_kind);
-  }
-
-  Bind(&if_dictionary);
-  {
-    Comment("dictionary elements");
-    GotoIf(IntPtrLessThan(intptr_index, IntPtrConstant(0)), out_of_bounds);
-    Variable var_entry(this, MachineType::PointerRepresentation());
-    Label if_found(this);
-    NumberDictionaryLookup<SeededNumberDictionary>(
-        elements, intptr_index, &if_found, &var_entry, if_hole);
-    Bind(&if_found);
-    // Check that the value is a data property.
-    Node* details_index = EntryToIndex<SeededNumberDictionary>(
-        var_entry.value(), SeededNumberDictionary::kEntryDetailsIndex);
-    Node* details = SmiToWord32(
-        LoadFixedArrayElement(elements, details_index, 0, INTPTR_PARAMETERS));
-    Node* kind = DecodeWord32<PropertyDetails::KindField>(details);
-    // TODO(jkummerow): Support accessors without missing?
-    GotoUnless(Word32Equal(kind, Int32Constant(kData)), miss);
-    // Finally, load the value.
-    Node* value_index = EntryToIndex<SeededNumberDictionary>(
-        var_entry.value(), SeededNumberDictionary::kEntryValueIndex);
-    Return(LoadFixedArrayElement(elements, value_index, 0, INTPTR_PARAMETERS));
-  }
-
-  Bind(&if_typed_array);
-  {
-    Comment("typed elements");
-    // Check if buffer has been neutered.
-    Node* buffer = LoadObjectField(object, JSArrayBufferView::kBufferOffset);
-    Node* bitfield = LoadObjectField(buffer, JSArrayBuffer::kBitFieldOffset,
-                                     MachineType::Uint32());
-    Node* neutered_bit =
-        Word32And(bitfield, Int32Constant(JSArrayBuffer::WasNeutered::kMask));
-    GotoUnless(Word32Equal(neutered_bit, Int32Constant(0)), miss);
-
-    // Bounds check.
-    Node* length =
-        SmiUntag(LoadObjectField(object, JSTypedArray::kLengthOffset));
-    GotoUnless(UintPtrLessThan(intptr_index, length), out_of_bounds);
-
-    // Backing store = external_pointer + base_pointer.
-    Node* external_pointer =
-        LoadObjectField(elements, FixedTypedArrayBase::kExternalPointerOffset,
-                        MachineType::Pointer());
-    Node* base_pointer =
-        LoadObjectField(elements, FixedTypedArrayBase::kBasePointerOffset);
-    Node* backing_store = IntPtrAdd(external_pointer, base_pointer);
-
-    Label uint8_elements(this), int8_elements(this), uint16_elements(this),
-        int16_elements(this), uint32_elements(this), int32_elements(this),
-        float32_elements(this), float64_elements(this);
-    Label* elements_kind_labels[] = {
-        &uint8_elements,  &uint8_elements,   &int8_elements,
-        &uint16_elements, &int16_elements,   &uint32_elements,
-        &int32_elements,  &float32_elements, &float64_elements};
-    int32_t elements_kinds[] = {
-        UINT8_ELEMENTS,  UINT8_CLAMPED_ELEMENTS, INT8_ELEMENTS,
-        UINT16_ELEMENTS, INT16_ELEMENTS,         UINT32_ELEMENTS,
-        INT32_ELEMENTS,  FLOAT32_ELEMENTS,       FLOAT64_ELEMENTS};
-    const int kTypedElementsKindCount = LAST_FIXED_TYPED_ARRAY_ELEMENTS_KIND -
-                                        FIRST_FIXED_TYPED_ARRAY_ELEMENTS_KIND +
-                                        1;
-    DCHECK_EQ(kTypedElementsKindCount, arraysize(elements_kinds));
-    DCHECK_EQ(kTypedElementsKindCount, arraysize(elements_kind_labels));
-    Switch(elements_kind, miss, elements_kinds, elements_kind_labels,
-           static_cast<size_t>(kTypedElementsKindCount));
-    Bind(&uint8_elements);
-    {
-      Comment("UINT8_ELEMENTS");  // Handles UINT8_CLAMPED_ELEMENTS too.
-      Return(SmiTag(Load(MachineType::Uint8(), backing_store, intptr_index)));
-    }
-    Bind(&int8_elements);
-    {
-      Comment("INT8_ELEMENTS");
-      Return(SmiTag(Load(MachineType::Int8(), backing_store, intptr_index)));
-    }
-    Bind(&uint16_elements);
-    {
-      Comment("UINT16_ELEMENTS");
-      Node* index = WordShl(intptr_index, IntPtrConstant(1));
-      Return(SmiTag(Load(MachineType::Uint16(), backing_store, index)));
-    }
-    Bind(&int16_elements);
-    {
-      Comment("INT16_ELEMENTS");
-      Node* index = WordShl(intptr_index, IntPtrConstant(1));
-      Return(SmiTag(Load(MachineType::Int16(), backing_store, index)));
-    }
-    Bind(&uint32_elements);
-    {
-      Comment("UINT32_ELEMENTS");
-      Node* index = WordShl(intptr_index, IntPtrConstant(2));
-      Node* element = Load(MachineType::Uint32(), backing_store, index);
-      Return(ChangeUint32ToTagged(element));
-    }
-    Bind(&int32_elements);
-    {
-      Comment("INT32_ELEMENTS");
-      Node* index = WordShl(intptr_index, IntPtrConstant(2));
-      Node* element = Load(MachineType::Int32(), backing_store, index);
-      Return(ChangeInt32ToTagged(element));
-    }
-    Bind(&float32_elements);
-    {
-      Comment("FLOAT32_ELEMENTS");
-      Node* index = WordShl(intptr_index, IntPtrConstant(2));
-      Node* element = Load(MachineType::Float32(), backing_store, index);
-      var_double_value->Bind(ChangeFloat32ToFloat64(element));
-      Goto(rebox_double);
-    }
-    Bind(&float64_elements);
-    {
-      Comment("FLOAT64_ELEMENTS");
-      Node* index = WordShl(intptr_index, IntPtrConstant(3));
-      Node* element = Load(MachineType::Float64(), backing_store, index);
-      var_double_value->Bind(element);
-      Goto(rebox_double);
-    }
-  }
-}
-
-void CodeStubAssembler::HandleLoadICHandlerCase(
-    const LoadICParameters* p, Node* handler, Label* miss,
-    ElementSupport support_elements) {
-  Comment("have_handler");
-  Variable var_holder(this, MachineRepresentation::kTagged);
-  var_holder.Bind(p->receiver);
-  Variable var_smi_handler(this, MachineRepresentation::kTagged);
-  var_smi_handler.Bind(handler);
-
-  Variable* vars[] = {&var_holder, &var_smi_handler};
-  Label if_smi_handler(this, 2, vars);
-  Label try_proto_handler(this), call_handler(this);
-
-  Branch(TaggedIsSmi(handler), &if_smi_handler, &try_proto_handler);
-
-  // |handler| is a Smi, encoding what to do. See SmiHandler methods
-  // for the encoding format.
-  Bind(&if_smi_handler);
-  {
-    Variable var_double_value(this, MachineRepresentation::kFloat64);
-    Label rebox_double(this, &var_double_value);
-
-    Node* holder = var_holder.value();
-    Node* handler_word = SmiUntag(var_smi_handler.value());
-    Node* handler_kind = DecodeWord<LoadHandler::KindBits>(handler_word);
-    if (support_elements == kSupportElements) {
-      Label property(this);
-      GotoUnless(
-          WordEqual(handler_kind, IntPtrConstant(LoadHandler::kForElements)),
-          &property);
-
-      Comment("element_load");
-      Node* intptr_index = TryToIntptr(p->name, miss);
-      Node* elements = LoadElements(holder);
-      Node* is_jsarray_condition =
-          IsSetWord<LoadHandler::IsJsArrayBits>(handler_word);
-      Node* elements_kind =
-          DecodeWord<LoadHandler::ElementsKindBits>(handler_word);
-      Label if_hole(this), unimplemented_elements_kind(this);
-      Label* out_of_bounds = miss;
-      EmitElementLoad(holder, elements, elements_kind, intptr_index,
-                      is_jsarray_condition, &if_hole, &rebox_double,
-                      &var_double_value, &unimplemented_elements_kind,
-                      out_of_bounds, miss);
-
-      Bind(&unimplemented_elements_kind);
-      {
-        // Smi handlers should only be installed for supported elements kinds.
-        // Crash if we get here.
-        DebugBreak();
-        Goto(miss);
-      }
-
-      Bind(&if_hole);
-      {
-        Comment("convert hole");
-        GotoUnless(IsSetWord<LoadHandler::ConvertHoleBits>(handler_word), miss);
-        Node* protector_cell = LoadRoot(Heap::kArrayProtectorRootIndex);
-        DCHECK(isolate()->heap()->array_protector()->IsPropertyCell());
-        GotoUnless(
-            WordEqual(
-                LoadObjectField(protector_cell, PropertyCell::kValueOffset),
-                SmiConstant(Smi::FromInt(Isolate::kArrayProtectorValid))),
-            miss);
-        Return(UndefinedConstant());
-      }
-
-      Bind(&property);
-      Comment("property_load");
-    }
-
-    Label constant(this), field(this);
-    Branch(WordEqual(handler_kind, IntPtrConstant(LoadHandler::kForFields)),
-           &field, &constant);
-
-    Bind(&field);
-    {
-      Comment("field_load");
-      Node* offset = DecodeWord<LoadHandler::FieldOffsetBits>(handler_word);
-
-      Label inobject(this), out_of_object(this);
-      Branch(IsSetWord<LoadHandler::IsInobjectBits>(handler_word), &inobject,
-             &out_of_object);
-
-      Bind(&inobject);
-      {
-        Label is_double(this);
-        GotoIf(IsSetWord<LoadHandler::IsDoubleBits>(handler_word), &is_double);
-        Return(LoadObjectField(holder, offset));
-
-        Bind(&is_double);
-        if (FLAG_unbox_double_fields) {
-          var_double_value.Bind(
-              LoadObjectField(holder, offset, MachineType::Float64()));
-        } else {
-          Node* mutable_heap_number = LoadObjectField(holder, offset);
-          var_double_value.Bind(LoadHeapNumberValue(mutable_heap_number));
-        }
-        Goto(&rebox_double);
-      }
-
-      Bind(&out_of_object);
-      {
-        Label is_double(this);
-        Node* properties = LoadProperties(holder);
-        Node* value = LoadObjectField(properties, offset);
-        GotoIf(IsSetWord<LoadHandler::IsDoubleBits>(handler_word), &is_double);
-        Return(value);
-
-        Bind(&is_double);
-        var_double_value.Bind(LoadHeapNumberValue(value));
-        Goto(&rebox_double);
-      }
-
-      Bind(&rebox_double);
-      Return(AllocateHeapNumberWithValue(var_double_value.value()));
-    }
-
-    Bind(&constant);
-    {
-      Comment("constant_load");
-      Node* descriptors = LoadMapDescriptors(LoadMap(holder));
-      Node* descriptor =
-          DecodeWord<LoadHandler::DescriptorValueIndexBits>(handler_word);
-#if defined(DEBUG)
-      CSA_ASSERT(
-          this, UintPtrLessThan(descriptor,
-                                LoadAndUntagFixedArrayBaseLength(descriptors)));
-#endif
-      Node* value =
-          LoadFixedArrayElement(descriptors, descriptor, 0, INTPTR_PARAMETERS);
-
-      Label if_accessor_info(this);
-      GotoIf(IsSetWord<LoadHandler::IsAccessorInfoBits>(handler_word),
-             &if_accessor_info);
-      Return(value);
-
-      Bind(&if_accessor_info);
-      Callable callable = CodeFactory::ApiGetter(isolate());
-      TailCallStub(callable, p->context, p->receiver, holder, value);
-    }
-  }
-
-  Bind(&try_proto_handler);
-  {
-    GotoIf(WordEqual(LoadMap(handler), LoadRoot(Heap::kCodeMapRootIndex)),
-           &call_handler);
-    HandleLoadICProtoHandler(p, handler, &var_holder, &var_smi_handler,
-                             &if_smi_handler, miss);
-  }
-
-  Bind(&call_handler);
-  {
-    typedef LoadWithVectorDescriptor Descriptor;
-    TailCallStub(Descriptor(isolate()), handler, p->context,
-                 Arg(Descriptor::kReceiver, p->receiver),
-                 Arg(Descriptor::kName, p->name),
-                 Arg(Descriptor::kSlot, p->slot),
-                 Arg(Descriptor::kVector, p->vector));
-  }
-}
-
-void CodeStubAssembler::HandleLoadICProtoHandler(
-    const LoadICParameters* p, Node* handler, Variable* var_holder,
-    Variable* var_smi_handler, Label* if_smi_handler, Label* miss) {
-  DCHECK_EQ(MachineRepresentation::kTagged, var_holder->rep());
-  DCHECK_EQ(MachineRepresentation::kTagged, var_smi_handler->rep());
-
-  // IC dispatchers rely on these assumptions to be held.
-  STATIC_ASSERT(FixedArray::kLengthOffset == LoadHandler::kHolderCellOffset);
-  DCHECK_EQ(FixedArray::OffsetOfElementAt(LoadHandler::kSmiHandlerIndex),
-            LoadHandler::kSmiHandlerOffset);
-  DCHECK_EQ(FixedArray::OffsetOfElementAt(LoadHandler::kValidityCellIndex),
-            LoadHandler::kValidityCellOffset);
-
-  // Both FixedArray and Tuple3 handlers have validity cell at the same offset.
-  Label validity_cell_check_done(this);
-  Node* validity_cell =
-      LoadObjectField(handler, LoadHandler::kValidityCellOffset);
-  GotoIf(WordEqual(validity_cell, IntPtrConstant(0)),
-         &validity_cell_check_done);
-  Node* cell_value = LoadObjectField(validity_cell, Cell::kValueOffset);
-  GotoIf(WordNotEqual(cell_value,
-                      SmiConstant(Smi::FromInt(Map::kPrototypeChainValid))),
-         miss);
-  Goto(&validity_cell_check_done);
-
-  Bind(&validity_cell_check_done);
-  Node* smi_handler = LoadObjectField(handler, LoadHandler::kSmiHandlerOffset);
-  CSA_ASSERT(this, TaggedIsSmi(smi_handler));
-  Node* handler_flags = SmiUntag(smi_handler);
-
-  Label check_prototypes(this);
-  GotoUnless(
-      IsSetWord<LoadHandler::DoNegativeLookupOnReceiverBits>(handler_flags),
-      &check_prototypes);
-  {
-    // We have a dictionary receiver, do a negative lookup check.
-    NameDictionaryNegativeLookup(p->receiver, p->name, miss);
-    Goto(&check_prototypes);
-  }
-
-  Bind(&check_prototypes);
-  Node* maybe_holder_cell =
-      LoadObjectField(handler, LoadHandler::kHolderCellOffset);
-  Label array_handler(this), tuple_handler(this);
-  Branch(TaggedIsSmi(maybe_holder_cell), &array_handler, &tuple_handler);
-
-  Bind(&tuple_handler);
-  {
-    Label load_existent(this);
-    GotoIf(WordNotEqual(maybe_holder_cell, NullConstant()), &load_existent);
-    // This is a handler for a load of a non-existent value.
-    Return(UndefinedConstant());
-
-    Bind(&load_existent);
-    Node* holder = LoadWeakCellValue(maybe_holder_cell);
-    // The |holder| is guaranteed to be alive at this point since we passed
-    // both the receiver map check and the validity cell check.
-    CSA_ASSERT(this, WordNotEqual(holder, IntPtrConstant(0)));
-
-    var_holder->Bind(holder);
-    var_smi_handler->Bind(smi_handler);
-    Goto(if_smi_handler);
-  }
-
-  Bind(&array_handler);
-  {
-    Node* length = SmiUntag(maybe_holder_cell);
-
-    Variable start_index(this, MachineType::PointerRepresentation());
-    start_index.Bind(IntPtrConstant(LoadHandler::kFirstPrototypeIndex));
-
-    Label can_access(this);
-    GotoUnless(
-        IsSetWord<LoadHandler::DoAccessCheckOnReceiverBits>(handler_flags),
-        &can_access);
-    {
-      // Skip this entry of a handler.
-      start_index.Bind(IntPtrConstant(LoadHandler::kFirstPrototypeIndex + 1));
-
-      int offset =
-          FixedArray::OffsetOfElementAt(LoadHandler::kFirstPrototypeIndex);
-      Node* expected_native_context =
-          LoadWeakCellValue(LoadObjectField(handler, offset), miss);
-      CSA_ASSERT(this, IsNativeContext(expected_native_context));
-
-      Node* native_context = LoadNativeContext(p->context);
-      GotoIf(WordEqual(expected_native_context, native_context), &can_access);
-      // If the receiver is not a JSGlobalProxy then we miss.
-      GotoUnless(IsJSGlobalProxy(p->receiver), miss);
-      // For JSGlobalProxy receiver try to compare security tokens of current
-      // and expected native contexts.
-      Node* expected_token = LoadContextElement(expected_native_context,
-                                                Context::SECURITY_TOKEN_INDEX);
-      Node* current_token =
-          LoadContextElement(native_context, Context::SECURITY_TOKEN_INDEX);
-      Branch(WordEqual(expected_token, current_token), &can_access, miss);
-    }
-    Bind(&can_access);
-
-    BuildFastLoop(MachineType::PointerRepresentation(), start_index.value(),
-                  length,
-                  [this, p, handler, miss](CodeStubAssembler*, Node* current) {
-                    Node* prototype_cell = LoadFixedArrayElement(
-                        handler, current, 0, INTPTR_PARAMETERS);
-                    CheckPrototype(prototype_cell, p->name, miss);
-                  },
-                  1, IndexAdvanceMode::kPost);
-
-    Node* maybe_holder_cell = LoadFixedArrayElement(
-        handler, IntPtrConstant(LoadHandler::kHolderCellIndex), 0,
-        INTPTR_PARAMETERS);
-    Label load_existent(this);
-    GotoIf(WordNotEqual(maybe_holder_cell, NullConstant()), &load_existent);
-    // This is a handler for a load of a non-existent value.
-    Return(UndefinedConstant());
-
-    Bind(&load_existent);
-    Node* holder = LoadWeakCellValue(maybe_holder_cell);
-    // The |holder| is guaranteed to be alive at this point since we passed
-    // the receiver map check, the validity cell check and the prototype chain
-    // check.
-    CSA_ASSERT(this, WordNotEqual(holder, IntPtrConstant(0)));
-
-    var_holder->Bind(holder);
-    var_smi_handler->Bind(smi_handler);
-    Goto(if_smi_handler);
-  }
-}
-
-void CodeStubAssembler::CheckPrototype(Node* prototype_cell, Node* name,
-                                       Label* miss) {
-  Node* maybe_prototype = LoadWeakCellValue(prototype_cell, miss);
-
-  Label done(this);
-  Label if_property_cell(this), if_dictionary_object(this);
-
-  // |maybe_prototype| is either a PropertyCell or a slow-mode prototype.
-  Branch(WordEqual(LoadMap(maybe_prototype),
-                   LoadRoot(Heap::kGlobalPropertyCellMapRootIndex)),
-         &if_property_cell, &if_dictionary_object);
-
-  Bind(&if_dictionary_object);
-  {
-    CSA_ASSERT(this, IsDictionaryMap(LoadMap(maybe_prototype)));
-    NameDictionaryNegativeLookup(maybe_prototype, name, miss);
-    Goto(&done);
-  }
-
-  Bind(&if_property_cell);
-  {
-    // Ensure the property cell still contains the hole.
-    Node* value = LoadObjectField(maybe_prototype, PropertyCell::kValueOffset);
-    GotoIf(WordNotEqual(value, LoadRoot(Heap::kTheHoleValueRootIndex)), miss);
-    Goto(&done);
-  }
-
-  Bind(&done);
-}
-
-void CodeStubAssembler::NameDictionaryNegativeLookup(Node* object, Node* name,
-                                                     Label* miss) {
-  CSA_ASSERT(this, IsDictionaryMap(LoadMap(object)));
-  Node* properties = LoadProperties(object);
-  // Ensure the property does not exist in a dictionary-mode object.
-  Variable var_name_index(this, MachineType::PointerRepresentation());
-  Label done(this);
-  NameDictionaryLookup<NameDictionary>(properties, name, miss, &var_name_index,
-                                       &done);
-  Bind(&done);
-}
-
-void CodeStubAssembler::LoadIC(const LoadICParameters* p) {
-  Variable var_handler(this, MachineRepresentation::kTagged);
-  // TODO(ishell): defer blocks when it works.
-  Label if_handler(this, &var_handler), try_polymorphic(this),
-      try_megamorphic(this /*, Label::kDeferred*/),
-      miss(this /*, Label::kDeferred*/);
-
-  Node* receiver_map = LoadReceiverMap(p->receiver);
-
-  // Check monomorphic case.
-  Node* feedback =
-      TryMonomorphicCase(p->slot, p->vector, receiver_map, &if_handler,
-                         &var_handler, &try_polymorphic);
-  Bind(&if_handler);
-  {
-    HandleLoadICHandlerCase(p, var_handler.value(), &miss);
-  }
-
-  Bind(&try_polymorphic);
-  {
-    // Check polymorphic case.
-    Comment("LoadIC_try_polymorphic");
-    GotoUnless(WordEqual(LoadMap(feedback), FixedArrayMapConstant()),
-               &try_megamorphic);
-    HandlePolymorphicCase(receiver_map, feedback, &if_handler, &var_handler,
-                          &miss, 2);
-  }
-
-  Bind(&try_megamorphic);
-  {
-    // Check megamorphic case.
-    GotoUnless(
-        WordEqual(feedback, LoadRoot(Heap::kmegamorphic_symbolRootIndex)),
-        &miss);
-
-    TryProbeStubCache(isolate()->load_stub_cache(), p->receiver, p->name,
-                      &if_handler, &var_handler, &miss);
-  }
-  Bind(&miss);
-  {
-    TailCallRuntime(Runtime::kLoadIC_Miss, p->context, p->receiver, p->name,
-                    p->slot, p->vector);
-  }
-}
-
-void CodeStubAssembler::KeyedLoadIC(const LoadICParameters* p) {
-  Variable var_handler(this, MachineRepresentation::kTagged);
-  // TODO(ishell): defer blocks when it works.
-  Label if_handler(this, &var_handler), try_polymorphic(this),
-      try_megamorphic(this /*, Label::kDeferred*/),
-      try_polymorphic_name(this /*, Label::kDeferred*/),
-      miss(this /*, Label::kDeferred*/);
-
-  Node* receiver_map = LoadReceiverMap(p->receiver);
-
-  // Check monomorphic case.
-  Node* feedback =
-      TryMonomorphicCase(p->slot, p->vector, receiver_map, &if_handler,
-                         &var_handler, &try_polymorphic);
-  Bind(&if_handler);
-  {
-    HandleLoadICHandlerCase(p, var_handler.value(), &miss, kSupportElements);
-  }
-
-  Bind(&try_polymorphic);
-  {
-    // Check polymorphic case.
-    Comment("KeyedLoadIC_try_polymorphic");
-    GotoUnless(WordEqual(LoadMap(feedback), FixedArrayMapConstant()),
-               &try_megamorphic);
-    HandlePolymorphicCase(receiver_map, feedback, &if_handler, &var_handler,
-                          &miss, 2);
-  }
-
-  Bind(&try_megamorphic);
-  {
-    // Check megamorphic case.
-    Comment("KeyedLoadIC_try_megamorphic");
-    GotoUnless(
-        WordEqual(feedback, LoadRoot(Heap::kmegamorphic_symbolRootIndex)),
-        &try_polymorphic_name);
-    // TODO(jkummerow): Inline this? Or some of it?
-    TailCallStub(CodeFactory::KeyedLoadIC_Megamorphic(isolate()), p->context,
-                 p->receiver, p->name, p->slot, p->vector);
-  }
-  Bind(&try_polymorphic_name);
-  {
-    // We might have a name in feedback, and a fixed array in the next slot.
-    Comment("KeyedLoadIC_try_polymorphic_name");
-    GotoUnless(WordEqual(feedback, p->name), &miss);
-    // If the name comparison succeeded, we know we have a fixed array with
-    // at least one map/handler pair.
-    Node* offset = ElementOffsetFromIndex(
-        p->slot, FAST_HOLEY_ELEMENTS, SMI_PARAMETERS,
-        FixedArray::kHeaderSize + kPointerSize - kHeapObjectTag);
-    Node* array = Load(MachineType::AnyTagged(), p->vector, offset);
-    HandlePolymorphicCase(receiver_map, array, &if_handler, &var_handler, &miss,
-                          1);
-  }
-  Bind(&miss);
-  {
-    Comment("KeyedLoadIC_miss");
-    TailCallRuntime(Runtime::kKeyedLoadIC_Miss, p->context, p->receiver,
-                    p->name, p->slot, p->vector);
-  }
-}
-
-void CodeStubAssembler::KeyedLoadICGeneric(const LoadICParameters* p) {
-  Variable var_index(this, MachineType::PointerRepresentation());
-  Variable var_details(this, MachineRepresentation::kWord32);
-  Variable var_value(this, MachineRepresentation::kTagged);
-  Label if_index(this), if_unique_name(this), if_element_hole(this),
-      if_oob(this), slow(this), stub_cache_miss(this),
-      if_property_dictionary(this), if_found_on_receiver(this);
-
-  Node* receiver = p->receiver;
-  GotoIf(TaggedIsSmi(receiver), &slow);
-  Node* receiver_map = LoadMap(receiver);
-  Node* instance_type = LoadMapInstanceType(receiver_map);
-  // Receivers requiring non-standard element accesses (interceptors, access
-  // checks, strings and string wrappers, proxies) are handled in the runtime.
-  GotoIf(Int32LessThanOrEqual(instance_type,
-                              Int32Constant(LAST_CUSTOM_ELEMENTS_RECEIVER)),
-         &slow);
-
-  Node* key = p->name;
-  TryToName(key, &if_index, &var_index, &if_unique_name, &slow);
-
-  Bind(&if_index);
-  {
-    Comment("integer index");
-    Node* index = var_index.value();
-    Node* elements = LoadElements(receiver);
-    Node* elements_kind = LoadMapElementsKind(receiver_map);
-    Node* is_jsarray_condition =
-        Word32Equal(instance_type, Int32Constant(JS_ARRAY_TYPE));
-    Variable var_double_value(this, MachineRepresentation::kFloat64);
-    Label rebox_double(this, &var_double_value);
-
-    // Unimplemented elements kinds fall back to a runtime call.
-    Label* unimplemented_elements_kind = &slow;
-    IncrementCounter(isolate()->counters()->ic_keyed_load_generic_smi(), 1);
-    EmitElementLoad(receiver, elements, elements_kind, index,
-                    is_jsarray_condition, &if_element_hole, &rebox_double,
-                    &var_double_value, unimplemented_elements_kind, &if_oob,
-                    &slow);
-
-    Bind(&rebox_double);
-    Return(AllocateHeapNumberWithValue(var_double_value.value()));
-  }
-
-  Bind(&if_oob);
-  {
-    Comment("out of bounds");
-    Node* index = var_index.value();
-    // Negative keys can't take the fast OOB path.
-    GotoIf(IntPtrLessThan(index, IntPtrConstant(0)), &slow);
-    // Positive OOB indices are effectively the same as hole loads.
-    Goto(&if_element_hole);
-  }
-
-  Bind(&if_element_hole);
-  {
-    Comment("found the hole");
-    Label return_undefined(this);
-    BranchIfPrototypesHaveNoElements(receiver_map, &return_undefined, &slow);
-
-    Bind(&return_undefined);
-    Return(UndefinedConstant());
-  }
-
-  Node* properties = nullptr;
-  Bind(&if_unique_name);
-  {
-    Comment("key is unique name");
-    // Check if the receiver has fast or slow properties.
-    properties = LoadProperties(receiver);
-    Node* properties_map = LoadMap(properties);
-    GotoIf(WordEqual(properties_map, LoadRoot(Heap::kHashTableMapRootIndex)),
-           &if_property_dictionary);
-
-    // Try looking up the property on the receiver; if unsuccessful, look
-    // for a handler in the stub cache.
-    Comment("DescriptorArray lookup");
-
-    // Skip linear search if there are too many descriptors.
-    // TODO(jkummerow): Consider implementing binary search.
-    // See also TryLookupProperty() which has the same limitation.
-    const int32_t kMaxLinear = 210;
-    Label stub_cache(this);
-    Node* bitfield3 = LoadMapBitField3(receiver_map);
-    Node* nof =
-        DecodeWordFromWord32<Map::NumberOfOwnDescriptorsBits>(bitfield3);
-    GotoIf(UintPtrGreaterThan(nof, IntPtrConstant(kMaxLinear)), &stub_cache);
-    Node* descriptors = LoadMapDescriptors(receiver_map);
-    Variable var_name_index(this, MachineType::PointerRepresentation());
-    Label if_descriptor_found(this);
-    DescriptorLookupLinear(key, descriptors, nof, &if_descriptor_found,
-                           &var_name_index, &stub_cache);
-
-    Bind(&if_descriptor_found);
-    {
-      LoadPropertyFromFastObject(receiver, receiver_map, descriptors,
-                                 var_name_index.value(), &var_details,
-                                 &var_value);
-      Goto(&if_found_on_receiver);
-    }
-
-    Bind(&stub_cache);
-    {
-      Comment("stub cache probe for fast property load");
-      Variable var_handler(this, MachineRepresentation::kTagged);
-      Label found_handler(this, &var_handler), stub_cache_miss(this);
-      TryProbeStubCache(isolate()->load_stub_cache(), receiver, key,
-                        &found_handler, &var_handler, &stub_cache_miss);
-      Bind(&found_handler);
-      { HandleLoadICHandlerCase(p, var_handler.value(), &slow); }
-
-      Bind(&stub_cache_miss);
-      {
-        Comment("KeyedLoadGeneric_miss");
-        TailCallRuntime(Runtime::kKeyedLoadIC_Miss, p->context, p->receiver,
-                        p->name, p->slot, p->vector);
-      }
-    }
-  }
-
-  Bind(&if_property_dictionary);
-  {
-    Comment("dictionary property load");
-    // We checked for LAST_CUSTOM_ELEMENTS_RECEIVER before, which rules out
-    // seeing global objects here (which would need special handling).
-
-    Variable var_name_index(this, MachineType::PointerRepresentation());
-    Label dictionary_found(this, &var_name_index);
-    NameDictionaryLookup<NameDictionary>(properties, key, &dictionary_found,
-                                         &var_name_index, &slow);
-    Bind(&dictionary_found);
-    {
-      LoadPropertyFromNameDictionary(properties, var_name_index.value(),
-                                     &var_details, &var_value);
-      Goto(&if_found_on_receiver);
-    }
-  }
-
-  Bind(&if_found_on_receiver);
-  {
-    Node* value = CallGetterIfAccessor(var_value.value(), var_details.value(),
-                                       p->context, receiver, &slow);
-    IncrementCounter(isolate()->counters()->ic_keyed_load_generic_symbol(), 1);
-    Return(value);
-  }
-
-  Bind(&slow);
-  {
-    Comment("KeyedLoadGeneric_slow");
-    IncrementCounter(isolate()->counters()->ic_keyed_load_generic_slow(), 1);
-    // TODO(jkummerow): Should we use the GetProperty TF stub instead?
-    TailCallRuntime(Runtime::kKeyedGetProperty, p->context, p->receiver,
-                    p->name);
-  }
-}
-
-void CodeStubAssembler::HandleStoreFieldAndReturn(
-    Node* handler_word, Node* holder, Representation representation,
-    Node* value, bool transition_to_field, Label* miss) {
-  Node* prepared_value = PrepareValueForWrite(value, representation, miss);
-
-  Node* offset = DecodeWord<StoreHandler::FieldOffsetBits>(handler_word);
-  Label if_inobject(this), if_out_of_object(this);
-  Branch(IsSetWord<StoreHandler::IsInobjectBits>(handler_word), &if_inobject,
-         &if_out_of_object);
-
-  Bind(&if_inobject);
-  {
-    StoreNamedField(holder, offset, true, representation, prepared_value,
-                    transition_to_field);
-    Return(value);
-  }
-
-  Bind(&if_out_of_object);
-  {
-    StoreNamedField(holder, offset, false, representation, prepared_value,
-                    transition_to_field);
-    Return(value);
-  }
-}
-
-void CodeStubAssembler::HandleStoreICSmiHandlerCase(Node* handler_word,
-                                                    Node* holder, Node* value,
-                                                    bool transition_to_field,
-                                                    Label* miss) {
-  Comment(transition_to_field ? "transitioning field store" : "field store");
-
-  Node* field_representation =
-      DecodeWord<StoreHandler::FieldRepresentationBits>(handler_word);
-
-  Label if_smi_field(this), if_double_field(this), if_heap_object_field(this),
-      if_tagged_field(this);
-
-  GotoIf(WordEqual(field_representation, IntPtrConstant(StoreHandler::kTagged)),
-         &if_tagged_field);
-  GotoIf(WordEqual(field_representation,
-                   IntPtrConstant(StoreHandler::kHeapObject)),
-         &if_heap_object_field);
-  GotoIf(WordEqual(field_representation, IntPtrConstant(StoreHandler::kDouble)),
-         &if_double_field);
-  CSA_ASSERT(this, WordEqual(field_representation,
-                             IntPtrConstant(StoreHandler::kSmi)));
-  Goto(&if_smi_field);
-
-  Bind(&if_tagged_field);
-  {
-    Comment("store tagged field");
-    HandleStoreFieldAndReturn(handler_word, holder, Representation::Tagged(),
-                              value, transition_to_field, miss);
-  }
-
-  Bind(&if_double_field);
-  {
-    Comment("store double field");
-    HandleStoreFieldAndReturn(handler_word, holder, Representation::Double(),
-                              value, transition_to_field, miss);
-  }
-
-  Bind(&if_heap_object_field);
-  {
-    Comment("store heap object field");
-    // Generate full field type check here and then store value as Tagged.
-    Node* prepared_value =
-        PrepareValueForWrite(value, Representation::HeapObject(), miss);
-    Node* value_index_in_descriptor =
-        DecodeWord<StoreHandler::DescriptorValueIndexBits>(handler_word);
-    Node* descriptors = LoadMapDescriptors(LoadMap(holder));
-    Node* maybe_field_type = LoadFixedArrayElement(
-        descriptors, value_index_in_descriptor, 0, INTPTR_PARAMETERS);
-    Label do_store(this);
-    GotoIf(TaggedIsSmi(maybe_field_type), &do_store);
-    // Check that value type matches the field type.
-    {
-      Node* field_type = LoadWeakCellValue(maybe_field_type, miss);
-      Branch(WordEqual(LoadMap(prepared_value), field_type), &do_store, miss);
-    }
-    Bind(&do_store);
-    HandleStoreFieldAndReturn(handler_word, holder, Representation::Tagged(),
-                              prepared_value, transition_to_field, miss);
-  }
-
-  Bind(&if_smi_field);
-  {
-    Comment("store smi field");
-    HandleStoreFieldAndReturn(handler_word, holder, Representation::Smi(),
-                              value, transition_to_field, miss);
-  }
-}
-
-void CodeStubAssembler::HandleStoreICHandlerCase(const StoreICParameters* p,
-                                                 Node* handler, Label* miss) {
-  Label if_smi_handler(this), call_handler(this);
-
-  Branch(TaggedIsSmi(handler), &if_smi_handler, &call_handler);
-
-  // |handler| is a Smi, encoding what to do. See SmiHandler methods
-  // for the encoding format.
-  Bind(&if_smi_handler);
-  {
-    Node* holder = p->receiver;
-    Node* handler_word = SmiUntag(handler);
-
-    // Handle non-transitioning stores.
-    HandleStoreICSmiHandlerCase(handler_word, holder, p->value, false, miss);
-  }
-
-  // |handler| is a heap object. Must be code, call it.
-  Bind(&call_handler);
-  {
-    StoreWithVectorDescriptor descriptor(isolate());
-    TailCallStub(descriptor, handler, p->context, p->receiver, p->name,
-                 p->value, p->slot, p->vector);
-  }
-}
-
-void CodeStubAssembler::StoreIC(const StoreICParameters* p) {
-  Variable var_handler(this, MachineRepresentation::kTagged);
-  // TODO(ishell): defer blocks when it works.
-  Label if_handler(this, &var_handler), try_polymorphic(this),
-      try_megamorphic(this /*, Label::kDeferred*/),
-      miss(this /*, Label::kDeferred*/);
-
-  Node* receiver_map = LoadReceiverMap(p->receiver);
-
-  // Check monomorphic case.
-  Node* feedback =
-      TryMonomorphicCase(p->slot, p->vector, receiver_map, &if_handler,
-                         &var_handler, &try_polymorphic);
-  Bind(&if_handler);
-  {
-    Comment("StoreIC_if_handler");
-    HandleStoreICHandlerCase(p, var_handler.value(), &miss);
-  }
-
-  Bind(&try_polymorphic);
-  {
-    // Check polymorphic case.
-    Comment("StoreIC_try_polymorphic");
-    GotoUnless(
-        WordEqual(LoadMap(feedback), LoadRoot(Heap::kFixedArrayMapRootIndex)),
-        &try_megamorphic);
-    HandlePolymorphicCase(receiver_map, feedback, &if_handler, &var_handler,
-                          &miss, 2);
-  }
-
-  Bind(&try_megamorphic);
-  {
-    // Check megamorphic case.
-    GotoUnless(
-        WordEqual(feedback, LoadRoot(Heap::kmegamorphic_symbolRootIndex)),
-        &miss);
-
-    TryProbeStubCache(isolate()->store_stub_cache(), p->receiver, p->name,
-                      &if_handler, &var_handler, &miss);
-  }
-  Bind(&miss);
-  {
-    TailCallRuntime(Runtime::kStoreIC_Miss, p->context, p->value, p->slot,
-                    p->vector, p->receiver, p->name);
-  }
-}
-
-void CodeStubAssembler::KeyedStoreIC(const StoreICParameters* p,
-                                     LanguageMode language_mode) {
-  Variable var_handler(this, MachineRepresentation::kTagged);
-  // This is to make |miss| label see the var_handler bound on all paths.
-  var_handler.Bind(IntPtrConstant(0));
-
-  // TODO(ishell): defer blocks when it works.
-  Label if_handler(this, &var_handler), try_polymorphic(this),
-      try_megamorphic(this /*, Label::kDeferred*/),
-      try_polymorphic_name(this /*, Label::kDeferred*/),
-      miss(this /*, Label::kDeferred*/);
-
-  Node* receiver_map = LoadReceiverMap(p->receiver);
-
-  // Check monomorphic case.
-  Node* feedback =
-      TryMonomorphicCase(p->slot, p->vector, receiver_map, &if_handler,
-                         &var_handler, &try_polymorphic);
-  Bind(&if_handler);
-  {
-    Comment("KeyedStoreIC_if_handler");
-    HandleStoreICHandlerCase(p, var_handler.value(), &miss);
-  }
-
-  Bind(&try_polymorphic);
-  {
-    // CheckPolymorphic case.
-    Comment("KeyedStoreIC_try_polymorphic");
-    GotoUnless(
-        WordEqual(LoadMap(feedback), LoadRoot(Heap::kFixedArrayMapRootIndex)),
-        &try_megamorphic);
-    Label if_transition_handler(this);
-    Variable var_transition_map_cell(this, MachineRepresentation::kTagged);
-    HandleKeyedStorePolymorphicCase(receiver_map, feedback, &if_handler,
-                                    &var_handler, &if_transition_handler,
-                                    &var_transition_map_cell, &miss);
-    Bind(&if_transition_handler);
-    Comment("KeyedStoreIC_polymorphic_transition");
-    Node* transition_map =
-        LoadWeakCellValue(var_transition_map_cell.value(), &miss);
-    StoreTransitionDescriptor descriptor(isolate());
-    TailCallStub(descriptor, var_handler.value(), p->context, p->receiver,
-                 p->name, transition_map, p->value, p->slot, p->vector);
-  }
-
-  Bind(&try_megamorphic);
-  {
-    // Check megamorphic case.
-    Comment("KeyedStoreIC_try_megamorphic");
-    GotoUnless(
-        WordEqual(feedback, LoadRoot(Heap::kmegamorphic_symbolRootIndex)),
-        &try_polymorphic_name);
-    TailCallStub(
-        CodeFactory::KeyedStoreIC_Megamorphic(isolate(), language_mode),
-        p->context, p->receiver, p->name, p->value, p->slot, p->vector);
-  }
-
-  Bind(&try_polymorphic_name);
-  {
-    // We might have a name in feedback, and a fixed array in the next slot.
-    Comment("KeyedStoreIC_try_polymorphic_name");
-    GotoUnless(WordEqual(feedback, p->name), &miss);
-    // If the name comparison succeeded, we know we have a FixedArray with
-    // at least one map/handler pair.
-    Node* offset = ElementOffsetFromIndex(
-        p->slot, FAST_HOLEY_ELEMENTS, SMI_PARAMETERS,
-        FixedArray::kHeaderSize + kPointerSize - kHeapObjectTag);
-    Node* array = Load(MachineType::AnyTagged(), p->vector, offset);
-    HandlePolymorphicCase(receiver_map, array, &if_handler, &var_handler, &miss,
-                          1);
-  }
-
-  Bind(&miss);
-  {
-    Comment("KeyedStoreIC_miss");
-    TailCallRuntime(Runtime::kKeyedStoreIC_Miss, p->context, p->value, p->slot,
-                    p->vector, p->receiver, p->name);
-  }
-}
-
-void CodeStubAssembler::LoadGlobalIC(const LoadICParameters* p) {
-  Label try_handler(this), miss(this);
-  Node* weak_cell =
-      LoadFixedArrayElement(p->vector, p->slot, 0, SMI_PARAMETERS);
-  CSA_ASSERT(this, HasInstanceType(weak_cell, WEAK_CELL_TYPE));
-
-  // Load value or try handler case if the {weak_cell} is cleared.
-  Node* property_cell = LoadWeakCellValue(weak_cell, &try_handler);
-  CSA_ASSERT(this, HasInstanceType(property_cell, PROPERTY_CELL_TYPE));
-
-  Node* value = LoadObjectField(property_cell, PropertyCell::kValueOffset);
-  GotoIf(WordEqual(value, TheHoleConstant()), &miss);
-  Return(value);
-
-  Bind(&try_handler);
-  {
-    Node* handler =
-        LoadFixedArrayElement(p->vector, p->slot, kPointerSize, SMI_PARAMETERS);
-    GotoIf(WordEqual(handler, LoadRoot(Heap::kuninitialized_symbolRootIndex)),
-           &miss);
-
-    // In this case {handler} must be a Code object.
-    CSA_ASSERT(this, HasInstanceType(handler, CODE_TYPE));
-    LoadWithVectorDescriptor descriptor(isolate());
-    Node* native_context = LoadNativeContext(p->context);
-    Node* receiver =
-        LoadContextElement(native_context, Context::EXTENSION_INDEX);
-    Node* fake_name = IntPtrConstant(0);
-    TailCallStub(descriptor, handler, p->context, receiver, fake_name, p->slot,
-                 p->vector);
-  }
-  Bind(&miss);
-  {
-    TailCallRuntime(Runtime::kLoadGlobalIC_Miss, p->context, p->slot,
-                    p->vector);
-  }
 }
 
 void CodeStubAssembler::ExtendPropertiesBackingStore(compiler::Node* object) {
@@ -6410,24 +5067,7 @@ Node* CodeStubAssembler::PrepareValueForWrite(Node* value,
                                               Representation representation,
                                               Label* bailout) {
   if (representation.IsDouble()) {
-    Variable var_value(this, MachineRepresentation::kFloat64);
-    Label if_smi(this), if_heap_object(this), done(this);
-    Branch(TaggedIsSmi(value), &if_smi, &if_heap_object);
-    Bind(&if_smi);
-    {
-      var_value.Bind(SmiToFloat64(value));
-      Goto(&done);
-    }
-    Bind(&if_heap_object);
-    {
-      GotoUnless(
-          Word32Equal(LoadInstanceType(value), Int32Constant(HEAP_NUMBER_TYPE)),
-          bailout);
-      var_value.Bind(LoadHeapNumberValue(value));
-      Goto(&done);
-    }
-    Bind(&done);
-    value = var_value.value();
+    value = TryTaggedToFloat64(value, bailout);
   } else if (representation.IsHeapObject()) {
     // Field type is checked by the handler, here we only check if the value
     // is a heap object.
@@ -6887,23 +5527,23 @@ void CodeStubAssembler::TrapAllocationMemento(Node* object,
 
   Node* new_space_top_address = ExternalConstant(
       ExternalReference::new_space_allocation_top_address(isolate()));
-  const int kMementoMapOffset = JSArray::kSize - kHeapObjectTag;
+  const int kMementoMapOffset = JSArray::kSize;
   const int kMementoLastWordOffset =
       kMementoMapOffset + AllocationMemento::kSize - kPointerSize;
 
   // Bail out if the object is not in new space.
   Node* object_page = PageFromAddress(object);
   {
-    const int mask =
-        (1 << MemoryChunk::IN_FROM_SPACE) | (1 << MemoryChunk::IN_TO_SPACE);
-    Node* page_flags = Load(MachineType::IntPtr(), object_page);
-    GotoIf(
-        WordEqual(WordAnd(page_flags, IntPtrConstant(mask)), IntPtrConstant(0)),
-        &no_memento_found);
+    Node* page_flags = Load(MachineType::IntPtr(), object_page,
+                            IntPtrConstant(Page::kFlagsOffset));
+    GotoIf(WordEqual(WordAnd(page_flags,
+                             IntPtrConstant(MemoryChunk::kIsInNewSpaceMask)),
+                     IntPtrConstant(0)),
+           &no_memento_found);
   }
 
-  Node* memento_last_word =
-      IntPtrAdd(object, IntPtrConstant(kMementoLastWordOffset));
+  Node* memento_last_word = IntPtrAdd(
+      object, IntPtrConstant(kMementoLastWordOffset - kHeapObjectTag));
   Node* memento_last_word_page = PageFromAddress(memento_last_word);
 
   Node* new_space_top = Load(MachineType::Pointer(), new_space_top_address);
@@ -8412,6 +7052,95 @@ compiler::Node* CodeStubAssembler::StrictEqual(ResultMode mode,
   return result.value();
 }
 
+// ECMA#sec-samevalue
+// This algorithm differs from the Strict Equality Comparison Algorithm in its
+// treatment of signed zeroes and NaNs.
+compiler::Node* CodeStubAssembler::SameValue(compiler::Node* lhs,
+                                             compiler::Node* rhs,
+                                             compiler::Node* context) {
+  Variable var_result(this, MachineType::PointerRepresentation());
+  Label strict_equal(this), out(this);
+
+  Node* const int_false = IntPtrConstant(0);
+  Node* const int_true = IntPtrConstant(1);
+
+  Label if_equal(this), if_notequal(this);
+  Branch(WordEqual(lhs, rhs), &if_equal, &if_notequal);
+
+  Bind(&if_equal);
+  {
+    // This covers the case when {lhs} == {rhs}. We can simply return true
+    // because SameValue considers two NaNs to be equal.
+
+    var_result.Bind(int_true);
+    Goto(&out);
+  }
+
+  Bind(&if_notequal);
+  {
+    // This covers the case when {lhs} != {rhs}. We only handle numbers here
+    // and defer to StrictEqual for the rest.
+
+    Node* const lhs_float = TryTaggedToFloat64(lhs, &strict_equal);
+    Node* const rhs_float = TryTaggedToFloat64(rhs, &strict_equal);
+
+    Label if_lhsisnan(this), if_lhsnotnan(this);
+    BranchIfFloat64IsNaN(lhs_float, &if_lhsisnan, &if_lhsnotnan);
+
+    Bind(&if_lhsisnan);
+    {
+      // Return true iff {rhs} is NaN.
+
+      Node* const result =
+          Select(Float64Equal(rhs_float, rhs_float), int_false, int_true,
+                 MachineType::PointerRepresentation());
+      var_result.Bind(result);
+      Goto(&out);
+    }
+
+    Bind(&if_lhsnotnan);
+    {
+      Label if_floatisequal(this), if_floatnotequal(this);
+      Branch(Float64Equal(lhs_float, rhs_float), &if_floatisequal,
+             &if_floatnotequal);
+
+      Bind(&if_floatisequal);
+      {
+        // We still need to handle the case when {lhs} and {rhs} are -0.0 and
+        // 0.0 (or vice versa). Compare the high word to
+        // distinguish between the two.
+
+        Node* const lhs_hi_word = Float64ExtractHighWord32(lhs_float);
+        Node* const rhs_hi_word = Float64ExtractHighWord32(rhs_float);
+
+        // If x is +0 and y is -0, return false.
+        // If x is -0 and y is +0, return false.
+
+        Node* const result = Word32Equal(lhs_hi_word, rhs_hi_word);
+        var_result.Bind(result);
+        Goto(&out);
+      }
+
+      Bind(&if_floatnotequal);
+      {
+        var_result.Bind(int_false);
+        Goto(&out);
+      }
+    }
+  }
+
+  Bind(&strict_equal);
+  {
+    Node* const is_equal = StrictEqual(kDontNegateResult, lhs, rhs, context);
+    Node* const result = WordEqual(is_equal, TrueConstant());
+    var_result.Bind(result);
+    Goto(&out);
+  }
+
+  Bind(&out);
+  return var_result.value();
+}
+
 compiler::Node* CodeStubAssembler::ForInFilter(compiler::Node* key,
                                                compiler::Node* object,
                                                compiler::Node* context) {
@@ -8600,7 +7329,7 @@ compiler::Node* CodeStubAssembler::InstanceOf(compiler::Node* object,
   GotoUnless(
       WordEqual(LoadObjectField(LoadRoot(Heap::kHasInstanceProtectorRootIndex),
                                 PropertyCell::kValueOffset),
-                SmiConstant(Smi::FromInt(Isolate::kArrayProtectorValid))),
+                SmiConstant(Smi::FromInt(Isolate::kProtectorValid))),
       &return_runtime);
 
   // Check if {callable} is a valid receiver.
@@ -8722,34 +7451,37 @@ compiler::Node* CodeStubAssembler::CreateArrayIterator(
     // There are only two key iterator maps, branch depending on whether or not
     // the receiver is a TypedArray or not.
 
-    Label if_isarray(this), if_istypedarray(this), if_isgeneric(this);
-    Label* kInstanceTypeHandlers[] = {&if_isarray, &if_istypedarray};
+    Label if_istypedarray(this), if_isgeneric(this);
 
-    static int32_t kInstanceType[] = {JS_ARRAY_TYPE, JS_TYPED_ARRAY_TYPE};
+    Branch(Word32Equal(array_type, Int32Constant(JS_TYPED_ARRAY_TYPE)),
+           &if_istypedarray, &if_isgeneric);
 
-    Switch(array_type, &if_isgeneric, kInstanceType, kInstanceTypeHandlers,
-           arraysize(kInstanceType));
-
-    Bind(&if_isarray);
+    Bind(&if_isgeneric);
     {
-      var_map_index.Bind(
-          IntPtrConstant(Context::FAST_ARRAY_KEY_ITERATOR_MAP_INDEX));
-      var_array_map.Bind(array_map);
-      Goto(&allocate_iterator);
+      Label if_isfast(this), if_isslow(this);
+      BranchIfFastJSArray(array, context, &if_isfast, &if_isslow);
+
+      Bind(&if_isfast);
+      {
+        var_map_index.Bind(
+            IntPtrConstant(Context::FAST_ARRAY_KEY_ITERATOR_MAP_INDEX));
+        var_array_map.Bind(array_map);
+        Goto(&allocate_iterator);
+      }
+
+      Bind(&if_isslow);
+      {
+        var_map_index.Bind(
+            IntPtrConstant(Context::GENERIC_ARRAY_KEY_ITERATOR_MAP_INDEX));
+        var_array_map.Bind(UndefinedConstant());
+        Goto(&allocate_iterator);
+      }
     }
 
     Bind(&if_istypedarray);
     {
       var_map_index.Bind(
           IntPtrConstant(Context::TYPED_ARRAY_KEY_ITERATOR_MAP_INDEX));
-      var_array_map.Bind(UndefinedConstant());
-      Goto(&allocate_iterator);
-    }
-
-    Bind(&if_isgeneric);
-    {
-      var_map_index.Bind(
-          IntPtrConstant(Context::GENERIC_ARRAY_KEY_ITERATOR_MAP_INDEX));
       var_array_map.Bind(UndefinedConstant());
       Goto(&allocate_iterator);
     }
@@ -8765,19 +7497,59 @@ compiler::Node* CodeStubAssembler::CreateArrayIterator(
 
       Bind(&if_isfast);
       {
-        Node* map_index =
-            IntPtrAdd(IntPtrConstant(kBaseMapIndex + kFastIteratorOffset),
-                      LoadMapElementsKind(array_map));
-        CSA_ASSERT(this, IntPtrGreaterThanOrEqual(
-                             map_index, IntPtrConstant(kBaseMapIndex +
-                                                       kFastIteratorOffset)));
-        CSA_ASSERT(this, IntPtrLessThan(map_index,
-                                        IntPtrConstant(kBaseMapIndex +
-                                                       kSlowIteratorOffset)));
+        Label if_ispacked(this), if_isholey(this);
+        Node* elements_kind = LoadMapElementsKind(array_map);
+        Branch(IsHoleyFastElementsKind(elements_kind), &if_isholey,
+               &if_ispacked);
 
-        var_map_index.Bind(map_index);
-        var_array_map.Bind(array_map);
-        Goto(&allocate_iterator);
+        Bind(&if_isholey);
+        {
+          // Fast holey JSArrays can treat the hole as undefined if the
+          // protector cell is valid, and the prototype chain is unchanged from
+          // its initial state (because the protector cell is only tracked for
+          // initial the Array and Object prototypes). Check these conditions
+          // here, and take the slow path if any fail.
+          Node* protector_cell = LoadRoot(Heap::kArrayProtectorRootIndex);
+          DCHECK(isolate()->heap()->array_protector()->IsPropertyCell());
+          GotoUnless(
+              WordEqual(
+                  LoadObjectField(protector_cell, PropertyCell::kValueOffset),
+                  SmiConstant(Smi::FromInt(Isolate::kProtectorValid))),
+              &if_isslow);
+
+          Node* native_context = LoadNativeContext(context);
+
+          Node* prototype = LoadMapPrototype(array_map);
+          Node* array_prototype = LoadContextElement(
+              native_context, Context::INITIAL_ARRAY_PROTOTYPE_INDEX);
+          GotoUnless(WordEqual(prototype, array_prototype), &if_isslow);
+
+          Node* map = LoadMap(prototype);
+          prototype = LoadMapPrototype(map);
+          Node* object_prototype = LoadContextElement(
+              native_context, Context::INITIAL_OBJECT_PROTOTYPE_INDEX);
+          GotoUnless(WordEqual(prototype, object_prototype), &if_isslow);
+
+          map = LoadMap(prototype);
+          prototype = LoadMapPrototype(map);
+          Branch(IsNull(prototype), &if_ispacked, &if_isslow);
+        }
+        Bind(&if_ispacked);
+        {
+          Node* map_index =
+              IntPtrAdd(IntPtrConstant(kBaseMapIndex + kFastIteratorOffset),
+                        LoadMapElementsKind(array_map));
+          CSA_ASSERT(this, IntPtrGreaterThanOrEqual(
+                               map_index, IntPtrConstant(kBaseMapIndex +
+                                                         kFastIteratorOffset)));
+          CSA_ASSERT(this, IntPtrLessThan(map_index,
+                                          IntPtrConstant(kBaseMapIndex +
+                                                         kSlowIteratorOffset)));
+
+          var_map_index.Bind(map_index);
+          var_array_map.Bind(array_map);
+          Goto(&allocate_iterator);
+        }
       }
 
       Bind(&if_isslow);
@@ -8916,6 +7688,25 @@ void CodeStubArguments::PopAndReturn(compiler::Node* value) {
   assembler_->PopAndReturn(
       assembler_->IntPtrAddFoldConstants(argc_, assembler_->IntPtrConstant(1)),
       value);
+}
+
+compiler::Node* CodeStubAssembler::IsFastElementsKind(
+    compiler::Node* elements_kind) {
+  return Uint32LessThanOrEqual(elements_kind,
+                               Int32Constant(LAST_FAST_ELEMENTS_KIND));
+}
+
+compiler::Node* CodeStubAssembler::IsHoleyFastElementsKind(
+    compiler::Node* elements_kind) {
+  CSA_ASSERT(this, IsFastElementsKind(elements_kind));
+
+  STATIC_ASSERT(FAST_HOLEY_SMI_ELEMENTS == (FAST_SMI_ELEMENTS | 1));
+  STATIC_ASSERT(FAST_HOLEY_ELEMENTS == (FAST_ELEMENTS | 1));
+  STATIC_ASSERT(FAST_HOLEY_DOUBLE_ELEMENTS == (FAST_DOUBLE_ELEMENTS | 1));
+
+  // Check prototype chain if receiver does not have packed elements.
+  Node* holey_elements = Word32And(elements_kind, Int32Constant(1));
+  return Word32Equal(holey_elements, Int32Constant(1));
 }
 
 }  // namespace internal

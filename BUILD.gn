@@ -43,10 +43,6 @@ declare_args() {
   # Sets -dENABLE_HANDLE_ZAPPING.
   v8_enable_handle_zapping = true
 
-  # Enable ECMAScript Internationalization API. Enabling this feature will
-  # add a dependency on the ICU library.
-  v8_enable_i18n_support = true
-
   # Enable slow dchecks.
   v8_enable_slow_dchecks = false
 
@@ -64,6 +60,9 @@ declare_args() {
 
   # Switches off inlining in V8.
   v8_no_inline = false
+
+  # Override OS page size when generating snapshot
+  v8_os_page_size = "0"
 
   # Similar to vfp but on MIPS.
   v8_can_use_fpu_instructions = true
@@ -374,6 +373,8 @@ config("toolchain") {
 
   if (is_clang) {
     cflags += [
+      "-Wsign-compare",
+
       # TODO(hans): Remove once http://crbug.com/428099 is resolved.
       "-Winconsistent-missing-override",
     ]
@@ -681,6 +682,13 @@ action("run_mksnapshot") {
     ]
   }
 
+  if (v8_os_page_size != "0") {
+    args += [
+      "--v8_os_page_size",
+      v8_os_page_size,
+    ]
+  }
+
   if (v8_use_external_startup_data) {
     outputs += [ "$root_out_dir/snapshot_blob.bin" ]
     args += [
@@ -952,6 +960,7 @@ v8_source_set("v8_base") {
     "src/builtins/builtins-math.cc",
     "src/builtins/builtins-number.cc",
     "src/builtins/builtins-object.cc",
+    "src/builtins/builtins-promise.cc",
     "src/builtins/builtins-proxy.cc",
     "src/builtins/builtins-reflect.cc",
     "src/builtins/builtins-regexp.cc",
@@ -1031,6 +1040,8 @@ v8_source_set("v8_base") {
     "src/compiler/common-operator-reducer.h",
     "src/compiler/common-operator.cc",
     "src/compiler/common-operator.h",
+    "src/compiler/compiler-source-position-table.cc",
+    "src/compiler/compiler-source-position-table.h",
     "src/compiler/control-builders.cc",
     "src/compiler/control-builders.h",
     "src/compiler/control-equivalence.cc",
@@ -1177,8 +1188,6 @@ v8_source_set("v8_base") {
     "src/compiler/simplified-operator-reducer.h",
     "src/compiler/simplified-operator.cc",
     "src/compiler/simplified-operator.h",
-    "src/compiler/source-position.cc",
-    "src/compiler/source-position.h",
     "src/compiler/state-values-utils.cc",
     "src/compiler/state-values-utils.h",
     "src/compiler/store-store-elimination.cc",
@@ -1405,6 +1414,9 @@ v8_source_set("v8_base") {
     "src/ic/access-compiler-data.h",
     "src/ic/access-compiler.cc",
     "src/ic/access-compiler.h",
+    "src/ic/accessor-assembler-impl.h",
+    "src/ic/accessor-assembler.cc",
+    "src/ic/accessor-assembler.h",
     "src/ic/call-optimization.cc",
     "src/ic/call-optimization.h",
     "src/ic/handler-compiler.cc",
@@ -1418,6 +1430,8 @@ v8_source_set("v8_base") {
     "src/ic/ic-state.h",
     "src/ic/ic.cc",
     "src/ic/ic.h",
+    "src/ic/keyed-store-generic.cc",
+    "src/ic/keyed-store-generic.h",
     "src/ic/stub-cache.cc",
     "src/ic/stub-cache.h",
     "src/icu_util.cc",
@@ -1567,6 +1581,8 @@ v8_source_set("v8_base") {
     "src/profiler/tracing-cpu-profiler.h",
     "src/profiler/unbound-queue-inl.h",
     "src/profiler/unbound-queue.h",
+    "src/promise-utils.cc",
+    "src/promise-utils.h",
     "src/property-descriptor.cc",
     "src/property-descriptor.h",
     "src/property-details.h",
@@ -1658,6 +1674,7 @@ v8_source_set("v8_base") {
     "src/snapshot/startup-serializer.h",
     "src/source-position-table.cc",
     "src/source-position-table.h",
+    "src/source-position.cc",
     "src/source-position.h",
     "src/splay-tree-inl.h",
     "src/splay-tree.h",
@@ -1720,7 +1737,6 @@ v8_source_set("v8_base") {
     "src/wasm/signature-map.cc",
     "src/wasm/signature-map.h",
     "src/wasm/wasm-debug.cc",
-    "src/wasm/wasm-debug.h",
     "src/wasm/wasm-external-refs.cc",
     "src/wasm/wasm-external-refs.h",
     "src/wasm/wasm-interpreter.cc",
@@ -1732,6 +1748,8 @@ v8_source_set("v8_base") {
     "src/wasm/wasm-module-builder.h",
     "src/wasm/wasm-module.cc",
     "src/wasm/wasm-module.h",
+    "src/wasm/wasm-objects.cc",
+    "src/wasm/wasm-objects.h",
     "src/wasm/wasm-opcodes.cc",
     "src/wasm/wasm-opcodes.h",
     "src/wasm/wasm-result.cc",

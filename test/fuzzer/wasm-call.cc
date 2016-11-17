@@ -136,7 +136,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   ErrorThrower interpreter_thrower(i_isolate, "Interpreter");
   std::unique_ptr<const WasmModule> module(testing::DecodeWasmModuleForTesting(
       i_isolate, &interpreter_thrower, buffer.begin(), buffer.end(),
-      v8::internal::wasm::ModuleOrigin::kWasmOrigin));
+      v8::internal::wasm::ModuleOrigin::kWasmOrigin, true));
 
   if (module == nullptr) {
     return 0;
@@ -165,7 +165,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         i_isolate, instance, &compiler_thrower, "main", argc, compiled_args,
         v8::internal::wasm::ModuleOrigin::kWasmOrigin);
   }
-  if (result_interpreted == 0xdeadbeef) {
+  if (result_interpreted == bit_cast<int32_t>(0xdeadbeef)) {
     CHECK(i_isolate->has_pending_exception());
     i_isolate->clear_pending_exception();
   } else {

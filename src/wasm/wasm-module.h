@@ -19,6 +19,11 @@
 namespace v8 {
 namespace internal {
 
+class WasmCompiledModule;
+class WasmDebugInfo;
+class WasmModuleObject;
+class WasmInstanceObject;
+
 namespace compiler {
 class CallDescriptor;
 class WasmCompilationUnit;
@@ -57,8 +62,6 @@ inline bool IsValidSectionCode(uint8_t byte) {
 }
 
 const char* SectionName(WasmSectionCode code);
-
-class WasmDebugInfo;
 
 // Constants for fixed-size elements within a module.
 static const uint32_t kMaxReturnCount = 1;
@@ -170,8 +173,6 @@ struct WasmExport {
 
 enum ModuleOrigin { kWasmOrigin, kAsmJsOrigin };
 
-class WasmCompiledModule;
-
 // Static representation of a module.
 struct V8_EXPORT_PRIVATE WasmModule {
   static const uint32_t kPageSize = 0x10000;    // Page size, 64kb.
@@ -255,11 +256,9 @@ struct V8_EXPORT_PRIVATE WasmModule {
   }
 
   // Creates a new instantiation of the module in the given isolate.
-  static MaybeHandle<JSObject> Instantiate(Isolate* isolate,
-                                           ErrorThrower* thrower,
-                                           Handle<JSObject> wasm_module,
-                                           Handle<JSReceiver> ffi,
-                                           Handle<JSArrayBuffer> memory);
+  static MaybeHandle<WasmInstanceObject> Instantiate(
+      Isolate* isolate, ErrorThrower* thrower, Handle<JSObject> wasm_module,
+      Handle<JSReceiver> ffi, Handle<JSArrayBuffer> memory);
 
   MaybeHandle<WasmCompiledModule> CompileFunctions(
       Isolate* isolate, Handle<Managed<WasmModule>> module_wrapper,
@@ -353,136 +352,12 @@ std::ostream& operator<<(std::ostream& os, const WasmModule& module);
 std::ostream& operator<<(std::ostream& os, const WasmFunction& function);
 std::ostream& operator<<(std::ostream& os, const WasmFunctionName& name);
 
-class WasmCompiledModule : public FixedArray {
- public:
-  static WasmCompiledModule* cast(Object* fixed_array) {
-    SLOW_DCHECK(IsWasmCompiledModule(fixed_array));
-    return reinterpret_cast<WasmCompiledModule*>(fixed_array);
-  }
-
-#define WCM_OBJECT_OR_WEAK(TYPE, NAME, ID)                           \
-  Handle<TYPE> NAME() const { return handle(ptr_to_##NAME()); }      \
-                                                                     \
-  MaybeHandle<TYPE> maybe_##NAME() const {                           \
-    if (has_##NAME()) return NAME();                                 \
-    return MaybeHandle<TYPE>();                                      \
-  }                                                                  \
-                                                                     \
-  TYPE* ptr_to_##NAME() const {                                      \
-    Object* obj = get(ID);                                           \
-    if (!obj->Is##TYPE()) return nullptr;                            \
-    return TYPE::cast(obj);                                          \
-  }                                                                  \
-                                                                     \
-  void set_##NAME(Handle<TYPE> value) { set_ptr_to_##NAME(*value); } \
-                                                                     \
-  void set_ptr_to_##NAME(TYPE* value) { set(ID, value); }            \
-                                                                     \
-  bool has_##NAME() const { return get(ID)->Is##TYPE(); }            \
-                                                                     \
-  void reset_##NAME() { set_undefined(ID); }
-
-#define WCM_OBJECT(TYPE, NAME) WCM_OBJECT_OR_WEAK(TYPE, NAME, kID_##NAME)
-
-#define WCM_SMALL_NUMBER(TYPE, NAME)                               \
-  TYPE NAME() const {                                              \
-    return static_cast<TYPE>(Smi::cast(get(kID_##NAME))->value()); \
-  }                                                                \
-  void set_##NAME(TYPE value) { set(kID_##NAME, Smi::FromInt(value)); }
-
-#define WCM_WEAK_LINK(TYPE, NAME)                        \
-  WCM_OBJECT_OR_WEAK(WeakCell, weak_##NAME, kID_##NAME); \
-                                                         \
-  Handle<TYPE> NAME() const {                            \
-    return handle(TYPE::cast(weak_##NAME()->value()));   \
-  }
-
-#define CORE_WCM_PROPERTY_TABLE(MACRO)                \
-  MACRO(OBJECT, FixedArray, code_table)               \
-  MACRO(OBJECT, Foreign, module_wrapper)              \
-  MACRO(OBJECT, SeqOneByteString, module_bytes)       \
-  MACRO(OBJECT, Script, asm_js_script)                \
-  MACRO(OBJECT, FixedArray, function_tables)          \
-  MACRO(OBJECT, FixedArray, empty_function_tables)    \
-  MACRO(OBJECT, ByteArray, asm_js_offset_tables)      \
-  MACRO(OBJECT, JSArrayBuffer, memory)                \
-  MACRO(SMALL_NUMBER, uint32_t, min_mem_pages)        \
-  MACRO(SMALL_NUMBER, uint32_t, max_mem_pages)        \
-  MACRO(WEAK_LINK, WasmCompiledModule, next_instance) \
-  MACRO(WEAK_LINK, WasmCompiledModule, prev_instance) \
-  MACRO(WEAK_LINK, JSObject, owning_instance)         \
-  MACRO(WEAK_LINK, JSObject, wasm_module)
-
-#if DEBUG
-#define DEBUG_ONLY_TABLE(MACRO) MACRO(SMALL_NUMBER, uint32_t, instance_id)
-#else
-#define DEBUG_ONLY_TABLE(IGNORE)
-  uint32_t instance_id() const { return -1; }
-#endif
-
-#define WCM_PROPERTY_TABLE(MACRO) \
-  CORE_WCM_PROPERTY_TABLE(MACRO)  \
-  DEBUG_ONLY_TABLE(MACRO)
-
- private:
-  enum PropertyIndices {
-#define INDICES(IGNORE1, IGNORE2, NAME) kID_##NAME,
-    WCM_PROPERTY_TABLE(INDICES) Count
-#undef INDICES
-  };
-
- public:
-  static Handle<WasmCompiledModule> New(
-      Isolate* isolate, Handle<Managed<WasmModule>> module_wrapper);
-
-  static Handle<WasmCompiledModule> Clone(Isolate* isolate,
-                                          Handle<WasmCompiledModule> module) {
-    Handle<WasmCompiledModule> ret = Handle<WasmCompiledModule>::cast(
-        isolate->factory()->CopyFixedArray(module));
-    ret->InitId();
-    ret->reset_weak_owning_instance();
-    ret->reset_weak_next_instance();
-    ret->reset_weak_prev_instance();
-    return ret;
-  }
-
-  uint32_t mem_size() const {
-    return has_memory() ? memory()->byte_length()->Number()
-                        : default_mem_size();
-  }
-
-  uint32_t default_mem_size() const {
-    return min_mem_pages() * WasmModule::kPageSize;
-  }
-
-#define DECLARATION(KIND, TYPE, NAME) WCM_##KIND(TYPE, NAME)
-  WCM_PROPERTY_TABLE(DECLARATION)
-#undef DECLARATION
-
-  static bool IsWasmCompiledModule(Object* obj);
-
-  void PrintInstancesChain();
-
-  static void RecreateModuleWrapper(Isolate* isolate,
-                                    Handle<FixedArray> compiled_module);
-
- private:
-  void InitId();
-
-  DISALLOW_IMPLICIT_CONSTRUCTORS(WasmCompiledModule);
-};
-
-// Extract a function name from the given wasm object.
-// Returns "<WASM UNNAMED>" if the function is unnamed or the name is not a
-// valid UTF-8 string.
-Handle<String> GetWasmFunctionName(Isolate* isolate, Handle<Object> wasm,
+// Extract a function name from the given wasm instance.
+// Returns "<WASM UNNAMED>" if no instance is passed, the function is unnamed or
+// the name is not a valid UTF-8 string.
+// TODO(5620): Refactor once we always get a wasm instance.
+Handle<String> GetWasmFunctionName(Isolate* isolate, Handle<Object> instance,
                                    uint32_t func_index);
-
-// Extract a function name from the given wasm object.
-// Returns a null handle if the function is unnamed or the name is not a valid
-// UTF-8 string.
-Handle<Object> GetWasmFunctionNameOrNull(Isolate* isolate, Handle<Object> wasm,
-                                         uint32_t func_index);
 
 // Return the binary source bytes of a wasm module.
 Handle<SeqOneByteString> GetWasmBytes(Handle<JSObject> wasm);
@@ -493,13 +368,6 @@ Handle<WasmDebugInfo> GetDebugInfo(Handle<JSObject> wasm);
 
 // Return the number of functions in the given wasm object.
 int GetNumberOfFunctions(Handle<JSObject> wasm);
-
-// Create and export JSFunction
-Handle<JSFunction> WrapExportCodeAsJSFunction(Isolate* isolate,
-                                              Handle<Code> export_code,
-                                              Handle<String> name,
-                                              FunctionSig* sig, int func_index,
-                                              Handle<JSObject> instance);
 
 // Check whether the given object represents a WebAssembly.Instance instance.
 // This checks the number and type of internal fields, so it's not 100 percent
@@ -514,29 +382,24 @@ WasmCompiledModule* GetCompiledModule(Object* wasm_instance);
 // Check whether the wasm module was generated from asm.js code.
 bool WasmIsAsmJs(Object* instance, Isolate* isolate);
 
-// Get the script for the asm.js origin of the wasm module.
-Handle<Script> GetAsmWasmScript(Handle<JSObject> instance);
+// Get the script of the wasm module. If the origin of the module is asm.js, the
+// returned Script will be a JavaScript Script of Script::TYPE_NORMAL, otherwise
+// it's of type TYPE_WASM.
+Handle<Script> GetScript(Handle<JSObject> instance);
+
+// Compute the disassembly of a wasm function.
+// Returns the disassembly string and a list of <byte_offset, line, column>
+// entries, mapping wasm byte offsets to line and column in the disassembly.
+// The list is guaranteed to be ordered by the byte_offset.
+std::pair<std::string, std::vector<std::tuple<uint32_t, int, int>>>
+DisassembleFunction(Handle<WasmCompiledModule> compiled_module, int func_index);
 
 // Get the asm.js source position for the given byte offset in the given
 // function.
 int GetAsmWasmSourcePosition(Handle<JSObject> instance, int func_index,
                              int byte_offset);
 
-// Constructs a single function table as a FixedArray of double size,
-// populating it with function signature indices and function indices.
-Handle<FixedArray> BuildFunctionTable(Isolate* isolate, uint32_t index,
-                                      const WasmModule* module);
-
-// Populates a function table by replacing function indices with handles to
-// the compiled code.
-void PopulateFunctionTable(Handle<FixedArray> table, uint32_t table_size,
-                           const std::vector<Handle<Code>>* code_table);
-
-Handle<JSObject> CreateWasmModuleObject(
-    Isolate* isolate, Handle<WasmCompiledModule> compiled_module,
-    ModuleOrigin origin);
-
-V8_EXPORT_PRIVATE MaybeHandle<JSObject> CreateModuleObjectFromBytes(
+V8_EXPORT_PRIVATE MaybeHandle<WasmModuleObject> CreateModuleObjectFromBytes(
     Isolate* isolate, const byte* start, const byte* end, ErrorThrower* thrower,
     ModuleOrigin origin, Handle<Script> asm_js_script,
     const byte* asm_offset_tables_start, const byte* asm_offset_tables_end);
@@ -546,31 +409,40 @@ V8_EXPORT_PRIVATE bool ValidateModuleBytes(Isolate* isolate, const byte* start,
                                            ErrorThrower* thrower,
                                            ModuleOrigin origin);
 
-// Get the number of imported functions for a WASM instance.
-int GetNumImportedFunctions(Handle<JSObject> instance);
+// Get the offset of the code of a function within a module.
+int GetFunctionCodeOffset(Handle<WasmCompiledModule> compiled_module,
+                          int func_index);
+
+// Translate from byte offset in the module to function number and byte offset
+// within that function, encoded as line and column in the position info.
+bool GetPositionInfo(Handle<WasmCompiledModule> compiled_module,
+                     uint32_t position, Script::PositionInfo* info);
 
 // Assumed to be called with a code object associated to a wasm module instance.
 // Intended to be called from runtime functions.
 // Returns nullptr on failing to get owning instance.
-Object* GetOwningWasmInstance(Code* code);
+WasmInstanceObject* GetOwningWasmInstance(Code* code);
 
-MaybeHandle<JSArrayBuffer> GetInstanceMemory(Isolate* isolate,
-                                             Handle<JSObject> instance);
+MaybeHandle<JSArrayBuffer> GetInstanceMemory(
+    Isolate* isolate, Handle<WasmInstanceObject> instance);
 
-int32_t GetInstanceMemorySize(Isolate* isolate, Handle<JSObject> instance);
+int32_t GetInstanceMemorySize(Isolate* isolate,
+                              Handle<WasmInstanceObject> instance);
 
-int32_t GrowInstanceMemory(Isolate* isolate, Handle<JSObject> instance,
-                           uint32_t pages);
+int32_t GrowInstanceMemory(Isolate* isolate,
+                           Handle<WasmInstanceObject> instance, uint32_t pages);
 
 void UpdateDispatchTables(Isolate* isolate, Handle<FixedArray> dispatch_tables,
                           int index, Handle<JSFunction> js_function);
 
 namespace testing {
 
-void ValidateInstancesChain(Isolate* isolate, Handle<JSObject> wasm_module,
+void ValidateInstancesChain(Isolate* isolate,
+                            Handle<WasmModuleObject> module_obj,
                             int instance_count);
-void ValidateModuleState(Isolate* isolate, Handle<JSObject> wasm_module);
-void ValidateOrphanedInstance(Isolate* isolate, Handle<JSObject> instance);
+void ValidateModuleState(Isolate* isolate, Handle<WasmModuleObject> module_obj);
+void ValidateOrphanedInstance(Isolate* isolate,
+                              Handle<WasmInstanceObject> instance);
 
 }  // namespace testing
 }  // namespace wasm

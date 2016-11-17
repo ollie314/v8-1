@@ -54,7 +54,7 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .LoadLiteral(factory->NewStringFromStaticChars("A constant"))
       .StoreAccumulatorInRegister(reg)
       .LoadUndefined()
-      .Debugger()  // Prevent peephole optimization LdaNull, Star -> LdrNull.
+      .StoreAccumulatorInRegister(reg)
       .LoadNull()
       .StoreAccumulatorInRegister(reg)
       .LoadTheHole()
@@ -77,8 +77,8 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
 
   // Emit global load / store operations.
   Handle<String> name = factory->NewStringFromStaticChars("var_name");
-  builder.LoadGlobal(1, TypeofMode::NOT_INSIDE_TYPEOF)
-      .LoadGlobal(1, TypeofMode::INSIDE_TYPEOF)
+  builder.LoadGlobal(name, 1, TypeofMode::NOT_INSIDE_TYPEOF)
+      .LoadGlobal(name, 1, TypeofMode::INSIDE_TYPEOF)
       .StoreGlobal(name, 1, LanguageMode::SLOPPY)
       .StoreGlobal(name, 1, LanguageMode::STRICT);
 
@@ -258,6 +258,9 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
         .Bind(&after_jump2);
   }
 
+  // Emit set pending message bytecode.
+  builder.SetPendingMessage();
+
   // Emit stack check bytecode.
   builder.StackCheck(0);
 
@@ -282,14 +285,14 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
   Handle<String> wide_name = factory->NewStringFromStaticChars("var_wide_name");
 
   // Emit wide global load / store operations.
-  builder.LoadGlobal(1024, TypeofMode::NOT_INSIDE_TYPEOF)
-      .LoadGlobal(1024, TypeofMode::INSIDE_TYPEOF)
-      .LoadGlobal(1024, TypeofMode::INSIDE_TYPEOF)
+  builder.LoadGlobal(name, 1024, TypeofMode::NOT_INSIDE_TYPEOF)
+      .LoadGlobal(name, 1024, TypeofMode::INSIDE_TYPEOF)
+      .LoadGlobal(name, 1024, TypeofMode::INSIDE_TYPEOF)
       .StoreGlobal(name, 1024, LanguageMode::SLOPPY)
       .StoreGlobal(wide_name, 1, LanguageMode::STRICT);
 
   // Emit extra wide global load.
-  builder.LoadGlobal(1024 * 1024, TypeofMode::NOT_INSIDE_TYPEOF);
+  builder.LoadGlobal(name, 1024 * 1024, TypeofMode::NOT_INSIDE_TYPEOF);
 
   // Emit wide load / store property operations.
   builder.LoadNamedProperty(reg, wide_name, 0)
@@ -307,17 +310,6 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .LoadLookupSlot(wide_name, TypeofMode::INSIDE_TYPEOF)
       .StoreLookupSlot(wide_name, LanguageMode::SLOPPY)
       .StoreLookupSlot(wide_name, LanguageMode::STRICT);
-
-  // Emit loads which will be transformed to Ldr equivalents by the peephole
-  // optimizer.
-  builder.LoadContextSlot(reg, 1, 0)
-      .StoreAccumulatorInRegister(reg)
-      .LoadContextSlot(Register::current_context(), 1, 0)
-      .StoreAccumulatorInRegister(reg)
-      .LoadGlobal(0, TypeofMode::NOT_INSIDE_TYPEOF)
-      .StoreAccumulatorInRegister(reg)
-      .LoadUndefined()
-      .StoreAccumulatorInRegister(reg);
 
   // CreateClosureWide
   builder.CreateClosure(1000, NOT_TENURED);
@@ -392,10 +384,6 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
 
   if (!FLAG_ignition_peephole) {
     // Insert entries for bytecodes only emitted by peephole optimizer.
-    scorecard[Bytecodes::ToByte(Bytecode::kLdrGlobal)] = 1;
-    scorecard[Bytecodes::ToByte(Bytecode::kLdrContextSlot)] = 1;
-    scorecard[Bytecodes::ToByte(Bytecode::kLdrCurrentContextSlot)] = 1;
-    scorecard[Bytecodes::ToByte(Bytecode::kLdrUndefined)] = 1;
     scorecard[Bytecodes::ToByte(Bytecode::kLogicalNot)] = 1;
     scorecard[Bytecodes::ToByte(Bytecode::kJump)] = 1;
     scorecard[Bytecodes::ToByte(Bytecode::kJumpIfTrue)] = 1;

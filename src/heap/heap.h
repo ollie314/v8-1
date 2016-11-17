@@ -166,6 +166,10 @@ using v8::MemoryPressureLevel;
   V(PropertyCell, has_instance_protector, HasInstanceProtector)                \
   V(Cell, species_protector, SpeciesProtector)                                 \
   V(PropertyCell, string_length_protector, StringLengthProtector)              \
+  V(Cell, fast_array_iteration_protector, FastArrayIterationProtector)         \
+  V(Cell, array_iterator_protector, ArrayIteratorProtector)                    \
+  V(PropertyCell, array_buffer_neutering_protector,                            \
+    ArrayBufferNeuteringProtector)                                             \
   /* Special numbers */                                                        \
   V(HeapNumber, nan_value, NanValue)                                           \
   V(HeapNumber, hole_nan_value, HoleNanValue)                                  \
@@ -684,6 +688,26 @@ class Heap {
 #endif
   }
 
+  static inline bool IsYoungGenerationCollector(GarbageCollector collector) {
+    return collector == SCAVENGER || collector == MINOR_MARK_COMPACTOR;
+  }
+
+  static inline GarbageCollector YoungGenerationCollector() {
+    return (FLAG_minor_mc) ? MINOR_MARK_COMPACTOR : SCAVENGER;
+  }
+
+  static inline const char* CollectorName(GarbageCollector collector) {
+    switch (collector) {
+      case SCAVENGER:
+        return "Scavenger";
+      case MARK_COMPACTOR:
+        return "Mark-Compact";
+      case MINOR_MARK_COMPACTOR:
+        return "Minor Mark-Compact";
+    }
+    return "Unknown collector";
+  }
+
   V8_EXPORT_PRIVATE static double HeapGrowingFactor(double gc_speed,
                                                     double mutator_speed);
 
@@ -908,7 +932,7 @@ class Heap {
 
   bool HasLowAllocationRate();
   bool HasHighFragmentation();
-  bool HasHighFragmentation(intptr_t used, intptr_t committed);
+  bool HasHighFragmentation(size_t used, size_t committed);
 
   void ActivateMemoryReducerIfNeeded();
 
@@ -932,8 +956,8 @@ class Heap {
 
   // Configure heap size in MB before setup. Return false if the heap has been
   // set up already.
-  bool ConfigureHeap(int max_semi_space_size, int max_old_space_size,
-                     int max_executable_size, size_t code_range_size);
+  bool ConfigureHeap(size_t max_semi_space_size, size_t max_old_space_size,
+                     size_t max_executable_size, size_t code_range_size);
   bool ConfigureHeapDefault();
 
   // Prepares the heap, setting up memory areas that are needed in the isolate
@@ -1130,13 +1154,8 @@ class Heap {
   void IterateWeakRoots(ObjectVisitor* v, VisitMode mode);
 
   // Iterate pointers of promoted objects.
-  void IteratePromotedObject(HeapObject* target, int size,
-                             bool was_marked_black,
-                             ObjectSlotCallback callback);
-
-  void IteratePromotedObjectPointers(HeapObject* object, Address start,
-                                     Address end, bool record_slots,
-                                     ObjectSlotCallback callback);
+  void IterateAndScavengePromotedObject(HeapObject* target, int size,
+                                        bool was_marked_black);
 
   // ===========================================================================
   // Store buffer API. =========================================================
@@ -1273,20 +1292,20 @@ class Heap {
   // ===========================================================================
 
   // Returns the maximum amount of memory reserved for the heap.
-  intptr_t MaxReserved() {
+  size_t MaxReserved() {
     return 2 * max_semi_space_size_ + max_old_generation_size_;
   }
-  int MaxSemiSpaceSize() { return max_semi_space_size_; }
-  int InitialSemiSpaceSize() { return initial_semispace_size_; }
-  intptr_t MaxOldGenerationSize() { return max_old_generation_size_; }
-  intptr_t MaxExecutableSize() { return max_executable_size_; }
+  size_t MaxSemiSpaceSize() { return max_semi_space_size_; }
+  size_t InitialSemiSpaceSize() { return initial_semispace_size_; }
+  size_t MaxOldGenerationSize() { return max_old_generation_size_; }
+  size_t MaxExecutableSize() { return max_executable_size_; }
 
   // Returns the capacity of the heap in bytes w/o growing. Heap grows when
   // more spaces are needed until it reaches the limit.
-  intptr_t Capacity();
+  size_t Capacity();
 
   // Returns the capacity of the old generation.
-  intptr_t OldGenerationCapacity();
+  size_t OldGenerationCapacity();
 
   // Returns the amount of memory currently committed for the heap.
   size_t CommittedMemory();
@@ -1310,28 +1329,26 @@ class Heap {
   // Returns the available bytes in space w/o growing.
   // Heap doesn't guarantee that it can allocate an object that requires
   // all available bytes. Check MaxHeapObjectSize() instead.
-  intptr_t Available();
+  size_t Available();
 
   // Returns of size of all objects residing in the heap.
-  intptr_t SizeOfObjects();
+  size_t SizeOfObjects();
 
   void UpdateSurvivalStatistics(int start_new_space_size);
 
-  inline void IncrementPromotedObjectsSize(intptr_t object_size) {
-    DCHECK_GE(object_size, 0);
+  inline void IncrementPromotedObjectsSize(size_t object_size) {
     promoted_objects_size_ += object_size;
   }
-  inline intptr_t promoted_objects_size() { return promoted_objects_size_; }
+  inline size_t promoted_objects_size() { return promoted_objects_size_; }
 
-  inline void IncrementSemiSpaceCopiedObjectSize(intptr_t object_size) {
-    DCHECK_GE(object_size, 0);
+  inline void IncrementSemiSpaceCopiedObjectSize(size_t object_size) {
     semi_space_copied_object_size_ += object_size;
   }
-  inline intptr_t semi_space_copied_object_size() {
+  inline size_t semi_space_copied_object_size() {
     return semi_space_copied_object_size_;
   }
 
-  inline intptr_t SurvivedNewSpaceObjectSize() {
+  inline size_t SurvivedNewSpaceObjectSize() {
     return promoted_objects_size_ + semi_space_copied_object_size_;
   }
 
@@ -1341,20 +1358,13 @@ class Heap {
 
   inline void IncrementNodesPromoted() { nodes_promoted_++; }
 
-  inline void IncrementYoungSurvivorsCounter(intptr_t survived) {
-    DCHECK_GE(survived, 0);
+  inline void IncrementYoungSurvivorsCounter(size_t survived) {
     survived_last_scavenge_ = survived;
     survived_since_last_expansion_ += survived;
   }
 
-  inline intptr_t PromotedTotalSize() {
-    int64_t total = PromotedSpaceSizeOfObjects() + PromotedExternalMemorySize();
-    if (total > std::numeric_limits<intptr_t>::max()) {
-      // TODO(erikcorry): Use uintptr_t everywhere we do heap size calculations.
-      return std::numeric_limits<intptr_t>::max();
-    }
-    if (total < 0) return 0;
-    return static_cast<intptr_t>(total);
+  inline uint64_t PromotedTotalSize() {
+    return PromotedSpaceSizeOfObjects() + PromotedExternalMemorySize();
   }
 
   inline void UpdateNewSpaceAllocationCounter();
@@ -1388,7 +1398,7 @@ class Heap {
   int gc_count() const { return gc_count_; }
 
   // Returns the size of objects residing in non new spaces.
-  intptr_t PromotedSpaceSizeOfObjects();
+  size_t PromotedSpaceSizeOfObjects();
 
   double total_regexp_code_generated() { return total_regexp_code_generated_; }
   void IncreaseTotalRegexpCodeGenerated(int size) {
@@ -1773,6 +1783,8 @@ class Heap {
 
   // Performs a major collection in the whole heap.
   void MarkCompact();
+  // Performs a minor collection of just the young generation.
+  void MinorMarkCompact();
 
   // Code to be run before and after mark-compact.
   void MarkCompactPrologue();
@@ -1799,8 +1811,10 @@ class Heap {
   // GC statistics. ============================================================
   // ===========================================================================
 
-  inline intptr_t OldGenerationSpaceAvailable() {
-    return old_generation_allocation_limit_ - PromotedTotalSize();
+  inline size_t OldGenerationSpaceAvailable() {
+    if (old_generation_allocation_limit_ <= PromotedTotalSize()) return 0;
+    return old_generation_allocation_limit_ -
+           static_cast<size_t>(PromotedTotalSize());
   }
 
   void UpdateTotalGCTime(double duration);
@@ -1813,23 +1827,21 @@ class Heap {
 
   // Decrease the allocation limit if the new limit based on the given
   // parameters is lower than the current limit.
-  void DampenOldGenerationAllocationLimit(intptr_t old_gen_size,
-                                          double gc_speed,
+  void DampenOldGenerationAllocationLimit(size_t old_gen_size, double gc_speed,
                                           double mutator_speed);
-
 
   // Calculates the allocation limit based on a given growing factor and a
   // given old generation size.
-  intptr_t CalculateOldGenerationAllocationLimit(double factor,
-                                                 intptr_t old_gen_size);
+  size_t CalculateOldGenerationAllocationLimit(double factor,
+                                               size_t old_gen_size);
 
   // Sets the allocation limit to trigger the next full garbage collection.
-  void SetOldGenerationAllocationLimit(intptr_t old_gen_size, double gc_speed,
+  void SetOldGenerationAllocationLimit(size_t old_gen_size, double gc_speed,
                                        double mutator_speed);
 
-  intptr_t MinimumAllocationLimitGrowingStep();
+  size_t MinimumAllocationLimitGrowingStep();
 
-  intptr_t old_generation_allocation_limit() const {
+  size_t old_generation_allocation_limit() const {
     return old_generation_allocation_limit_;
   }
 
@@ -2094,20 +2106,20 @@ class Heap {
   Object* roots_[kRootListLength];
 
   size_t code_range_size_;
-  int max_semi_space_size_;
-  int initial_semispace_size_;
-  intptr_t max_old_generation_size_;
-  intptr_t initial_old_generation_size_;
+  size_t max_semi_space_size_;
+  size_t initial_semispace_size_;
+  size_t max_old_generation_size_;
+  size_t initial_old_generation_size_;
   bool old_generation_size_configured_;
-  intptr_t max_executable_size_;
+  size_t max_executable_size_;
   size_t maximum_committed_;
 
   // For keeping track of how much data has survived
   // scavenge since last new space expansion.
-  intptr_t survived_since_last_expansion_;
+  size_t survived_since_last_expansion_;
 
   // ... and since the last scavenge.
-  intptr_t survived_last_scavenge_;
+  size_t survived_last_scavenge_;
 
   // This is not the depth of nested AlwaysAllocateScope's but rather a single
   // count, as scopes can be acquired from multiple tasks (read: threads).
@@ -2139,7 +2151,7 @@ class Heap {
   Address new_space_top_after_last_gc_;
 
   // Returns the amount of external memory registered since last global gc.
-  int64_t PromotedExternalMemorySize();
+  uint64_t PromotedExternalMemorySize();
 
   // How many "runtime allocations" happened.
   uint32_t allocations_count_;
@@ -2168,7 +2180,7 @@ class Heap {
   // is checked when we have already decided to do a GC to help determine
   // which collector to invoke, before expanding a paged space in the old
   // generation and on every allocation in large object space.
-  intptr_t old_generation_allocation_limit_;
+  size_t old_generation_allocation_limit_;
 
   // Indicates that inline bump-pointer allocation has been globally disabled
   // for all spaces. This is used to disable allocations in generated code.
@@ -2198,11 +2210,11 @@ class Heap {
 
   GCTracer* tracer_;
 
-  intptr_t promoted_objects_size_;
+  size_t promoted_objects_size_;
   double promotion_ratio_;
   double promotion_rate_;
-  intptr_t semi_space_copied_object_size_;
-  intptr_t previous_semi_space_copied_object_size_;
+  size_t semi_space_copied_object_size_;
+  size_t previous_semi_space_copied_object_size_;
   double semi_space_copied_rate_;
   int nodes_died_in_new_space_;
   int nodes_copied_in_new_space_;
@@ -2322,7 +2334,6 @@ class Heap {
   friend class IdleScavengeObserver;
   friend class IncrementalMarking;
   friend class IncrementalMarkingJob;
-  friend class IteratePromotedObjectsVisitor;
   friend class LargeObjectSpace;
   friend class MarkCompactCollector;
   friend class MarkCompactMarkingVisitor;

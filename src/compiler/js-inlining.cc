@@ -116,7 +116,7 @@ Reduction JSInliner::InlineCall(Node* call, Node* new_target, Node* context,
           Replace(use, new_target);
         } else if (index == inlinee_arity_index) {
           // The projection is requesting the number of arguments.
-          Replace(use, jsgraph()->Int32Constant(inliner_inputs - 2));
+          Replace(use, jsgraph()->Constant(inliner_inputs - 2));
         } else if (index == inlinee_context_index) {
           // The projection is requesting the inlinee function context.
           Replace(use, context);
@@ -523,7 +523,8 @@ Reduction JSInliner::ReduceJSCall(Node* node, Handle<JSFunction> function) {
   // Remember that we inlined this function. This needs to be called right
   // after we ensure deoptimization support so that the code flusher
   // does not remove the code with the deoptimization support.
-  info_->AddInlinedFunction(shared_info);
+  int inlining_id = info_->AddInlinedFunction(
+      shared_info, source_positions_->GetSourcePosition(node));
 
   // ----------------------------------------------------------------
   // After this point, we've made a decision to inline this function.
@@ -543,7 +544,8 @@ Reduction JSInliner::ReduceJSCall(Node* node, Handle<JSFunction> function) {
     // Run the BytecodeGraphBuilder to create the subgraph.
     Graph::SubgraphScope scope(graph());
     BytecodeGraphBuilder graph_builder(&zone, &info, jsgraph(),
-                                       call.frequency(), nullptr);
+                                       call.frequency(), source_positions_,
+                                       inlining_id);
     graph_builder.CreateGraph(false);
 
     // Extract the inlinee start/end nodes.
@@ -562,8 +564,9 @@ Reduction JSInliner::ReduceJSCall(Node* node, Handle<JSFunction> function) {
 
     // Run the AstGraphBuilder to create the subgraph.
     Graph::SubgraphScope scope(graph());
-    AstGraphBuilder graph_builder(&zone, &info, jsgraph(), call.frequency(),
-                                  loop_assignment, type_hint_analysis);
+    AstGraphBuilderWithPositions graph_builder(
+        &zone, &info, jsgraph(), call.frequency(), loop_assignment,
+        type_hint_analysis, source_positions_, inlining_id);
     graph_builder.CreateGraph(false);
 
     // Extract the inlinee start/end nodes.

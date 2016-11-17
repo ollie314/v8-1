@@ -11,6 +11,7 @@
 #include "src/code-factory.h"
 #include "src/compiler/access-builder.h"
 #include "src/compiler/common-operator.h"
+#include "src/compiler/compiler-source-position-table.h"
 #include "src/compiler/diamond.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/node-matchers.h"
@@ -19,7 +20,6 @@
 #include "src/compiler/operator-properties.h"
 #include "src/compiler/representation-change.h"
 #include "src/compiler/simplified-operator.h"
-#include "src/compiler/source-position.h"
 #include "src/compiler/type-cache.h"
 #include "src/conversions-inl.h"
 #include "src/objects.h"
@@ -858,26 +858,8 @@ class RepresentationSelector {
       return MachineRepresentation::kTagged;
     } else if (type->Is(Type::Number())) {
       return MachineRepresentation::kFloat64;
-    } else if (type->Is(Type::Internal())) {
-      // We mark (u)int64 as Type::Internal.
-      // TODO(jarin) This is a workaround for our lack of (u)int64
-      // types. This can be removed once we can represent (u)int64
-      // unambiguously. (At the moment internal objects, such as the hole,
-      // are also Type::Internal()).
-      bool is_word64 = GetInfo(node->InputAt(0))->representation() ==
-                       MachineRepresentation::kWord64;
-#ifdef DEBUG
-      if (node->opcode() != IrOpcode::kTypeGuard) {
-        // Check that all the inputs agree on being Word64.
-        DCHECK_EQ(IrOpcode::kPhi, node->opcode());  // This only works for phis.
-        for (int i = 1; i < node->op()->ValueInputCount(); i++) {
-          DCHECK_EQ(is_word64, GetInfo(node->InputAt(i))->representation() ==
-                                   MachineRepresentation::kWord64);
-        }
-      }
-#endif
-      return is_word64 ? MachineRepresentation::kWord64
-                       : MachineRepresentation::kTagged;
+    } else if (type->Is(Type::ExternalPointer())) {
+      return MachineType::PointerRepresentation();
     }
     return MachineRepresentation::kTagged;
   }
@@ -1015,7 +997,15 @@ class RepresentationSelector {
   void VisitObjectState(Node* node) {
     if (propagate()) {
       for (int i = 0; i < node->InputCount(); i++) {
-        EnqueueInput(node, i, UseInfo::Any());
+        Node* input = node->InputAt(i);
+        Type* input_type = TypeOf(input);
+        // TODO(turbofan): Special treatment for ExternalPointer here,
+        // to avoid incompatible truncations. We really need a story
+        // for the JSFunction::entry field.
+        UseInfo use_info = input_type->Is(Type::ExternalPointer())
+                               ? UseInfo::PointerInt()
+                               : UseInfo::Any();
+        EnqueueInput(node, i, use_info);
       }
     } else if (lower()) {
       Zone* zone = jsgraph_->zone();
@@ -1026,15 +1016,24 @@ class RepresentationSelector {
         Node* input = node->InputAt(i);
         NodeInfo* input_info = GetInfo(input);
         Type* input_type = TypeOf(input);
-        MachineRepresentation rep = input_type->IsInhabited()
-                                        ? input_info->representation()
-                                        : MachineRepresentation::kNone;
-        MachineType machine_type(rep, DeoptValueSemanticOf(input_type));
-        DCHECK(machine_type.representation() !=
-                   MachineRepresentation::kWord32 ||
-               machine_type.semantic() == MachineSemantic::kInt32 ||
-               machine_type.semantic() == MachineSemantic::kUint32);
-        (*types)[i] = machine_type;
+        // TODO(turbofan): Special treatment for ExternalPointer here,
+        // to avoid incompatible truncations. We really need a story
+        // for the JSFunction::entry field.
+        if (input_type->Is(Type::ExternalPointer())) {
+          (*types)[i] = MachineType::Pointer();
+        } else {
+          MachineRepresentation rep = input_type->IsInhabited()
+                                          ? input_info->representation()
+                                          : MachineRepresentation::kNone;
+          MachineType machine_type(rep, DeoptValueSemanticOf(input_type));
+          DCHECK(machine_type.representation() !=
+                     MachineRepresentation::kWord32 ||
+                 machine_type.semantic() == MachineSemantic::kInt32 ||
+                 machine_type.semantic() == MachineSemantic::kUint32);
+          DCHECK(machine_type.representation() != MachineRepresentation::kBit ||
+                 input_type->Is(Type::Boolean()));
+          (*types)[i] = machine_type;
+        }
       }
       NodeProperties::ChangeOp(node,
                                jsgraph_->common()->TypedObjectState(types));
@@ -1384,6 +1383,14 @@ class RepresentationSelector {
         return VisitLeaf(node, MachineRepresentation::kTagged);
       case IrOpcode::kHeapConstant:
         return VisitLeaf(node, MachineRepresentation::kTaggedPointer);
+      case IrOpcode::kPointerConstant: {
+        VisitLeaf(node, MachineType::PointerRepresentation());
+        if (lower()) {
+          intptr_t const value = OpParameter<intptr_t>(node);
+          DeferReplacement(node, lowering->jsgraph()->IntPtrConstant(value));
+        }
+        return;
+      }
 
       case IrOpcode::kBranch:
         ProcessInput(node, 0, UseInfo::Bool());
@@ -2459,8 +2466,7 @@ class RepresentationSelector {
         return;
       }
       case IrOpcode::kCheckTaggedHole: {
-        VisitUnop(node, UseInfo::AnyTagged(),
-                  MachineRepresentation::kTaggedPointer);
+        VisitUnop(node, UseInfo::AnyTagged(), MachineRepresentation::kTagged);
         return;
       }
       case IrOpcode::kConvertTaggedHoleToUndefined: {

@@ -13,6 +13,7 @@
 #include "src/inspector/protocol/Forward.h"
 #include "src/inspector/protocol/Runtime.h"
 #include "src/inspector/v8-debugger-script.h"
+#include "src/inspector/wasm-translation.h"
 
 #include "include/v8-inspector.h"
 
@@ -36,8 +37,8 @@ class V8Debugger {
 
   bool enabled() const;
 
-  String16 setBreakpoint(const String16& sourceID, const ScriptBreakpoint&,
-                         int* actualLineNumber, int* actualColumnNumber);
+  String16 setBreakpoint(const ScriptBreakpoint&, int* actualLineNumber,
+                         int* actualColumnNumber);
   void removeBreakpoint(const String16& breakpointId);
   void setBreakpointsActivated(bool);
   bool breakpointsActivated() const { return m_breakpointsActivated; }
@@ -94,6 +95,8 @@ class V8Debugger {
 
   V8InspectorImpl* inspector() { return m_inspector; }
 
+  WasmTranslation* wasmTranslation() { return &m_wasmTranslation; }
+
  private:
   void compileDebuggerScript();
   v8::MaybeLocal<v8::Value> callDebuggerMethod(const char* functionName,
@@ -107,7 +110,8 @@ class V8Debugger {
                           v8::Local<v8::Object> executionState,
                           v8::Local<v8::Value> exception,
                           v8::Local<v8::Array> hitBreakpoints,
-                          bool isPromiseRejection = false);
+                          bool isPromiseRejection = false,
+                          bool isUncaught = false);
   static void v8DebugEventCallback(const v8::DebugInterface::EventDetails&);
   v8::Local<v8::Value> callInternalGetterFunction(v8::Local<v8::Object>,
                                                   const char* functionName);
@@ -147,6 +151,8 @@ class V8Debugger {
   protocol::HashMap<V8DebuggerAgentImpl*, int> m_maxAsyncCallStackDepthMap;
 
   v8::DebugInterface::ExceptionBreakState m_pauseOnExceptionsState;
+
+  WasmTranslation m_wasmTranslation;
 
   DISALLOW_COPY_AND_ASSIGN(V8Debugger);
 };

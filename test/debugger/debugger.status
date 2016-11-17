@@ -25,8 +25,21 @@
 
 ##############################################################################
 ['variant == turbofan_opt', {
+  # TODO(mstarzinger): Debugger cannot materialize de-materialized functions.
+  'debug/regress/regress-crbug-323936': [FAIL],
 
   # TODO(jarin/mstarzinger): Investigate debugger issues with TurboFan.
-  'debug/ignition/debug-break-on-stack': [FAIL],
+  'debug/debug-evaluate-closure': [FAIL],
+  'debug/es6/debug-evaluate-blockscopes': [FAIL],
 }],  # variant == turbofan_opt
+
+##############################################################################
+['gc_stress == True', {
+  # Async function tests taking too long
+  # https://bugs.chromium.org/p/v8/issues/detail?id=5411
+  'debug/harmony/async-debug-caught-exception-cases0': [SKIP],
+  'debug/harmony/async-debug-caught-exception-cases1': [SKIP],
+  'debug/harmony/async-debug-caught-exception-cases2': [SKIP],
+  'debug/harmony/async-debug-caught-exception-cases3': [SKIP],
+}],  # 'gc_stress == True'
 ]

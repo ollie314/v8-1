@@ -1300,7 +1300,7 @@ void BytecodeGenerator::VisitTryCatchStatement(TryCatchStatement* stmt) {
 
   // If requested, clear message object as we enter the catch block.
   if (stmt->clear_pending_message()) {
-    builder()->CallRuntime(Runtime::kInterpreterClearPendingMessage);
+    builder()->LoadTheHole().SetPendingMessage();
   }
 
   // Load the catch context into the accumulator.
@@ -1359,16 +1359,15 @@ void BytecodeGenerator::VisitTryFinallyStatement(TryFinallyStatement* stmt) {
   Register message = context;  // Reuse register.
 
   // Clear message object as we enter the finally block.
-  builder()
-      ->CallRuntime(Runtime::kInterpreterClearPendingMessage)
-      .StoreAccumulatorInRegister(message);
+  builder()->LoadTheHole().SetPendingMessage().StoreAccumulatorInRegister(
+      message);
 
   // Evaluate the finally-block.
   Visit(stmt->finally_block());
   try_control_builder.EndFinally();
 
   // Pending message object is restored on exit.
-  builder()->CallRuntime(Runtime::kInterpreterSetPendingMessage, message);
+  builder()->LoadAccumulatorWithRegister(message).SetPendingMessage();
 
   // Dynamic dispatch after the finally-block.
   commands.ApplyDeferredCommands();
@@ -1820,7 +1819,8 @@ void BytecodeGenerator::BuildVariableLoad(Variable* variable,
       break;
     }
     case VariableLocation::UNALLOCATED: {
-      builder()->LoadGlobal(feedback_index(slot), typeof_mode);
+      builder()->LoadGlobal(variable->name(), feedback_index(slot),
+                            typeof_mode);
       break;
     }
     case VariableLocation::CONTEXT: {
@@ -2391,31 +2391,26 @@ void BytecodeGenerator::VisitCall(Call* expr) {
       builder()->StoreAccumulatorInRegister(callee);
       break;
     }
-    case Call::LOOKUP_SLOT_CALL:
-    case Call::POSSIBLY_EVAL_CALL: {
-      if (callee_expr->AsVariableProxy()->var()->IsLookupSlot()) {
-        RegisterAllocationScope inner_register_scope(this);
-        Register name = register_allocator()->NewRegister();
+    case Call::WITH_CALL: {
+      DCHECK(callee_expr->AsVariableProxy()->var()->IsLookupSlot());
+      RegisterAllocationScope inner_register_scope(this);
+      Register name = register_allocator()->NewRegister();
 
-        // Call %LoadLookupSlotForCall to get the callee and receiver.
-        DCHECK(Register::AreContiguous(callee, receiver));
-        RegisterList result_pair(callee.index(), 2);
-        Variable* variable = callee_expr->AsVariableProxy()->var();
-        builder()
-            ->LoadLiteral(variable->name())
-            .StoreAccumulatorInRegister(name)
-            .CallRuntimeForPair(Runtime::kLoadLookupSlotForCall, name,
-                                result_pair);
-        break;
-      }
-      // Fall through.
-      DCHECK_EQ(call_type, Call::POSSIBLY_EVAL_CALL);
+      // Call %LoadLookupSlotForCall to get the callee and receiver.
+      DCHECK(Register::AreContiguous(callee, receiver));
+      RegisterList result_pair(callee.index(), 2);
+      Variable* variable = callee_expr->AsVariableProxy()->var();
+      builder()
+          ->LoadLiteral(variable->name())
+          .StoreAccumulatorInRegister(name)
+          .CallRuntimeForPair(Runtime::kLoadLookupSlotForCall, name,
+                              result_pair);
+      break;
     }
-    case Call::OTHER_CALL: {
+    case Call::OTHER_CALL:
       builder()->LoadUndefined().StoreAccumulatorInRegister(receiver);
       VisitForRegisterValue(callee_expr, callee);
       break;
-    }
     case Call::NAMED_SUPER_PROPERTY_CALL: {
       Property* property = callee_expr->AsProperty();
       VisitNamedSuperPropertyLoad(property, receiver);
@@ -2439,8 +2434,7 @@ void BytecodeGenerator::VisitCall(Call* expr) {
 
   // Resolve callee for a potential direct eval call. This block will mutate the
   // callee value.
-  if (call_type == Call::POSSIBLY_EVAL_CALL &&
-      expr->arguments()->length() > 0) {
+  if (expr->is_possibly_eval() && expr->arguments()->length() > 0) {
     RegisterAllocationScope inner_register_scope(this);
     // Set up arguments for ResolvePossiblyDirectEval by copying callee, source
     // strings and function closure, and loading language and
@@ -2839,7 +2833,7 @@ void BytecodeGenerator::VisitLogicalOrExpression(BinaryOperation* binop) {
   if (execution_result()->IsTest()) {
     TestResultScope* test_result = execution_result()->AsTest();
 
-    if (left->ToBooleanIsTrue() || right->ToBooleanIsTrue()) {
+    if (left->ToBooleanIsTrue()) {
       builder()->Jump(test_result->NewThenLabel());
     } else if (left->ToBooleanIsFalse() && right->ToBooleanIsFalse()) {
       builder()->Jump(test_result->NewElseLabel());
@@ -2874,7 +2868,7 @@ void BytecodeGenerator::VisitLogicalAndExpression(BinaryOperation* binop) {
   if (execution_result()->IsTest()) {
     TestResultScope* test_result = execution_result()->AsTest();
 
-    if (left->ToBooleanIsFalse() || right->ToBooleanIsFalse()) {
+    if (left->ToBooleanIsFalse()) {
       builder()->Jump(test_result->NewElseLabel());
     } else if (left->ToBooleanIsTrue() && right->ToBooleanIsTrue()) {
       builder()->Jump(test_result->NewThenLabel());

@@ -838,12 +838,19 @@ class PreParser : public ParserBase<PreParser> {
     kPreParseSuccess
   };
 
-  PreParser(Zone* zone, Scanner* scanner, AstValueFactory* ast_value_factory,
-            uintptr_t stack_limit)
+  PreParser(Zone* zone, Scanner* scanner, uintptr_t stack_limit,
+            AstValueFactory* ast_value_factory,
+            PendingCompilationErrorHandler* pending_error_handler,
+            RuntimeCallStats* runtime_call_stats,
+            bool parsing_on_main_thread = true)
       : ParserBase<PreParser>(zone, scanner, stack_limit, nullptr,
-                              ast_value_factory),
+                              ast_value_factory, runtime_call_stats,
+                              parsing_on_main_thread),
         use_counts_(nullptr),
-        track_unresolved_variables_(false) {}
+        track_unresolved_variables_(false),
+        pending_error_handler_(pending_error_handler) {}
+
+  static bool const IsPreParser() { return true; }
 
   PreParserLogger* logger() { return &log_; }
 
@@ -1274,8 +1281,9 @@ class PreParser : public ParserBase<PreParser> {
                                  MessageTemplate::Template message,
                                  const char* arg = NULL,
                                  ParseErrorType error_type = kSyntaxError) {
-    log_.LogMessage(source_location.beg_pos, source_location.end_pos, message,
-                    arg, error_type);
+    pending_error_handler_->ReportMessageAt(source_location.beg_pos,
+                                            source_location.end_pos, message,
+                                            arg, error_type);
   }
 
   V8_INLINE void ReportMessageAt(Scanner::Location source_location,
@@ -1509,6 +1517,7 @@ class PreParser : public ParserBase<PreParser> {
   int* use_counts_;
   bool track_unresolved_variables_;
   PreParserLogger log_;
+  PendingCompilationErrorHandler* pending_error_handler_;
 };
 
 PreParserExpression PreParser::SpreadCall(PreParserExpression function,

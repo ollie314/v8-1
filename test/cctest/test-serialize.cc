@@ -1962,19 +1962,19 @@ TEST(SnapshotCreatorMultipleContexts) {
       v8::Local<v8::Context> context = v8::Context::New(isolate);
       v8::Context::Scope context_scope(context);
       CompileRun("var f = function() { return 1; }");
-      CHECK_EQ(0, creator.AddContext(context));
+      CHECK_EQ(0u, creator.AddContext(context));
     }
     {
       v8::HandleScope handle_scope(isolate);
       v8::Local<v8::Context> context = v8::Context::New(isolate);
       v8::Context::Scope context_scope(context);
       CompileRun("var f = function() { return 2; }");
-      CHECK_EQ(1, creator.AddContext(context));
+      CHECK_EQ(1u, creator.AddContext(context));
     }
     {
       v8::HandleScope handle_scope(isolate);
       v8::Local<v8::Context> context = v8::Context::New(isolate);
-      CHECK_EQ(2, creator.AddContext(context));
+      CHECK_EQ(2u, creator.AddContext(context));
     }
     blob =
         creator.CreateBlob(v8::SnapshotCreator::FunctionCodeHandling::kClear);
@@ -2022,11 +2022,15 @@ void SerializedCallbackReplacement(
   args.GetReturnValue().Set(v8_num(1337));
 }
 
+static int serialized_static_field = 314;
+
 intptr_t original_external_references[] = {
-    reinterpret_cast<intptr_t>(SerializedCallback), 0};
+    reinterpret_cast<intptr_t>(SerializedCallback),
+    reinterpret_cast<intptr_t>(&serialized_static_field), 0};
 
 intptr_t replaced_external_references[] = {
-    reinterpret_cast<intptr_t>(SerializedCallbackReplacement), 0};
+    reinterpret_cast<intptr_t>(SerializedCallbackReplacement),
+    reinterpret_cast<intptr_t>(&serialized_static_field), 0};
 
 TEST(SnapshotCreatorExternalReferences) {
   DisableAlwaysOpt();
@@ -2044,7 +2048,7 @@ TEST(SnapshotCreatorExternalReferences) {
           callback->GetFunction(context).ToLocalChecked();
       CHECK(context->Global()->Set(context, v8_str("f"), function).FromJust());
       ExpectInt32("f()", 42);
-      CHECK_EQ(0, creator.AddContext(context));
+      CHECK_EQ(0u, creator.AddContext(context));
     }
     blob =
         creator.CreateBlob(v8::SnapshotCreator::FunctionCodeHandling::kClear);
@@ -2104,7 +2108,7 @@ TEST(SnapshotCreatorUnknownExternalReferences) {
     CHECK(context->Global()->Set(context, v8_str("f"), function).FromJust());
     ExpectInt32("f()", 42);
 
-    CHECK_EQ(0, creator.AddContext(context));
+    CHECK_EQ(0u, creator.AddContext(context));
   }
   v8::StartupData blob =
       creator.CreateBlob(v8::SnapshotCreator::FunctionCodeHandling::kClear);
@@ -2142,7 +2146,6 @@ TEST(SnapshotCreatorTemplates) {
     InternalFieldData* a1 = new InternalFieldData{11};
     InternalFieldData* b0 = new InternalFieldData{20};
     InternalFieldData* c0 = new InternalFieldData{30};
-    InternalFieldData* c1 = new InternalFieldData{31};
 
     v8::SnapshotCreator creator(original_external_references);
     v8::Isolate* isolate = creator.GetIsolate();
@@ -2158,7 +2161,7 @@ TEST(SnapshotCreatorTemplates) {
           v8::Context::New(isolate, no_extension, global_template);
       v8::Local<v8::ObjectTemplate> object_template =
           v8::ObjectTemplate::New(isolate);
-      object_template->SetInternalFieldCount(2);
+      object_template->SetInternalFieldCount(3);
 
       v8::Context::Scope context_scope(context);
       ExpectInt32("f()", 42);
@@ -2169,24 +2172,28 @@ TEST(SnapshotCreatorTemplates) {
           object_template->NewInstance(context).ToLocalChecked();
       v8::Local<v8::Object> c =
           object_template->NewInstance(context).ToLocalChecked();
+      v8::Local<v8::External> null_external =
+          v8::External::New(isolate, nullptr);
+      v8::Local<v8::External> field_external =
+          v8::External::New(isolate, &serialized_static_field);
       a->SetInternalField(0, b);
       a->SetAlignedPointerInInternalField(1, a1);
       b->SetAlignedPointerInInternalField(0, b0);
       b->SetInternalField(1, c);
       c->SetAlignedPointerInInternalField(0, c0);
-      c->SetAlignedPointerInInternalField(1, c1);
+      c->SetInternalField(1, null_external);
+      c->SetInternalField(2, field_external);
       CHECK(context->Global()->Set(context, v8_str("a"), a).FromJust());
 
-      CHECK_EQ(0, creator.AddContext(context));
-      CHECK_EQ(0, creator.AddTemplate(callback));
-      CHECK_EQ(1, creator.AddTemplate(global_template));
+      CHECK_EQ(0u, creator.AddContext(context));
+      CHECK_EQ(0u, creator.AddTemplate(callback));
+      CHECK_EQ(1u, creator.AddTemplate(global_template));
     }
     blob = creator.CreateBlob(v8::SnapshotCreator::FunctionCodeHandling::kClear,
                               SerializeInternalFields);
 
     delete a1;
     delete b0;
-    delete c1;
     delete c0;
   }
 
@@ -2239,19 +2246,28 @@ TEST(SnapshotCreatorTemplates) {
             a->GetInternalField(0)->ToObject(context).ToLocalChecked();
         InternalFieldData* a1 = reinterpret_cast<InternalFieldData*>(
             a->GetAlignedPointerFromInternalField(1));
+        v8::Local<v8::Value> a2 = a->GetInternalField(2);
+
         InternalFieldData* b0 = reinterpret_cast<InternalFieldData*>(
             b->GetAlignedPointerFromInternalField(0));
         v8::Local<v8::Object> c =
             b->GetInternalField(1)->ToObject(context).ToLocalChecked();
+        v8::Local<v8::Value> b2 = b->GetInternalField(2);
+
         InternalFieldData* c0 = reinterpret_cast<InternalFieldData*>(
             c->GetAlignedPointerFromInternalField(0));
-        InternalFieldData* c1 = reinterpret_cast<InternalFieldData*>(
-            c->GetAlignedPointerFromInternalField(1));
+        v8::Local<v8::Value> c1 = c->GetInternalField(1);
+        v8::Local<v8::Value> c2 = c->GetInternalField(2);
 
-        CHECK_EQ(11, a1->data);
-        CHECK_EQ(20, b0->data);
-        CHECK_EQ(30, c0->data);
-        CHECK_EQ(31, c1->data);
+        CHECK_EQ(11u, a1->data);
+        CHECK(a2->IsUndefined());
+        CHECK_EQ(20u, b0->data);
+        CHECK(b2->IsUndefined());
+        CHECK_EQ(30u, c0->data);
+        CHECK(c1->IsExternal());
+        CHECK_NULL(v8::Local<v8::External>::Cast(c1)->Value());
+        CHECK_EQ(static_cast<void*>(&serialized_static_field),
+                 v8::Local<v8::External>::Cast(c2)->Value());
 
         // Accessing out of bound returns empty MaybeHandle.
         CHECK(v8::ObjectTemplate::FromSnapshot(isolate, 2).IsEmpty());
@@ -2260,7 +2276,6 @@ TEST(SnapshotCreatorTemplates) {
 
         delete a1;
         delete b0;
-        delete c1;
         delete c0;
       }
 

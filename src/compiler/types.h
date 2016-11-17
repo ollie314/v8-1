@@ -123,6 +123,7 @@ namespace compiler {
   V(Function,            1u << 19)  \
   V(Hole,                1u << 20)  \
   V(OtherInternal,       1u << 21)  \
+  V(ExternalPointer,     1u << 22)  \
   \
   V(Signed31,                   kUnsigned30 | kNegative31) \
   V(Signed32,                   kSigned31 | kOtherUnsigned31 | kOtherSigned32) \
@@ -157,10 +158,11 @@ namespace compiler {
   V(DetectableReceiver,         kFunction | kOtherObject | kProxy) \
   V(Object,                     kFunction | kOtherObject | kOtherUndetectable) \
   V(Receiver,                   kObject | kProxy) \
+  V(ReceiverOrUndefined,        kReceiver | kUndefined) \
   V(StringOrReceiver,           kString | kReceiver) \
   V(Unique,                     kBoolean | kUniqueName | kNull | kUndefined | \
                                 kReceiver) \
-  V(Internal,                   kHole | kOtherInternal) \
+  V(Internal,                   kHole | kExternalPointer | kOtherInternal) \
   V(NonInternal,                kPrimitive | kReceiver) \
   V(NonNumber,                  kUnique | kString | kInternal) \
   V(Any,                        0xfffffffeu)

@@ -56,7 +56,8 @@ namespace internal {
   F(FixedArraySet, 3, 1)             \
   F(ArraySpeciesConstructor, 1, 1)   \
   F(ArrayIncludes_Slow, 3, 1)        \
-  F(ArrayIndexOf, 3, 1)
+  F(ArrayIndexOf, 3, 1)              \
+  F(SpreadIterablePrepare, 1, 1)
 
 #define FOR_EACH_INTRINSIC_ATOMICS(F)           \
   F(ThrowNotIntegerSharedTypedArrayError, 1, 1) \
@@ -198,9 +199,7 @@ namespace internal {
   F(DebugNextMicrotaskId, 0, 1)                 \
   F(DebugAsyncTaskEvent, 3, 1)                  \
   F(DebugIsActive, 0, 1)                        \
-  F(DebugBreakInOptimizedCode, 0, 1)            \
-  F(GetWasmFunctionOffsetTable, 1, 1)           \
-  F(DisassembleWasmFunction, 1, 1)
+  F(DebugBreakInOptimizedCode, 0, 1)
 
 #define FOR_EACH_INTRINSIC_ERROR(F) F(ErrorToString, 1, 1)
 
@@ -214,8 +213,7 @@ namespace internal {
   F(InterpreterNewClosure, 2, 1)          \
   F(InterpreterTraceBytecodeEntry, 3, 1)  \
   F(InterpreterTraceBytecodeExit, 3, 1)   \
-  F(InterpreterClearPendingMessage, 0, 1) \
-  F(InterpreterSetPendingMessage, 1, 1)
+  F(InterpreterAdvanceBytecodeOffset, 2, 1)
 
 #define FOR_EACH_INTRINSIC_FUNCTION(F)     \
   F(FunctionGetName, 1, 1)                 \
@@ -293,7 +291,7 @@ namespace internal {
   F(CreateListFromArrayLike, 1, 1)                  \
   F(EnqueueMicrotask, 1, 1)                         \
   F(EnqueuePromiseReactionJob, 4, 1)                \
-  F(EnqueuePromiseResolveThenableJob, 4, 1)         \
+  F(EnqueuePromiseResolveThenableJob, 3, 1)         \
   F(GetAndResetRuntimeCallStats, -1 /* <= 2 */, 1)  \
   F(ExportExperimentalFromRuntime, 1, 1)            \
   F(ExportFromRuntime, 1, 1)                        \
@@ -425,6 +423,7 @@ namespace internal {
   F(Compare, 3, 1)                                   \
   F(HasInPrototypeChain, 2, 1)                       \
   F(CreateIterResultObject, 2, 1)                    \
+  F(CreateKeyValueArray, 2, 1)                       \
   F(IsAccessCheckNeeded, 1, 1)                       \
   F(CreateDataProperty, 3, 1)
 

@@ -210,6 +210,8 @@ Reduction JSCreateLowering::Reduce(Node* node) {
       return ReduceJSCreateClosure(node);
     case IrOpcode::kJSCreateIterResultObject:
       return ReduceJSCreateIterResultObject(node);
+    case IrOpcode::kJSCreateKeyValueArray:
+      return ReduceJSCreateKeyValueArray(node);
     case IrOpcode::kJSCreateLiteralArray:
     case IrOpcode::kJSCreateLiteralObject:
       return ReduceJSCreateLiteral(node);
@@ -511,7 +513,7 @@ Reduction JSCreateLowering::ReduceNewArrayToStubCall(
         CallDescriptor::kNeedsFrameState);
     node->ReplaceInput(0, jsgraph()->HeapConstant(stub.GetCode()));
     node->InsertInput(graph()->zone(), 2, jsgraph()->HeapConstant(site));
-    node->InsertInput(graph()->zone(), 3, jsgraph()->Int32Constant(0));
+    node->InsertInput(graph()->zone(), 3, jsgraph()->Constant(0));
     node->InsertInput(graph()->zone(), 4, jsgraph()->UndefinedConstant());
     NodeProperties::ChangeOp(node, common()->Call(desc));
     return Changed(node);
@@ -529,7 +531,7 @@ Reduction JSCreateLowering::ReduceNewArrayToStubCall(
           CallDescriptor::kNeedsFrameState);
       node->ReplaceInput(0, jsgraph()->HeapConstant(stub.GetCode()));
       node->InsertInput(graph()->zone(), 2, jsgraph()->HeapConstant(site));
-      node->InsertInput(graph()->zone(), 3, jsgraph()->Int32Constant(1));
+      node->InsertInput(graph()->zone(), 3, jsgraph()->Constant(1));
       node->InsertInput(graph()->zone(), 4, jsgraph()->UndefinedConstant());
       NodeProperties::ChangeOp(node, common()->Call(desc));
       return Changed(node);
@@ -560,7 +562,7 @@ Reduction JSCreateLowering::ReduceNewArrayToStubCall(
       Node* inputs[] = {jsgraph()->HeapConstant(stub.GetCode()),
                         node->InputAt(1),
                         jsgraph()->HeapConstant(site),
-                        jsgraph()->Int32Constant(1),
+                        jsgraph()->Constant(1),
                         jsgraph()->UndefinedConstant(),
                         length,
                         context,
@@ -584,7 +586,7 @@ Reduction JSCreateLowering::ReduceNewArrayToStubCall(
       Node* inputs[] = {jsgraph()->HeapConstant(stub.GetCode()),
                         node->InputAt(1),
                         jsgraph()->HeapConstant(site),
-                        jsgraph()->Int32Constant(1),
+                        jsgraph()->Constant(1),
                         jsgraph()->UndefinedConstant(),
                         length,
                         context,
@@ -615,7 +617,7 @@ Reduction JSCreateLowering::ReduceNewArrayToStubCall(
       CallDescriptor::kNeedsFrameState);
   node->ReplaceInput(0, jsgraph()->HeapConstant(stub.GetCode()));
   node->InsertInput(graph()->zone(), 2, jsgraph()->HeapConstant(site));
-  node->InsertInput(graph()->zone(), 3, jsgraph()->Int32Constant(arity));
+  node->InsertInput(graph()->zone(), 3, jsgraph()->Constant(arity));
   node->InsertInput(graph()->zone(), 4, jsgraph()->UndefinedConstant());
   NodeProperties::ChangeOp(node, common()->Call(desc));
   return Changed(node);
@@ -674,8 +676,8 @@ Reduction JSCreateLowering::ReduceJSCreateClosure(Node* node) {
       handle(Map::cast(native_context()->get(function_map_index)), isolate()));
   // Note that it is only safe to embed the raw entry point of the compile
   // lazy stub into the code, because that stub is immortal and immovable.
-  Node* compile_entry = jsgraph()->IntPtrConstant(reinterpret_cast<intptr_t>(
-      jsgraph()->isolate()->builtins()->CompileLazy()->entry()));
+  Node* compile_entry = jsgraph()->PointerConstant(
+      jsgraph()->isolate()->builtins()->CompileLazy()->entry());
   Node* empty_fixed_array = jsgraph()->EmptyFixedArrayConstant();
   Node* empty_literals_array = jsgraph()->EmptyLiteralsArrayConstant();
   Node* the_hole = jsgraph()->TheHoleConstant();
@@ -717,6 +719,36 @@ Reduction JSCreateLowering::ReduceJSCreateIterResultObject(Node* node) {
   a.Store(AccessBuilder::ForJSIteratorResultValue(), value);
   a.Store(AccessBuilder::ForJSIteratorResultDone(), done);
   STATIC_ASSERT(JSIteratorResult::kSize == 5 * kPointerSize);
+  a.FinishAndChange(node);
+  return Changed(node);
+}
+
+Reduction JSCreateLowering::ReduceJSCreateKeyValueArray(Node* node) {
+  DCHECK_EQ(IrOpcode::kJSCreateKeyValueArray, node->opcode());
+  Node* key = NodeProperties::GetValueInput(node, 0);
+  Node* value = NodeProperties::GetValueInput(node, 1);
+  Node* effect = NodeProperties::GetEffectInput(node);
+
+  Node* array_map = jsgraph()->HeapConstant(
+      handle(native_context()->js_array_fast_elements_map_index()));
+  Node* properties = jsgraph()->EmptyFixedArrayConstant();
+  Node* length = jsgraph()->Constant(2);
+
+  AllocationBuilder aa(jsgraph(), effect, graph()->start());
+  aa.AllocateArray(2, factory()->fixed_array_map());
+  aa.Store(AccessBuilder::ForFixedArrayElement(FAST_ELEMENTS),
+           jsgraph()->Constant(0), key);
+  aa.Store(AccessBuilder::ForFixedArrayElement(FAST_ELEMENTS),
+           jsgraph()->Constant(1), value);
+  Node* elements = aa.Finish();
+
+  AllocationBuilder a(jsgraph(), elements, graph()->start());
+  a.Allocate(JSArray::kSize);
+  a.Store(AccessBuilder::ForMap(), array_map);
+  a.Store(AccessBuilder::ForJSObjectProperties(), properties);
+  a.Store(AccessBuilder::ForJSObjectElements(), elements);
+  a.Store(AccessBuilder::ForJSArrayLength(FAST_ELEMENTS), length);
+  STATIC_ASSERT(JSArray::kSize == 4 * kPointerSize);
   a.FinishAndChange(node);
   return Changed(node);
 }
@@ -1179,7 +1211,7 @@ Node* JSCreateLowering::AllocateFastLiteralElements(
     Handle<FixedArray> elements =
         Handle<FixedArray>::cast(boilerplate_elements);
     for (int i = 0; i < elements_length; ++i) {
-      if (elements->is_the_hole(i)) {
+      if (elements->is_the_hole(isolate(), i)) {
         elements_values[i] = jsgraph()->TheHoleConstant();
       } else {
         Handle<Object> element_value(elements->get(i), isolate());

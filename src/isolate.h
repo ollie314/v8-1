@@ -34,6 +34,7 @@ class RandomNumberGenerator;
 namespace internal {
 
 class AccessCompilerData;
+class AddressToIndexHashMap;
 class BasicBlockProfiler;
 class Bootstrapper;
 class CancelableTaskManager;
@@ -59,6 +60,7 @@ class ExternalCallbackScope;
 class ExternalReferenceTable;
 class Factory;
 class HandleScopeImplementer;
+class HeapObjectToIndexHashMap;
 class HeapProfiler;
 class HStatistics;
 class HTracer;
@@ -400,8 +402,8 @@ typedef List<HeapObject*> DebugObjectCache;
   V(Object*, string_stream_current_security_token, nullptr)                   \
   V(ExternalReferenceTable*, external_reference_table, nullptr)               \
   V(intptr_t*, api_external_references, nullptr)                              \
-  V(base::HashMap*, external_reference_map, nullptr)                          \
-  V(base::HashMap*, root_index_map, nullptr)                                  \
+  V(AddressToIndexHashMap*, external_reference_map, nullptr)                  \
+  V(HeapObjectToIndexHashMap*, root_index_map, nullptr)                       \
   V(v8::DeserializeInternalFieldsCallback,                                    \
     deserialize_internal_fields_callback, nullptr)                            \
   V(int, pending_microtask_count, 0)                                          \
@@ -985,8 +987,8 @@ class Isolate {
 
   Map* get_initial_js_array_map(ElementsKind kind);
 
-  static const int kArrayProtectorValid = 1;
-  static const int kArrayProtectorInvalid = 0;
+  static const int kProtectorValid = 1;
+  static const int kProtectorInvalid = 0;
 
   bool IsFastArrayConstructorPrototypeChainIntact();
   inline bool IsArraySpeciesLookupChainIntact();
@@ -994,6 +996,13 @@ class Isolate {
   bool IsIsConcatSpreadableLookupChainIntact();
   bool IsIsConcatSpreadableLookupChainIntact(JSReceiver* receiver);
   inline bool IsStringLengthOverflowIntact();
+  inline bool IsArrayIteratorLookupChainIntact();
+
+  // Avoid deopt loops if fast Array Iterators migrate to slow Array Iterators.
+  inline bool IsFastArrayIterationIntact();
+
+  // Make sure we do check for neutered array buffers.
+  inline bool IsArrayBufferNeuteringIntact();
 
   // On intent to set an element in object, make sure that appropriate
   // notifications occur if the set is on the elements of the array or
@@ -1013,11 +1022,14 @@ class Isolate {
   void InvalidateHasInstanceProtector();
   void InvalidateIsConcatSpreadableProtector();
   void InvalidateStringLengthOverflowProtector();
+  void InvalidateArrayIteratorProtector();
+  void InvalidateArrayBufferNeuteringProtector();
 
   // Returns true if array is the initial array prototype in any native context.
   bool IsAnyInitialArrayPrototype(Handle<JSArray> array);
 
-  CallInterfaceDescriptorData* call_descriptor_data(int index);
+  V8_EXPORT_PRIVATE CallInterfaceDescriptorData* call_descriptor_data(
+      int index);
 
   AccessCompilerData* access_compiler_data() { return access_compiler_data_; }
 

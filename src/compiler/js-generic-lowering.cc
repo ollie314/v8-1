@@ -219,9 +219,10 @@ void JSGenericLowering::LowerJSLoadGlobal(Node* node) {
       jsgraph()->IntPtrConstant(LiteralsArray::kFeedbackVectorOffset -
                                 kHeapObjectTag),
       effect, control);
-  node->InsertInput(zone(), 0, jsgraph()->SmiConstant(p.feedback().index()));
-  node->ReplaceInput(1, vector);
-  node->ReplaceInput(4, effect);
+  node->InsertInput(zone(), 0, jsgraph()->HeapConstant(p.name()));
+  node->InsertInput(zone(), 1, jsgraph()->SmiConstant(p.feedback().index()));
+  node->ReplaceInput(2, vector);
+  node->ReplaceInput(5, effect);
   ReplaceWithStubCall(node, callable, flags);
 }
 
@@ -463,6 +464,9 @@ void JSGenericLowering::LowerJSCreateIterResultObject(Node* node) {
   ReplaceWithRuntimeCall(node, Runtime::kCreateIterResultObject);
 }
 
+void JSGenericLowering::LowerJSCreateKeyValueArray(Node* node) {
+  ReplaceWithRuntimeCall(node, Runtime::kCreateKeyValueArray);
+}
 
 void JSGenericLowering::LowerJSCreateLiteralArray(Node* node) {
   CreateLiteralParameters const& p = CreateLiteralParametersOf(node->op());

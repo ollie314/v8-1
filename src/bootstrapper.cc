@@ -1334,6 +1334,7 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     Handle<JSFunction> next = InstallFunction(
         array_iterator_prototype, "next", JS_OBJECT_TYPE, JSObject::kHeaderSize,
         MaybeHandle<JSObject>(), Builtins::kArrayIteratorPrototypeNext);
+    next->shared()->set_builtin_function_id(kArrayIteratorNext);
 
     // Set the expected parameters for %ArrayIteratorPrototype%.next to 0 (not
     // including the receiver), as required by the builtin.
@@ -1348,6 +1349,11 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
         array_iterator_prototype, Builtins::kIllegal);
     array_iterator_function->shared()->set_instance_class_name(
         isolate->heap()->ArrayIterator_string());
+
+    native_context()->set_initial_array_iterator_prototype(
+        *array_iterator_prototype);
+    native_context()->set_initial_array_iterator_prototype_map(
+        array_iterator_prototype->map());
 
     Handle<Map> initial_map(array_iterator_function->initial_map(), isolate);
 
@@ -1863,7 +1869,7 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
       {
         Handle<JSFunction> fun = SimpleCreateFunction(
             isolate, factory->InternalizeUtf8String("[Symbol.search]"),
-            Builtins::kRegExpPrototypeSearch, 1, false);
+            Builtins::kRegExpPrototypeSearch, 1, true);
         InstallFunction(prototype, fun, factory->search_symbol(), DONT_ENUM);
       }
 
@@ -2187,14 +2193,21 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                         kTypedArrayLength);
 
     // Install "keys", "values" and "entries" methods on the {prototype}.
-    SimpleInstallFunction(prototype, factory->entries_string(),
-                          Builtins::kTypedArrayPrototypeEntries, 0, true);
-    SimpleInstallFunction(prototype, factory->keys_string(),
-                          Builtins::kTypedArrayPrototypeKeys, 0, true);
-    Handle<JSFunction> iterator =
+    Handle<JSFunction> entries =
+        SimpleInstallFunction(prototype, factory->entries_string(),
+                              Builtins::kTypedArrayPrototypeEntries, 0, true);
+    entries->shared()->set_builtin_function_id(kTypedArrayEntries);
+
+    Handle<JSFunction> keys =
+        SimpleInstallFunction(prototype, factory->keys_string(),
+                              Builtins::kTypedArrayPrototypeKeys, 0, true);
+    keys->shared()->set_builtin_function_id(kTypedArrayKeys);
+
+    Handle<JSFunction> values =
         SimpleInstallFunction(prototype, factory->values_string(),
                               Builtins::kTypedArrayPrototypeValues, 0, true);
-    JSObject::AddProperty(prototype, factory->iterator_symbol(), iterator,
+    values->shared()->set_builtin_function_id(kTypedArrayValues);
+    JSObject::AddProperty(prototype, factory->iterator_symbol(), values,
                           DONT_ENUM);
   }
 

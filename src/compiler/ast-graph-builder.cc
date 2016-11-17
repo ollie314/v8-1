@@ -841,13 +841,6 @@ void AstGraphBuilder::Environment::UpdateStateValues(Node** state_values,
 }
 
 
-void AstGraphBuilder::Environment::UpdateStateValuesWithCache(
-    Node** state_values, int offset, int count) {
-  Node** env_values = (count == 0) ? nullptr : &values()->at(offset);
-  *state_values = builder_->state_values_cache_.GetNodeForValues(
-      env_values, static_cast<size_t>(count));
-}
-
 Node* AstGraphBuilder::Environment::Checkpoint(BailoutId ast_id,
                                                OutputFrameStateCombine combine,
                                                bool owner_has_exception) {
@@ -856,7 +849,7 @@ Node* AstGraphBuilder::Environment::Checkpoint(BailoutId ast_id,
   }
 
   UpdateStateValues(&parameters_node_, 0, parameters_count());
-  UpdateStateValuesWithCache(&locals_node_, parameters_count(), locals_count());
+  UpdateStateValues(&locals_node_, parameters_count(), locals_count());
   UpdateStateValues(&stack_node_, parameters_count() + locals_count(),
                     stack_height());
 
@@ -2285,21 +2278,9 @@ void AstGraphBuilder::VisitCall(Call* expr) {
   ConvertReceiverMode receiver_hint = ConvertReceiverMode::kAny;
   Node* receiver_value = nullptr;
   Node* callee_value = nullptr;
-  bool possibly_eval = false;
-  switch (call_type) {
-    case Call::GLOBAL_CALL: {
-      VariableProxy* proxy = callee->AsVariableProxy();
-      VectorSlotPair pair = CreateVectorSlotPair(proxy->VariableFeedbackSlot());
-      PrepareEagerCheckpoint(BeforeId(proxy));
-      callee_value = BuildVariableLoad(proxy->var(), expr->expression()->id(),
-                                       pair, OutputFrameStateCombine::Push());
-      receiver_hint = ConvertReceiverMode::kNullOrUndefined;
-      receiver_value = jsgraph()->UndefinedConstant();
-      break;
-    }
-    case Call::LOOKUP_SLOT_CALL: {
+  if (expr->is_possibly_eval()) {
+    if (callee->AsVariableProxy()->var()->IsLookupSlot()) {
       Variable* variable = callee->AsVariableProxy()->var();
-      DCHECK(variable->location() == VariableLocation::LOOKUP);
       Node* name = jsgraph()->Constant(variable->name());
       const Operator* op =
           javascript()->CallRuntime(Runtime::kLoadLookupSlotForCall);
@@ -2308,89 +2289,26 @@ void AstGraphBuilder::VisitCall(Call* expr) {
       receiver_value = NewNode(common()->Projection(1), pair);
       PrepareFrameState(pair, expr->LookupId(),
                         OutputFrameStateCombine::Push(2));
-      break;
+    } else {
+      VisitForValue(callee);
+      callee_value = environment()->Pop();
+      receiver_hint = ConvertReceiverMode::kNullOrUndefined;
+      receiver_value = jsgraph()->UndefinedConstant();
     }
-    case Call::NAMED_PROPERTY_CALL: {
-      Property* property = callee->AsProperty();
-      VectorSlotPair feedback =
-          CreateVectorSlotPair(property->PropertyFeedbackSlot());
-      VisitForValue(property->obj());
-      Handle<Name> name = property->key()->AsLiteral()->AsPropertyName();
-      Node* object = environment()->Top();
-      callee_value = BuildNamedLoad(object, name, feedback);
-      PrepareFrameState(callee_value, property->LoadId(),
-                        OutputFrameStateCombine::Push());
-      // Note that a property call requires the receiver to be wrapped into
-      // an object for sloppy callees. However the receiver is guaranteed
-      // not to be null or undefined at this point.
-      receiver_hint = ConvertReceiverMode::kNotNullOrUndefined;
-      receiver_value = environment()->Pop();
-      break;
-    }
-    case Call::KEYED_PROPERTY_CALL: {
-      Property* property = callee->AsProperty();
-      VectorSlotPair feedback =
-          CreateVectorSlotPair(property->PropertyFeedbackSlot());
-      VisitForValue(property->obj());
-      VisitForValue(property->key());
-      Node* key = environment()->Pop();
-      Node* object = environment()->Top();
-      callee_value = BuildKeyedLoad(object, key, feedback);
-      PrepareFrameState(callee_value, property->LoadId(),
-                        OutputFrameStateCombine::Push());
-      // Note that a property call requires the receiver to be wrapped into
-      // an object for sloppy callees. However the receiver is guaranteed
-      // not to be null or undefined at this point.
-      receiver_hint = ConvertReceiverMode::kNotNullOrUndefined;
-      receiver_value = environment()->Pop();
-      break;
-    }
-    case Call::NAMED_SUPER_PROPERTY_CALL: {
-      Property* property = callee->AsProperty();
-      SuperPropertyReference* super_ref =
-          property->obj()->AsSuperPropertyReference();
-      VisitForValue(super_ref->home_object());
-      VisitForValue(super_ref->this_var());
-      Node* home = environment()->Peek(1);
-      Node* object = environment()->Top();
-      Handle<Name> name = property->key()->AsLiteral()->AsPropertyName();
-      callee_value = BuildNamedSuperLoad(object, home, name, VectorSlotPair());
-      PrepareFrameState(callee_value, property->LoadId(),
-                        OutputFrameStateCombine::Push());
-      // Note that a property call requires the receiver to be wrapped into
-      // an object for sloppy callees. Since the receiver is not the target of
-      // the load, it could very well be null or undefined at this point.
-      receiver_value = environment()->Pop();
-      environment()->Drop(1);
-      break;
-    }
-    case Call::KEYED_SUPER_PROPERTY_CALL: {
-      Property* property = callee->AsProperty();
-      SuperPropertyReference* super_ref =
-          property->obj()->AsSuperPropertyReference();
-      VisitForValue(super_ref->home_object());
-      VisitForValue(super_ref->this_var());
-      environment()->Push(environment()->Top());    // Duplicate this_var.
-      environment()->Push(environment()->Peek(2));  // Duplicate home_obj.
-      VisitForValue(property->key());
-      Node* key = environment()->Pop();
-      Node* home = environment()->Pop();
-      Node* object = environment()->Pop();
-      callee_value = BuildKeyedSuperLoad(object, home, key, VectorSlotPair());
-      PrepareFrameState(callee_value, property->LoadId(),
-                        OutputFrameStateCombine::Push());
-      // Note that a property call requires the receiver to be wrapped into
-      // an object for sloppy callees. Since the receiver is not the target of
-      // the load, it could very well be null or undefined at this point.
-      receiver_value = environment()->Pop();
-      environment()->Drop(1);
-      break;
-    }
-    case Call::SUPER_CALL:
-      return VisitCallSuper(expr);
-    case Call::POSSIBLY_EVAL_CALL:
-      possibly_eval = true;
-      if (callee->AsVariableProxy()->var()->IsLookupSlot()) {
+  } else {
+    switch (call_type) {
+      case Call::GLOBAL_CALL: {
+        VariableProxy* proxy = callee->AsVariableProxy();
+        VectorSlotPair pair =
+            CreateVectorSlotPair(proxy->VariableFeedbackSlot());
+        PrepareEagerCheckpoint(BeforeId(proxy));
+        callee_value = BuildVariableLoad(proxy->var(), expr->expression()->id(),
+                                         pair, OutputFrameStateCombine::Push());
+        receiver_hint = ConvertReceiverMode::kNullOrUndefined;
+        receiver_value = jsgraph()->UndefinedConstant();
+        break;
+      }
+      case Call::WITH_CALL: {
         Variable* variable = callee->AsVariableProxy()->var();
         Node* name = jsgraph()->Constant(variable->name());
         const Operator* op =
@@ -2402,13 +2320,92 @@ void AstGraphBuilder::VisitCall(Call* expr) {
                           OutputFrameStateCombine::Push(2));
         break;
       }
-    // Fall through.
-    case Call::OTHER_CALL:
-      VisitForValue(callee);
-      callee_value = environment()->Pop();
-      receiver_hint = ConvertReceiverMode::kNullOrUndefined;
-      receiver_value = jsgraph()->UndefinedConstant();
-      break;
+      case Call::NAMED_PROPERTY_CALL: {
+        Property* property = callee->AsProperty();
+        VectorSlotPair feedback =
+            CreateVectorSlotPair(property->PropertyFeedbackSlot());
+        VisitForValue(property->obj());
+        Handle<Name> name = property->key()->AsLiteral()->AsPropertyName();
+        Node* object = environment()->Top();
+        callee_value = BuildNamedLoad(object, name, feedback);
+        PrepareFrameState(callee_value, property->LoadId(),
+                          OutputFrameStateCombine::Push());
+        // Note that a property call requires the receiver to be wrapped into
+        // an object for sloppy callees. However the receiver is guaranteed
+        // not to be null or undefined at this point.
+        receiver_hint = ConvertReceiverMode::kNotNullOrUndefined;
+        receiver_value = environment()->Pop();
+        break;
+      }
+      case Call::KEYED_PROPERTY_CALL: {
+        Property* property = callee->AsProperty();
+        VectorSlotPair feedback =
+            CreateVectorSlotPair(property->PropertyFeedbackSlot());
+        VisitForValue(property->obj());
+        VisitForValue(property->key());
+        Node* key = environment()->Pop();
+        Node* object = environment()->Top();
+        callee_value = BuildKeyedLoad(object, key, feedback);
+        PrepareFrameState(callee_value, property->LoadId(),
+                          OutputFrameStateCombine::Push());
+        // Note that a property call requires the receiver to be wrapped into
+        // an object for sloppy callees. However the receiver is guaranteed
+        // not to be null or undefined at this point.
+        receiver_hint = ConvertReceiverMode::kNotNullOrUndefined;
+        receiver_value = environment()->Pop();
+        break;
+      }
+      case Call::NAMED_SUPER_PROPERTY_CALL: {
+        Property* property = callee->AsProperty();
+        SuperPropertyReference* super_ref =
+            property->obj()->AsSuperPropertyReference();
+        VisitForValue(super_ref->home_object());
+        VisitForValue(super_ref->this_var());
+        Node* home = environment()->Peek(1);
+        Node* object = environment()->Top();
+        Handle<Name> name = property->key()->AsLiteral()->AsPropertyName();
+        callee_value =
+            BuildNamedSuperLoad(object, home, name, VectorSlotPair());
+        PrepareFrameState(callee_value, property->LoadId(),
+                          OutputFrameStateCombine::Push());
+        // Note that a property call requires the receiver to be wrapped into
+        // an object for sloppy callees. Since the receiver is not the target of
+        // the load, it could very well be null or undefined at this point.
+        receiver_value = environment()->Pop();
+        environment()->Drop(1);
+        break;
+      }
+      case Call::KEYED_SUPER_PROPERTY_CALL: {
+        Property* property = callee->AsProperty();
+        SuperPropertyReference* super_ref =
+            property->obj()->AsSuperPropertyReference();
+        VisitForValue(super_ref->home_object());
+        VisitForValue(super_ref->this_var());
+        environment()->Push(environment()->Top());    // Duplicate this_var.
+        environment()->Push(environment()->Peek(2));  // Duplicate home_obj.
+        VisitForValue(property->key());
+        Node* key = environment()->Pop();
+        Node* home = environment()->Pop();
+        Node* object = environment()->Pop();
+        callee_value = BuildKeyedSuperLoad(object, home, key, VectorSlotPair());
+        PrepareFrameState(callee_value, property->LoadId(),
+                          OutputFrameStateCombine::Push());
+        // Note that a property call requires the receiver to be wrapped into
+        // an object for sloppy callees. Since the receiver is not the target of
+        // the load, it could very well be null or undefined at this point.
+        receiver_value = environment()->Pop();
+        environment()->Drop(1);
+        break;
+      }
+      case Call::SUPER_CALL:
+        return VisitCallSuper(expr);
+      case Call::OTHER_CALL:
+        VisitForValue(callee);
+        callee_value = environment()->Pop();
+        receiver_hint = ConvertReceiverMode::kNullOrUndefined;
+        receiver_value = jsgraph()->UndefinedConstant();
+        break;
+    }
   }
 
   // The callee and the receiver both have to be pushed onto the operand stack
@@ -2422,7 +2419,7 @@ void AstGraphBuilder::VisitCall(Call* expr) {
 
   // Resolve callee for a potential direct eval call. This block will mutate the
   // callee value pushed onto the environment.
-  if (possibly_eval && args->length() > 0) {
+  if (expr->is_possibly_eval() && args->length() > 0) {
     int arg_count = args->length();
 
     // Extract callee and source string from the environment.
@@ -2453,7 +2450,8 @@ void AstGraphBuilder::VisitCall(Call* expr) {
   const Operator* call =
       javascript()->CallFunction(args->length() + 2, frequency, feedback,
                                  receiver_hint, expr->tail_call_mode());
-  PrepareEagerCheckpoint(possibly_eval ? expr->EvalId() : expr->CallId());
+  PrepareEagerCheckpoint(expr->is_possibly_eval() ? expr->EvalId()
+                                                  : expr->CallId());
   Node* value = ProcessArguments(call, args->length() + 2);
   // The callee passed to the call, we just need to push something here to
   // satisfy the bailout location contract. The fullcodegen code will not
@@ -4362,6 +4360,16 @@ Node* AstGraphBuilder::MergeValue(Node* value, Node* other, Node* control) {
   }
   return value;
 }
+
+AstGraphBuilderWithPositions::AstGraphBuilderWithPositions(
+    Zone* local_zone, CompilationInfo* info, JSGraph* jsgraph,
+    float invocation_frequency, LoopAssignmentAnalysis* loop_assignment,
+    TypeHintAnalysis* type_hint_analysis, SourcePositionTable* source_positions,
+    int inlining_id)
+    : AstGraphBuilder(local_zone, info, jsgraph, invocation_frequency,
+                      loop_assignment, type_hint_analysis),
+      source_positions_(source_positions),
+      start_position_(info->shared_info()->start_position(), inlining_id) {}
 
 }  // namespace compiler
 }  // namespace internal

@@ -427,38 +427,6 @@ void TraceSchedule(CompilationInfo* info, Schedule* schedule) {
 }
 
 
-class AstGraphBuilderWithPositions final : public AstGraphBuilder {
- public:
-  AstGraphBuilderWithPositions(Zone* local_zone, CompilationInfo* info,
-                               JSGraph* jsgraph,
-                               LoopAssignmentAnalysis* loop_assignment,
-                               TypeHintAnalysis* type_hint_analysis,
-                               SourcePositionTable* source_positions)
-      : AstGraphBuilder(local_zone, info, jsgraph, 1.0f, loop_assignment,
-                        type_hint_analysis),
-        source_positions_(source_positions),
-        start_position_(info->shared_info()->start_position()) {}
-
-  bool CreateGraph() {
-    SourcePositionTable::Scope pos_scope(source_positions_, start_position_);
-    return AstGraphBuilder::CreateGraph();
-  }
-
-#define DEF_VISIT(type)                                               \
-  void Visit##type(type* node) override {                             \
-    SourcePositionTable::Scope pos(source_positions_,                 \
-                                   SourcePosition(node->position())); \
-    AstGraphBuilder::Visit##type(node);                               \
-  }
-  AST_NODE_LIST(DEF_VISIT)
-#undef DEF_VISIT
-
- private:
-  SourcePositionTable* const source_positions_;
-  SourcePosition const start_position_;
-};
-
-
 class SourcePositionWrapper final : public Reducer {
  public:
   SourcePositionWrapper(Reducer* reducer, SourcePositionTable* table)
@@ -753,8 +721,9 @@ struct GraphBuilderPhase {
       succeeded = graph_builder.CreateGraph();
     } else {
       AstGraphBuilderWithPositions graph_builder(
-          temp_zone, data->info(), data->jsgraph(), data->loop_assignment(),
-          data->type_hint_analysis(), data->source_positions());
+          temp_zone, data->info(), data->jsgraph(), 1.0f,
+          data->loop_assignment(), data->type_hint_analysis(),
+          data->source_positions());
       succeeded = graph_builder.CreateGraph();
     }
 
@@ -807,11 +776,11 @@ struct InliningPhase {
     JSNativeContextSpecialization native_context_specialization(
         &graph_reducer, data->jsgraph(), flags, data->native_context(),
         data->info()->dependencies(), temp_zone);
-    JSInliningHeuristic inlining(&graph_reducer,
-                                 data->info()->is_inlining_enabled()
-                                     ? JSInliningHeuristic::kGeneralInlining
-                                     : JSInliningHeuristic::kRestrictedInlining,
-                                 temp_zone, data->info(), data->jsgraph());
+    JSInliningHeuristic inlining(
+        &graph_reducer, data->info()->is_inlining_enabled()
+                            ? JSInliningHeuristic::kGeneralInlining
+                            : JSInliningHeuristic::kRestrictedInlining,
+        temp_zone, data->info(), data->jsgraph(), data->source_positions());
     JSIntrinsicLowering intrinsic_lowering(
         &graph_reducer, data->jsgraph(),
         data->info()->is_deoptimization_enabled()
@@ -967,6 +936,10 @@ struct EscapeAnalysisPhase {
                                          &escape_analysis, temp_zone);
     AddReducer(data, &graph_reducer, &escape_reducer);
     graph_reducer.ReduceGraph();
+    if (escape_reducer.compilation_failed()) {
+      data->set_compilation_failed();
+      return;
+    }
     escape_reducer.VerifyReplacement();
   }
 };
@@ -1075,7 +1048,8 @@ struct EffectControlLinearizationPhase {
     //   chains and lower them,
     // - get rid of the region markers,
     // - introduce effect phis and rewire effects to get SSA again.
-    EffectControlLinearizer linearizer(data->jsgraph(), schedule, temp_zone);
+    EffectControlLinearizer linearizer(data->jsgraph(), schedule, temp_zone,
+                                       data->source_positions());
     linearizer.Run();
   }
 };
@@ -1581,6 +1555,11 @@ bool PipelineImpl::CreateGraph() {
 
       if (FLAG_turbo_escape) {
         Run<EscapeAnalysisPhase>();
+        if (data->compilation_failed()) {
+          info()->AbortOptimization(kCyclicObjectStateDetectedInEscapeAnalysis);
+          data->EndPhaseKind();
+          return false;
+        }
         RunPrintAndVerify("Escape Analysed");
       }
     }

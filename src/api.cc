@@ -97,6 +97,15 @@ namespace v8 {
   ENTER_V8(isolate);                                                 \
   bool has_pending_exception = false
 
+#define PREPARE_FOR_DEBUG_INTERFACE_EXECUTION_WITH_ISOLATE(isolate, T)       \
+  if (IsExecutionTerminatingCheck(isolate)) {                                \
+    return MaybeLocal<T>();                                                  \
+  }                                                                          \
+  InternalEscapableScope handle_scope(isolate);                              \
+  CallDepthScope<false> call_depth_scope(isolate, v8::Local<v8::Context>()); \
+  ENTER_V8(isolate);                                                         \
+  bool has_pending_exception = false
+
 #define PREPARE_FOR_EXECUTION_WITH_CONTEXT(context, class_name, function_name, \
                                            bailout_value, HandleScopeClass,    \
                                            do_callback)                        \
@@ -559,6 +568,10 @@ StartupData SnapshotCreator::CreateBlob(
   }
   data->contexts_.Clear();
 
+#ifdef DEBUG
+  i::ExternalReferenceTable::instance(isolate)->ResetCount();
+#endif  // DEBUG
+
   i::StartupSerializer startup_serializer(isolate, function_code_handling);
   startup_serializer.SerializeStrongReferences();
 
@@ -572,6 +585,13 @@ StartupData SnapshotCreator::CreateBlob(
   }
 
   startup_serializer.SerializeWeakReferencesAndDeferred();
+
+#ifdef DEBUG
+  if (i::FLAG_external_reference_stats) {
+    i::ExternalReferenceTable::instance(isolate)->PrintCount();
+  }
+#endif  // DEBUG
+
   i::SnapshotData startup_snapshot(&startup_serializer);
   StartupData result =
       i::Snapshot::CreateSnapshotBlob(&startup_snapshot, &context_snapshots);
@@ -1240,7 +1260,6 @@ Local<FunctionTemplate> FunctionTemplate::NewWithFastHandler(
     experimental::FastAccessorBuilder* fast_handler, v8::Local<Value> data,
     v8::Local<Signature> signature, int length) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
-  DCHECK(!i_isolate->serializer_enabled());
   LOG_API(i_isolate, FunctionTemplate, NewWithFastHandler);
   ENTER_V8(i_isolate);
   return FunctionTemplateNew(i_isolate, callback, fast_handler, data, signature,
@@ -1251,7 +1270,6 @@ Local<FunctionTemplate> FunctionTemplate::NewWithCache(
     Isolate* isolate, FunctionCallback callback, Local<Private> cache_property,
     Local<Value> data, Local<Signature> signature, int length) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
-  DCHECK(!i_isolate->serializer_enabled());
   LOG_API(i_isolate, FunctionTemplate, NewWithFastHandler);
   ENTER_V8(i_isolate);
   return FunctionTemplateNew(i_isolate, callback, nullptr, data, signature,
@@ -6377,7 +6395,16 @@ MaybeLocal<v8::Object> FunctionTemplate::NewRemoteInstance() {
 bool FunctionTemplate::HasInstance(v8::Local<v8::Value> value) {
   auto self = Utils::OpenHandle(this);
   auto obj = Utils::OpenHandle(*value);
-  return obj->IsJSObject() && self->IsTemplateFor(i::JSObject::cast(*obj));
+  if (obj->IsJSObject() && self->IsTemplateFor(i::JSObject::cast(*obj))) {
+    return true;
+  }
+  if (obj->IsJSGlobalProxy()) {
+    // If it's a global proxy object, then test with the global object.
+    i::PrototypeIterator iter(i::JSObject::cast(*obj)->map());
+    if (iter.IsAtEnd()) return false;
+    return self->IsTemplateFor(iter.GetCurrent<i::JSGlobalObject>());
+  }
+  return false;
 }
 
 
@@ -8892,6 +8919,7 @@ int DebugInterface::Script::ColumnOffset() const {
 
 std::vector<int> DebugInterface::Script::LineEnds() const {
   i::Handle<i::Script> script = Utils::OpenHandle(this);
+  if (script->type() == i::Script::TYPE_WASM) return std::vector<int>();
   i::Isolate* isolate = script->GetIsolate();
   i::HandleScope scope(isolate);
   i::Script::InitLineEnds(script);
@@ -8955,6 +8983,10 @@ MaybeLocal<String> DebugInterface::Script::Source() const {
       handle_scope.CloseAndEscape(i::Handle<i::String>::cast(value)));
 }
 
+bool DebugInterface::Script::IsWasm() const {
+  return Utils::OpenHandle(this)->type() == i::Script::TYPE_WASM;
+}
+
 namespace {
 int GetSmiValue(i::Handle<i::FixedArray> array, int index) {
   return i::Smi::cast(array->get(index))->value();
@@ -8966,6 +8998,10 @@ bool DebugInterface::Script::GetPossibleBreakpoints(
     std::vector<Location>* locations) const {
   CHECK(!start.IsEmpty());
   i::Handle<i::Script> script = Utils::OpenHandle(this);
+  if (script->type() == i::Script::TYPE_WASM) {
+    // TODO(clemensh): Return the proper thing once we support wasm breakpoints.
+    return false;
+  }
 
   i::Script::InitLineEnds(script);
   CHECK(script->line_ends()->IsFixedArray());
@@ -9011,6 +9047,10 @@ bool DebugInterface::Script::GetPossibleBreakpoints(
 
 int DebugInterface::Script::GetSourcePosition(const Location& location) const {
   i::Handle<i::Script> script = Utils::OpenHandle(this);
+  if (script->type() == i::Script::TYPE_WASM) {
+    // TODO(clemensh): Return the proper thing for wasm.
+    return 0;
+  }
 
   int line = std::max(location.GetLineNumber() - script->line_offset(), 0);
   int column = location.GetColumnNumber();
@@ -9044,7 +9084,10 @@ MaybeLocal<DebugInterface::Script> DebugInterface::Script::Wrap(
     return MaybeLocal<Script>();
   }
   i::Handle<i::Script> script_obj = i::Handle<i::Script>::cast(script_value);
-  if (script_obj->type() != i::Script::TYPE_NORMAL) return MaybeLocal<Script>();
+  if (script_obj->type() != i::Script::TYPE_NORMAL &&
+      script_obj->type() != i::Script::TYPE_WASM) {
+    return MaybeLocal<Script>();
+  }
   return ToApiHandle<DebugInterface::Script>(
       handle_scope.CloseAndEscape(script_obj));
 }
@@ -9092,6 +9135,43 @@ void DebugInterface::GetLoadedScripts(
       }
     }
   }
+}
+
+std::pair<std::string, std::vector<std::tuple<uint32_t, int, int>>>
+DebugInterface::DisassembleWasmFunction(Isolate* v8_isolate,
+                                        Local<Object> v8_script,
+                                        int function_index) {
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
+  if (v8_script.IsEmpty()) return {};
+  i::Handle<i::Object> script_wrapper = Utils::OpenHandle(*v8_script);
+  if (!script_wrapper->IsJSValue()) return {};
+  i::Handle<i::Object> script_obj(
+      i::Handle<i::JSValue>::cast(script_wrapper)->value(), isolate);
+  if (!script_obj->IsScript()) return {};
+  i::Handle<i::Script> script = i::Handle<i::Script>::cast(script_obj);
+  if (script->type() != i::Script::TYPE_WASM) return {};
+  i::Handle<i::WasmCompiledModule> compiled_module(
+      i::WasmCompiledModule::cast(script->wasm_compiled_module()), isolate);
+  return i::wasm::DisassembleFunction(compiled_module, function_index);
+}
+
+MaybeLocal<UnboundScript> DebugInterface::CompileInspectorScript(
+    Isolate* v8_isolate, Local<String> source) {
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
+  PREPARE_FOR_DEBUG_INTERFACE_EXECUTION_WITH_ISOLATE(isolate, UnboundScript);
+  i::ScriptData* script_data = NULL;
+  i::Handle<i::String> str = Utils::OpenHandle(*source);
+  i::Handle<i::SharedFunctionInfo> result;
+  {
+    ScriptOriginOptions origin_options;
+    result = i::Compiler::GetSharedFunctionInfoForScript(
+        str, i::Handle<i::Object>(), 0, 0, origin_options,
+        i::Handle<i::Object>(), isolate->native_context(), NULL, &script_data,
+        ScriptCompiler::kNoCompileOptions, i::INSPECTOR_CODE, false);
+    has_pending_exception = result.is_null();
+    RETURN_ON_FAILED_EXECUTION(UnboundScript);
+  }
+  RETURN_ESCAPED(ToApiHandle<UnboundScript>(result));
 }
 
 Local<String> CpuProfileNode::GetFunctionName() const {

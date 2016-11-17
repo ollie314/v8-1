@@ -76,10 +76,16 @@ void Interpreter::Initialize() {
 #define GENERATE_CODE(Name, ...)                                               \
   {                                                                            \
     if (Bytecodes::BytecodeHasHandler(Bytecode::k##Name, operand_scale)) {     \
-      InterpreterAssembler assembler(isolate_, &zone, Bytecode::k##Name,       \
+      InterpreterDispatchDescriptor descriptor(isolate_);                      \
+      compiler::CodeAssemblerState state(                                      \
+          isolate_, &zone, descriptor,                                         \
+          Code::ComputeFlags(Code::BYTECODE_HANDLER),                          \
+          Bytecodes::ToString(Bytecode::k##Name),                              \
+          Bytecodes::ReturnCount(Bytecode::k##Name));                          \
+      InterpreterAssembler assembler(&state, Bytecode::k##Name,                \
                                      operand_scale);                           \
       Do##Name(&assembler);                                                    \
-      Handle<Code> code = assembler.GenerateCode();                            \
+      Handle<Code> code = compiler::CodeAssembler::GenerateCode(&state);       \
       size_t index = GetDispatchTableIndex(Bytecode::k##Name, operand_scale);  \
       dispatch_table_[index] = code->entry();                                  \
       TraceCodegen(code);                                                      \
@@ -419,21 +425,23 @@ void Interpreter::DoMov(InterpreterAssembler* assembler) {
   __ Dispatch();
 }
 
-Node* Interpreter::BuildLoadGlobal(Callable ic, Node* context,
+Node* Interpreter::BuildLoadGlobal(Callable ic, Node* context, Node* name_index,
                                    Node* feedback_slot,
                                    InterpreterAssembler* assembler) {
   typedef LoadGlobalWithVectorDescriptor Descriptor;
 
   // Load the global via the LoadGlobalIC.
   Node* code_target = __ HeapConstant(ic.code());
+  Node* name = __ LoadConstantPoolEntry(name_index);
   Node* smi_slot = __ SmiTag(feedback_slot);
   Node* type_feedback_vector = __ LoadTypeFeedbackVector();
   return __ CallStub(ic.descriptor(), code_target, context,
+                     Arg(Descriptor::kName, name),
                      Arg(Descriptor::kSlot, smi_slot),
                      Arg(Descriptor::kVector, type_feedback_vector));
 }
 
-// LdaGlobal <slot>
+// LdaGlobal <name_index> <slot>
 //
 // Load the global with name in constant pool entry <name_index> into the
 // accumulator using FeedBackVector slot <slot> outside of a typeof.
@@ -443,13 +451,14 @@ void Interpreter::DoLdaGlobal(InterpreterAssembler* assembler) {
 
   Node* context = __ GetContext();
 
-  Node* raw_slot = __ BytecodeOperandIdx(0);
-  Node* result = BuildLoadGlobal(ic, context, raw_slot, assembler);
+  Node* name_index = __ BytecodeOperandIdx(0);
+  Node* raw_slot = __ BytecodeOperandIdx(1);
+  Node* result = BuildLoadGlobal(ic, context, name_index, raw_slot, assembler);
   __ SetAccumulator(result);
   __ Dispatch();
 }
 
-// LdaGlobalInsideTypeof <slot>
+// LdaGlobalInsideTypeof <name_index> <slot>
 //
 // Load the global with name in constant pool entry <name_index> into the
 // accumulator using FeedBackVector slot <slot> inside of a typeof.
@@ -459,8 +468,9 @@ void Interpreter::DoLdaGlobalInsideTypeof(InterpreterAssembler* assembler) {
 
   Node* context = __ GetContext();
 
-  Node* raw_slot = __ BytecodeOperandIdx(0);
-  Node* result = BuildLoadGlobal(ic, context, raw_slot, assembler);
+  Node* name_index = __ BytecodeOperandIdx(0);
+  Node* raw_slot = __ BytecodeOperandIdx(1);
+  Node* result = BuildLoadGlobal(ic, context, name_index, raw_slot, assembler);
   __ SetAccumulator(result);
   __ Dispatch();
 }
@@ -650,7 +660,8 @@ void Interpreter::DoLdaLookupGlobalSlot(Runtime::FunctionId function_id,
         isolate_, function_id == Runtime::kLoadLookupSlotInsideTypeof
                       ? INSIDE_TYPEOF
                       : NOT_INSIDE_TYPEOF);
-    Node* result = BuildLoadGlobal(ic, context, feedback_slot, assembler);
+    Node* result =
+        BuildLoadGlobal(ic, context, name_index, feedback_slot, assembler);
     __ SetAccumulator(result);
     __ Dispatch();
   }
@@ -2369,6 +2380,22 @@ void Interpreter::DoStackCheck(InterpreterAssembler* assembler) {
     __ CallRuntime(Runtime::kStackGuard, context);
     __ Dispatch();
   }
+}
+
+// SetPendingMessage
+//
+// Sets the pending message to the value in the accumulator, and returns the
+// previous pending message in the accumulator.
+void Interpreter::DoSetPendingMessage(InterpreterAssembler* assembler) {
+  Node* pending_message = __ ExternalConstant(
+      ExternalReference::address_of_pending_message_obj(isolate_));
+  Node* previous_message =
+      __ Load(MachineType::TaggedPointer(), pending_message);
+  Node* new_message = __ GetAccumulator();
+  __ StoreNoWriteBarrier(MachineRepresentation::kTaggedPointer, pending_message,
+                         new_message);
+  __ SetAccumulator(previous_message);
+  __ Dispatch();
 }
 
 // Throw

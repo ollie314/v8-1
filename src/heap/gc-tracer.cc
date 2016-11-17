@@ -15,10 +15,8 @@ static size_t CountTotalHolesSize(Heap* heap) {
   size_t holes_size = 0;
   OldSpaces spaces(heap);
   for (OldSpace* space = spaces.next(); space != NULL; space = spaces.next()) {
-    DCHECK_GE(space->Waste(), 0);
-    DCHECK_GE(space->Available(), 0);
     DCHECK_GE(holes_size + space->Waste() + space->Available(), holes_size);
-    holes_size += static_cast<size_t>(space->Waste() + space->Available());
+    holes_size += space->Waste() + space->Available();
   }
   return holes_size;
 }
@@ -176,8 +174,7 @@ void GCTracer::Start(GarbageCollector collector,
   current_.start_object_size = heap_->SizeOfObjects();
   current_.start_memory_size = heap_->memory_allocator()->Size();
   current_.start_holes_size = CountTotalHolesSize(heap_);
-  current_.new_space_object_size =
-      heap_->new_space()->top() - heap_->new_space()->bottom();
+  current_.new_space_object_size = heap_->new_space()->Size();
 
   current_.incremental_marking_bytes = 0;
   current_.incremental_marking_duration = 0;
@@ -469,9 +466,9 @@ void GCTracer::PrintNVP() const {
           " "
           "allocated=%" PRIuS
           " "
-          "promoted=%" V8PRIdPTR
+          "promoted=%" PRIuS
           " "
-          "semi_space_copied=%" V8PRIdPTR
+          "semi_space_copied=%" PRIuS
           " "
           "nodes_died_in_new=%d "
           "nodes_copied_in_new=%d "
@@ -591,9 +588,9 @@ void GCTracer::PrintNVP() const {
           " "
           "allocated=%" PRIuS
           " "
-          "promoted=%" V8PRIdPTR
+          "promoted=%" PRIuS
           " "
-          "semi_space_copied=%" V8PRIdPTR
+          "semi_space_copied=%" PRIuS
           " "
           "nodes_died_in_new=%d "
           "nodes_copied_in_new=%d "

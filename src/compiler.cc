@@ -640,8 +640,10 @@ MaybeHandle<Code> GetOptimizedCode(Handle<JSFunction> function,
   }
 
   // Reset profiler ticks, function is no longer considered hot.
-  if (shared->is_compiled()) {
+  if (shared->HasBaselineCode()) {
     shared->code()->set_profiler_ticks(0);
+  } else if (shared->HasBytecodeArray()) {
+    shared->set_profiler_ticks(0);
   }
 
   VMState<COMPILER> state(isolate);
@@ -734,7 +736,13 @@ CompilationJob::Status FinalizeOptimizedCompilationJob(CompilationJob* job) {
                "V8.RecompileSynchronous");
 
   Handle<SharedFunctionInfo> shared = info->shared_info();
-  shared->code()->set_profiler_ticks(0);
+
+  // Reset profiler ticks, function is no longer considered hot.
+  if (shared->HasBaselineCode()) {
+    shared->code()->set_profiler_ticks(0);
+  } else if (shared->HasBytecodeArray()) {
+    shared->set_profiler_ticks(0);
+  }
 
   DCHECK(!shared->HasDebugInfo());
 
@@ -1120,10 +1128,6 @@ bool Compiler::CompileOptimized(Handle<JSFunction> function,
   return true;
 }
 
-bool Compiler::CompileDebugCode(Handle<JSFunction> function) {
-  return CompileDebugCode(handle(function->shared()));
-}
-
 bool Compiler::CompileDebugCode(Handle<SharedFunctionInfo> shared) {
   Isolate* isolate = shared->GetIsolate();
   DCHECK(AllowCompilation::IsAllowed(isolate));
@@ -1280,6 +1284,7 @@ MaybeHandle<JSFunction> Compiler::GetFunctionFromEval(
   Handle<Script> script;
   if (!maybe_shared_info.ToHandle(&shared_info)) {
     script = isolate->factory()->NewScript(source);
+    if (FLAG_trace_deopt) Script::InitLineEnds(script);
     if (!script_name.is_null()) {
       script->set_name(*script_name);
       script->set_line_offset(line_offset);
@@ -1439,11 +1444,15 @@ Handle<SharedFunctionInfo> Compiler::GetSharedFunctionInfoForScript(
 
     // Create a script object describing the script to be compiled.
     Handle<Script> script = isolate->factory()->NewScript(source);
+    if (FLAG_trace_deopt) Script::InitLineEnds(script);
     if (natives == NATIVES_CODE) {
       script->set_type(Script::TYPE_NATIVE);
       script->set_hide_source(true);
     } else if (natives == EXTENSION_CODE) {
       script->set_type(Script::TYPE_EXTENSION);
+      script->set_hide_source(true);
+    } else if (natives == INSPECTOR_CODE) {
+      script->set_type(Script::TYPE_INSPECTOR);
       script->set_hide_source(true);
     }
     if (!script_name.is_null()) {

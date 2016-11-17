@@ -22,6 +22,7 @@ namespace internal {
 class WasmCompiledModule;
 class WasmDebugInfo;
 class WasmModuleObject;
+class WasmInstanceObject;
 
 namespace compiler {
 class CallDescriptor;
@@ -255,11 +256,9 @@ struct V8_EXPORT_PRIVATE WasmModule {
   }
 
   // Creates a new instantiation of the module in the given isolate.
-  static MaybeHandle<JSObject> Instantiate(Isolate* isolate,
-                                           ErrorThrower* thrower,
-                                           Handle<JSObject> wasm_module,
-                                           Handle<JSReceiver> ffi,
-                                           Handle<JSArrayBuffer> memory);
+  static MaybeHandle<WasmInstanceObject> Instantiate(
+      Isolate* isolate, ErrorThrower* thrower, Handle<JSObject> wasm_module,
+      Handle<JSReceiver> ffi, Handle<JSArrayBuffer> memory);
 
   MaybeHandle<WasmCompiledModule> CompileFunctions(
       Isolate* isolate, Handle<Managed<WasmModule>> module_wrapper,
@@ -353,17 +352,12 @@ std::ostream& operator<<(std::ostream& os, const WasmModule& module);
 std::ostream& operator<<(std::ostream& os, const WasmFunction& function);
 std::ostream& operator<<(std::ostream& os, const WasmFunctionName& name);
 
-// Extract a function name from the given wasm object.
-// Returns "<WASM UNNAMED>" if the function is unnamed or the name is not a
-// valid UTF-8 string.
-Handle<String> GetWasmFunctionName(Isolate* isolate, Handle<Object> wasm,
+// Extract a function name from the given wasm instance.
+// Returns "<WASM UNNAMED>" if no instance is passed, the function is unnamed or
+// the name is not a valid UTF-8 string.
+// TODO(5620): Refactor once we always get a wasm instance.
+Handle<String> GetWasmFunctionName(Isolate* isolate, Handle<Object> instance,
                                    uint32_t func_index);
-
-// Extract a function name from the given wasm object.
-// Returns a null handle if the function is unnamed or the name is not a valid
-// UTF-8 string.
-Handle<Object> GetWasmFunctionNameOrNull(Isolate* isolate, Handle<Object> wasm,
-                                         uint32_t func_index);
 
 // Return the binary source bytes of a wasm module.
 Handle<SeqOneByteString> GetWasmBytes(Handle<JSObject> wasm);
@@ -374,13 +368,6 @@ Handle<WasmDebugInfo> GetDebugInfo(Handle<JSObject> wasm);
 
 // Return the number of functions in the given wasm object.
 int GetNumberOfFunctions(Handle<JSObject> wasm);
-
-// Create and export JSFunction
-Handle<JSFunction> WrapExportCodeAsJSFunction(Isolate* isolate,
-                                              Handle<Code> export_code,
-                                              Handle<String> name,
-                                              FunctionSig* sig, int func_index,
-                                              Handle<JSObject> instance);
 
 // Check whether the given object represents a WebAssembly.Instance instance.
 // This checks the number and type of internal fields, so it's not 100 percent
@@ -395,8 +382,17 @@ WasmCompiledModule* GetCompiledModule(Object* wasm_instance);
 // Check whether the wasm module was generated from asm.js code.
 bool WasmIsAsmJs(Object* instance, Isolate* isolate);
 
-// Get the script for the asm.js origin of the wasm module.
-Handle<Script> GetAsmWasmScript(Handle<JSObject> instance);
+// Get the script of the wasm module. If the origin of the module is asm.js, the
+// returned Script will be a JavaScript Script of Script::TYPE_NORMAL, otherwise
+// it's of type TYPE_WASM.
+Handle<Script> GetScript(Handle<JSObject> instance);
+
+// Compute the disassembly of a wasm function.
+// Returns the disassembly string and a list of <byte_offset, line, column>
+// entries, mapping wasm byte offsets to line and column in the disassembly.
+// The list is guaranteed to be ordered by the byte_offset.
+std::pair<std::string, std::vector<std::tuple<uint32_t, int, int>>>
+DisassembleFunction(Handle<WasmCompiledModule> compiled_module, int func_index);
 
 // Get the asm.js source position for the given byte offset in the given
 // function.
@@ -413,31 +409,40 @@ V8_EXPORT_PRIVATE bool ValidateModuleBytes(Isolate* isolate, const byte* start,
                                            ErrorThrower* thrower,
                                            ModuleOrigin origin);
 
-// Get the number of imported functions for a WASM instance.
-int GetNumImportedFunctions(Handle<JSObject> instance);
+// Get the offset of the code of a function within a module.
+int GetFunctionCodeOffset(Handle<WasmCompiledModule> compiled_module,
+                          int func_index);
+
+// Translate from byte offset in the module to function number and byte offset
+// within that function, encoded as line and column in the position info.
+bool GetPositionInfo(Handle<WasmCompiledModule> compiled_module,
+                     uint32_t position, Script::PositionInfo* info);
 
 // Assumed to be called with a code object associated to a wasm module instance.
 // Intended to be called from runtime functions.
 // Returns nullptr on failing to get owning instance.
-Object* GetOwningWasmInstance(Code* code);
+WasmInstanceObject* GetOwningWasmInstance(Code* code);
 
-MaybeHandle<JSArrayBuffer> GetInstanceMemory(Isolate* isolate,
-                                             Handle<JSObject> instance);
+MaybeHandle<JSArrayBuffer> GetInstanceMemory(
+    Isolate* isolate, Handle<WasmInstanceObject> instance);
 
-int32_t GetInstanceMemorySize(Isolate* isolate, Handle<JSObject> instance);
+int32_t GetInstanceMemorySize(Isolate* isolate,
+                              Handle<WasmInstanceObject> instance);
 
-int32_t GrowInstanceMemory(Isolate* isolate, Handle<JSObject> instance,
-                           uint32_t pages);
+int32_t GrowInstanceMemory(Isolate* isolate,
+                           Handle<WasmInstanceObject> instance, uint32_t pages);
 
 void UpdateDispatchTables(Isolate* isolate, Handle<FixedArray> dispatch_tables,
                           int index, Handle<JSFunction> js_function);
 
 namespace testing {
 
-void ValidateInstancesChain(Isolate* isolate, Handle<JSObject> wasm_module,
+void ValidateInstancesChain(Isolate* isolate,
+                            Handle<WasmModuleObject> module_obj,
                             int instance_count);
-void ValidateModuleState(Isolate* isolate, Handle<JSObject> wasm_module);
-void ValidateOrphanedInstance(Isolate* isolate, Handle<JSObject> instance);
+void ValidateModuleState(Isolate* isolate, Handle<WasmModuleObject> module_obj);
+void ValidateOrphanedInstance(Isolate* isolate,
+                              Handle<WasmInstanceObject> instance);
 
 }  // namespace testing
 }  // namespace wasm

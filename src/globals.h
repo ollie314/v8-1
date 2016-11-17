@@ -591,7 +591,12 @@ enum VisitMode {
 };
 
 // Flag indicating whether code is built into the VM (one of the natives files).
-enum NativesFlag { NOT_NATIVES_CODE, EXTENSION_CODE, NATIVES_CODE };
+enum NativesFlag {
+  NOT_NATIVES_CODE,
+  EXTENSION_CODE,
+  NATIVES_CODE,
+  INSPECTOR_CODE
+};
 
 // JavaScript defines two kinds of 'nil'.
 enum NilValue { kNullValue, kUndefinedValue };
@@ -1279,8 +1284,27 @@ inline std::ostream& operator<<(std::ostream& os, UnicodeEncoding encoding) {
   return os;
 }
 
+enum class IterationKind { kKeys, kValues, kEntries };
+
+inline std::ostream& operator<<(std::ostream& os, IterationKind kind) {
+  switch (kind) {
+    case IterationKind::kKeys:
+      return os << "IterationKind::kKeys";
+    case IterationKind::kValues:
+      return os << "IterationKind::kValues";
+    case IterationKind::kEntries:
+      return os << "IterationKind::kEntries";
+  }
+  UNREACHABLE();
+  return os;
+}
+
 }  // namespace internal
 }  // namespace v8
+
+// Used by js-builtin-reducer to identify whether ReduceArrayIterator() is
+// reducing a JSArray method, or a JSTypedArray method.
+enum class ArrayIteratorKind { kArray, kTypedArray };
 
 namespace i = v8::internal;
 

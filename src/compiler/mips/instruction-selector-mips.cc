@@ -31,6 +31,39 @@ class MipsOperandGenerator final : public OperandGenerator {
     return UseRegister(node);
   }
 
+  // Use the zero register if the node has the immediate value zero, otherwise
+  // assign a register.
+  InstructionOperand UseRegisterOrImmediateZero(Node* node) {
+    if ((IsIntegerConstant(node) && (GetIntegerConstantValue(node) == 0)) ||
+        (IsFloatConstant(node) &&
+         (bit_cast<int64_t>(GetFloatConstantValue(node)) == V8_INT64_C(0)))) {
+      return UseImmediate(node);
+    }
+    return UseRegister(node);
+  }
+
+  bool IsIntegerConstant(Node* node) {
+    return (node->opcode() == IrOpcode::kInt32Constant);
+  }
+
+  int64_t GetIntegerConstantValue(Node* node) {
+    DCHECK(node->opcode() == IrOpcode::kInt32Constant);
+    return OpParameter<int32_t>(node);
+  }
+
+  bool IsFloatConstant(Node* node) {
+    return (node->opcode() == IrOpcode::kFloat32Constant) ||
+           (node->opcode() == IrOpcode::kFloat64Constant);
+  }
+
+  double GetFloatConstantValue(Node* node) {
+    if (node->opcode() == IrOpcode::kFloat32Constant) {
+      return OpParameter<float>(node);
+    }
+    DCHECK_EQ(IrOpcode::kFloat64Constant, node->opcode());
+    return OpParameter<double>(node);
+  }
+
   bool CanBeImmediate(Node* node, InstructionCode opcode) {
     Int32Matcher m(node);
     if (!m.HasValue()) return false;
@@ -43,15 +76,37 @@ class MipsOperandGenerator final : public OperandGenerator {
       case kMipsAdd:
       case kMipsAnd:
       case kMipsOr:
+      case kMipsTst:
       case kMipsSub:
       case kMipsXor:
         return is_uint16(value);
+      case kMipsLb:
+      case kMipsLbu:
+      case kMipsSb:
+      case kMipsLh:
+      case kMipsLhu:
+      case kMipsSh:
+      case kMipsLw:
+      case kMipsSw:
+      case kMipsLwc1:
+      case kMipsSwc1:
       case kMipsLdc1:
       case kMipsSdc1:
+      case kCheckedLoadInt8:
+      case kCheckedLoadUint8:
+      case kCheckedLoadInt16:
+      case kCheckedLoadUint16:
+      case kCheckedLoadWord32:
+      case kCheckedStoreWord8:
+      case kCheckedStoreWord16:
+      case kCheckedStoreWord32:
+      case kCheckedLoadFloat32:
       case kCheckedLoadFloat64:
+      case kCheckedStoreFloat32:
       case kCheckedStoreFloat64:
-        return std::numeric_limits<int16_t>::min() <= (value + kIntSize) &&
-               std::numeric_limits<int16_t>::max() >= (value + kIntSize);
+        // true even for 32b values, offsets > 16b
+        // are handled in assembler-mips.cc
+        return is_int32(value);
       default:
         return is_int16(value);
     }
@@ -300,14 +355,15 @@ void InstructionSelector::VisitStore(Node* node) {
 
     if (g.CanBeImmediate(index, opcode)) {
       Emit(opcode | AddressingModeField::encode(kMode_MRI), g.NoOutput(),
-           g.UseRegister(base), g.UseImmediate(index), g.UseRegister(value));
+           g.UseRegister(base), g.UseImmediate(index),
+           g.UseRegisterOrImmediateZero(value));
     } else {
       InstructionOperand addr_reg = g.TempRegister();
       Emit(kMipsAdd | AddressingModeField::encode(kMode_None), addr_reg,
            g.UseRegister(index), g.UseRegister(base));
       // Emit desired store opcode, using temp addr_reg.
       Emit(opcode | AddressingModeField::encode(kMode_MRI), g.NoOutput(),
-           addr_reg, g.TempImmediate(0), g.UseRegister(value));
+           addr_reg, g.TempImmediate(0), g.UseRegisterOrImmediateZero(value));
     }
   }
 }
@@ -1232,14 +1288,15 @@ void InstructionSelector::VisitUnalignedStore(Node* node) {
 
   if (g.CanBeImmediate(index, opcode)) {
     Emit(opcode | AddressingModeField::encode(kMode_MRI), g.NoOutput(),
-         g.UseRegister(base), g.UseImmediate(index), g.UseRegister(value));
+         g.UseRegister(base), g.UseImmediate(index),
+         g.UseRegisterOrImmediateZero(value));
   } else {
     InstructionOperand addr_reg = g.TempRegister();
     Emit(kMipsAdd | AddressingModeField::encode(kMode_None), addr_reg,
          g.UseRegister(index), g.UseRegister(base));
     // Emit desired store opcode, using temp addr_reg.
     Emit(opcode | AddressingModeField::encode(kMode_MRI), g.NoOutput(),
-         addr_reg, g.TempImmediate(0), g.UseRegister(value));
+         addr_reg, g.TempImmediate(0), g.UseRegisterOrImmediateZero(value));
   }
 }
 
@@ -1331,7 +1388,7 @@ void InstructionSelector::VisitCheckedStore(Node* node) {
                                           : g.UseRegister(length);
 
   Emit(opcode | AddressingModeField::encode(kMode_MRI), g.NoOutput(),
-       offset_operand, length_operand, g.UseRegister(value),
+       offset_operand, length_operand, g.UseRegisterOrImmediateZero(value),
        g.UseRegister(buffer));
 }
 
@@ -1396,51 +1453,61 @@ void VisitWordCompare(InstructionSelector* selector, Node* node,
 
   // Match immediates on left or right side of comparison.
   if (g.CanBeImmediate(right, opcode)) {
-    switch (cont->condition()) {
-      case kEqual:
-      case kNotEqual:
-        if (cont->IsSet()) {
+    if (opcode == kMipsTst) {
+      VisitCompare(selector, opcode, g.UseRegister(left), g.UseImmediate(right),
+                   cont);
+    } else {
+      switch (cont->condition()) {
+        case kEqual:
+        case kNotEqual:
+          if (cont->IsSet()) {
+            VisitCompare(selector, opcode, g.UseRegister(left),
+                         g.UseImmediate(right), cont);
+          } else {
+            VisitCompare(selector, opcode, g.UseRegister(left),
+                         g.UseRegister(right), cont);
+          }
+          break;
+        case kSignedLessThan:
+        case kSignedGreaterThanOrEqual:
+        case kUnsignedLessThan:
+        case kUnsignedGreaterThanOrEqual:
           VisitCompare(selector, opcode, g.UseRegister(left),
                        g.UseImmediate(right), cont);
-        } else {
+          break;
+        default:
           VisitCompare(selector, opcode, g.UseRegister(left),
                        g.UseRegister(right), cont);
-        }
-        break;
-      case kSignedLessThan:
-      case kSignedGreaterThanOrEqual:
-      case kUnsignedLessThan:
-      case kUnsignedGreaterThanOrEqual:
-        VisitCompare(selector, opcode, g.UseRegister(left),
-                     g.UseImmediate(right), cont);
-        break;
-      default:
-        VisitCompare(selector, opcode, g.UseRegister(left),
-                     g.UseRegister(right), cont);
+      }
     }
   } else if (g.CanBeImmediate(left, opcode)) {
     if (!commutative) cont->Commute();
-    switch (cont->condition()) {
-      case kEqual:
-      case kNotEqual:
-        if (cont->IsSet()) {
+    if (opcode == kMipsTst) {
+      VisitCompare(selector, opcode, g.UseRegister(right), g.UseImmediate(left),
+                   cont);
+    } else {
+      switch (cont->condition()) {
+        case kEqual:
+        case kNotEqual:
+          if (cont->IsSet()) {
+            VisitCompare(selector, opcode, g.UseRegister(right),
+                         g.UseImmediate(left), cont);
+          } else {
+            VisitCompare(selector, opcode, g.UseRegister(right),
+                         g.UseRegister(left), cont);
+          }
+          break;
+        case kSignedLessThan:
+        case kSignedGreaterThanOrEqual:
+        case kUnsignedLessThan:
+        case kUnsignedGreaterThanOrEqual:
           VisitCompare(selector, opcode, g.UseRegister(right),
                        g.UseImmediate(left), cont);
-        } else {
+          break;
+        default:
           VisitCompare(selector, opcode, g.UseRegister(right),
                        g.UseRegister(left), cont);
-        }
-        break;
-      case kSignedLessThan:
-      case kSignedGreaterThanOrEqual:
-      case kUnsignedLessThan:
-      case kUnsignedGreaterThanOrEqual:
-        VisitCompare(selector, opcode, g.UseRegister(right),
-                     g.UseImmediate(left), cont);
-        break;
-      default:
-        VisitCompare(selector, opcode, g.UseRegister(right),
-                     g.UseRegister(left), cont);
+      }
     }
   } else {
     VisitCompare(selector, opcode, g.UseRegister(left), g.UseRegister(right),
@@ -1765,6 +1832,7 @@ void InstructionSelector::VisitAtomicLoad(Node* node) {
       UNREACHABLE();
       return;
   }
+
   if (g.CanBeImmediate(index, opcode)) {
     Emit(opcode | AddressingModeField::encode(kMode_MRI),
          g.DefineAsRegister(node), g.UseRegister(base), g.UseImmediate(index));
@@ -1802,14 +1870,15 @@ void InstructionSelector::VisitAtomicStore(Node* node) {
 
   if (g.CanBeImmediate(index, opcode)) {
     Emit(opcode | AddressingModeField::encode(kMode_MRI), g.NoOutput(),
-         g.UseRegister(base), g.UseImmediate(index), g.UseRegister(value));
+         g.UseRegister(base), g.UseImmediate(index),
+         g.UseRegisterOrImmediateZero(value));
   } else {
     InstructionOperand addr_reg = g.TempRegister();
     Emit(kMipsAdd | AddressingModeField::encode(kMode_None), addr_reg,
          g.UseRegister(index), g.UseRegister(base));
     // Emit desired store opcode, using temp addr_reg.
     Emit(opcode | AddressingModeField::encode(kMode_MRI), g.NoOutput(),
-         addr_reg, g.TempImmediate(0), g.UseRegister(value));
+         addr_reg, g.TempImmediate(0), g.UseRegisterOrImmediateZero(value));
   }
 }
 

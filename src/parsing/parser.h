@@ -102,8 +102,6 @@ class ParseData {
   FunctionEntry GetFunctionEntry(int start);
   int FunctionCount();
 
-  bool HasError();
-
   unsigned* Data() {  // Writable data as unsigned int array.
     return reinterpret_cast<unsigned*>(const_cast<byte*>(script_data_->data()));
   }
@@ -203,6 +201,8 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
     cached_parse_data_ = NULL;
   }
 
+  static bool const IsPreParser() { return false; }
+
   // Parses the source code represented by the compilation info and sets its
   // function literal.  Returns false (and deallocates any allocated AST
   // nodes) if parsing failed.
@@ -290,11 +290,11 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
     return compile_options_;
   }
   bool consume_cached_parse_data() const {
-    return allow_lazy() &&
+    return allow_lazy_ &&
            compile_options_ == ScriptCompiler::kConsumeParserCache;
   }
   bool produce_cached_parse_data() const {
-    return allow_lazy() &&
+    return allow_lazy_ &&
            compile_options_ == ScriptCompiler::kProduceParserCache;
   }
 
@@ -535,11 +535,6 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
       int* function_length, bool* has_duplicate_parameters,
       int* materialized_literal_count, int* expected_property_count,
       bool is_inner_function, bool may_abort, bool* ok);
-
-  PreParser::PreParseResult ParseFunctionWithPreParser(FunctionKind kind,
-                                                       DeclarationScope* scope,
-                                                       bool is_inner_function,
-                                                       bool may_abort);
 
   Block* BuildParameterInitializationBlock(
       const ParserFormalParameters& parameters, bool* ok);
@@ -1150,8 +1145,7 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   // parsing.
   int use_counts_[v8::Isolate::kUseCounterFeatureCount];
   int total_preparse_skipped_;
-
-  bool parsing_on_main_thread_;
+  bool allow_lazy_;
   ParserLogger* log_;
 };
 

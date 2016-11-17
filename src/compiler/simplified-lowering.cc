@@ -11,6 +11,7 @@
 #include "src/code-factory.h"
 #include "src/compiler/access-builder.h"
 #include "src/compiler/common-operator.h"
+#include "src/compiler/compiler-source-position-table.h"
 #include "src/compiler/diamond.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/node-matchers.h"
@@ -19,7 +20,6 @@
 #include "src/compiler/operator-properties.h"
 #include "src/compiler/representation-change.h"
 #include "src/compiler/simplified-operator.h"
-#include "src/compiler/source-position.h"
 #include "src/compiler/type-cache.h"
 #include "src/conversions-inl.h"
 #include "src/objects.h"
@@ -1030,6 +1030,8 @@ class RepresentationSelector {
                      MachineRepresentation::kWord32 ||
                  machine_type.semantic() == MachineSemantic::kInt32 ||
                  machine_type.semantic() == MachineSemantic::kUint32);
+          DCHECK(machine_type.representation() != MachineRepresentation::kBit ||
+                 input_type->Is(Type::Boolean()));
           (*types)[i] = machine_type;
         }
       }
@@ -2464,8 +2466,7 @@ class RepresentationSelector {
         return;
       }
       case IrOpcode::kCheckTaggedHole: {
-        VisitUnop(node, UseInfo::AnyTagged(),
-                  MachineRepresentation::kTaggedPointer);
+        VisitUnop(node, UseInfo::AnyTagged(), MachineRepresentation::kTagged);
         return;
       }
       case IrOpcode::kConvertTaggedHoleToUndefined: {

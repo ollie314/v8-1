@@ -173,11 +173,14 @@ TEST(ScanHTMLEndComments) {
     i::Zone zone(CcTest::i_isolate()->allocator(), ZONE_NAME);
     i::AstValueFactory ast_value_factory(
         &zone, CcTest::i_isolate()->heap()->HashSeed());
-    i::PreParser preparser(&zone, &scanner, &ast_value_factory, stack_limit);
-    preparser.set_allow_lazy(true);
+    i::PendingCompilationErrorHandler pending_error_handler;
+    i::PreParser preparser(
+        &zone, &scanner, stack_limit, &ast_value_factory,
+        &pending_error_handler,
+        CcTest::i_isolate()->counters()->runtime_call_stats());
     i::PreParser::PreParseResult result = preparser.PreParseProgram();
     CHECK_EQ(i::PreParser::kPreParseSuccess, result);
-    CHECK(!preparser.logger()->has_error());
+    CHECK(!pending_error_handler.has_pending_error());
   }
 
   for (int i = 0; fail_tests[i]; i++) {
@@ -188,12 +191,15 @@ TEST(ScanHTMLEndComments) {
     i::Zone zone(CcTest::i_isolate()->allocator(), ZONE_NAME);
     i::AstValueFactory ast_value_factory(
         &zone, CcTest::i_isolate()->heap()->HashSeed());
-    i::PreParser preparser(&zone, &scanner, &ast_value_factory, stack_limit);
-    preparser.set_allow_lazy(true);
+    i::PendingCompilationErrorHandler pending_error_handler;
+    i::PreParser preparser(
+        &zone, &scanner, stack_limit, &ast_value_factory,
+        &pending_error_handler,
+        CcTest::i_isolate()->counters()->runtime_call_stats());
     i::PreParser::PreParseResult result = preparser.PreParseProgram();
     // Even in the case of a syntax error, kPreParseSuccess is returned.
     CHECK_EQ(i::PreParser::kPreParseSuccess, result);
-    CHECK(preparser.logger()->has_error());
+    CHECK(pending_error_handler.has_pending_error());
   }
 }
 
@@ -360,12 +366,15 @@ TEST(StandAlonePreParser) {
     i::Zone zone(CcTest::i_isolate()->allocator(), ZONE_NAME);
     i::AstValueFactory ast_value_factory(
         &zone, CcTest::i_isolate()->heap()->HashSeed());
-    i::PreParser preparser(&zone, &scanner, &ast_value_factory, stack_limit);
-    preparser.set_allow_lazy(true);
+    i::PendingCompilationErrorHandler pending_error_handler;
+    i::PreParser preparser(
+        &zone, &scanner, stack_limit, &ast_value_factory,
+        &pending_error_handler,
+        CcTest::i_isolate()->counters()->runtime_call_stats());
     preparser.set_allow_natives(true);
     i::PreParser::PreParseResult result = preparser.PreParseProgram();
     CHECK_EQ(i::PreParser::kPreParseSuccess, result);
-    CHECK(!preparser.logger()->has_error());
+    CHECK(!pending_error_handler.has_pending_error());
   }
 }
 
@@ -373,6 +382,7 @@ TEST(StandAlonePreParser) {
 TEST(StandAlonePreParserNoNatives) {
   v8::V8::Initialize();
 
+  i::Isolate* isolate = CcTest::i_isolate();
   CcTest::i_isolate()->stack_guard()->SetStackLimit(
       i::GetCurrentStackPosition() - 128 * 1024);
 
@@ -382,21 +392,23 @@ TEST(StandAlonePreParserNoNatives) {
       NULL
   };
 
-  uintptr_t stack_limit = CcTest::i_isolate()->stack_guard()->real_climit();
+  uintptr_t stack_limit = isolate->stack_guard()->real_climit();
   for (int i = 0; programs[i]; i++) {
     auto stream = i::ScannerStream::ForTesting(programs[i]);
-    i::Scanner scanner(CcTest::i_isolate()->unicode_cache());
+    i::Scanner scanner(isolate->unicode_cache());
     scanner.Initialize(stream.get());
 
     // Preparser defaults to disallowing natives syntax.
     i::Zone zone(CcTest::i_isolate()->allocator(), ZONE_NAME);
     i::AstValueFactory ast_value_factory(
         &zone, CcTest::i_isolate()->heap()->HashSeed());
-    i::PreParser preparser(&zone, &scanner, &ast_value_factory, stack_limit);
-    preparser.set_allow_lazy(true);
+    i::PendingCompilationErrorHandler pending_error_handler;
+    i::PreParser preparser(&zone, &scanner, stack_limit, &ast_value_factory,
+                           &pending_error_handler,
+                           isolate->counters()->runtime_call_stats());
     i::PreParser::PreParseResult result = preparser.PreParseProgram();
     CHECK_EQ(i::PreParser::kPreParseSuccess, result);
-    CHECK(preparser.logger()->has_error());
+    CHECK(pending_error_handler.has_pending_error());
   }
 }
 
@@ -457,13 +469,15 @@ TEST(RegressChromium62639) {
   i::Zone zone(CcTest::i_isolate()->allocator(), ZONE_NAME);
   i::AstValueFactory ast_value_factory(&zone,
                                        CcTest::i_isolate()->heap()->HashSeed());
-  i::PreParser preparser(&zone, &scanner, &ast_value_factory,
-                         CcTest::i_isolate()->stack_guard()->real_climit());
-  preparser.set_allow_lazy(true);
+  i::PendingCompilationErrorHandler pending_error_handler;
+  i::PreParser preparser(&zone, &scanner,
+                         CcTest::i_isolate()->stack_guard()->real_climit(),
+                         &ast_value_factory, &pending_error_handler,
+                         isolate->counters()->runtime_call_stats());
   i::PreParser::PreParseResult result = preparser.PreParseProgram();
   // Even in the case of a syntax error, kPreParseSuccess is returned.
   CHECK_EQ(i::PreParser::kPreParseSuccess, result);
-  CHECK(preparser.logger()->has_error());
+  CHECK(pending_error_handler.has_pending_error());
 }
 
 
@@ -512,26 +526,29 @@ TEST(Regress928) {
 
 TEST(PreParseOverflow) {
   v8::V8::Initialize();
+  i::Isolate* isolate = CcTest::i_isolate();
 
-  CcTest::i_isolate()->stack_guard()->SetStackLimit(
-      i::GetCurrentStackPosition() - 128 * 1024);
+  isolate->stack_guard()->SetStackLimit(i::GetCurrentStackPosition() -
+                                        128 * 1024);
 
   size_t kProgramSize = 1024 * 1024;
   std::unique_ptr<char[]> program(i::NewArray<char>(kProgramSize + 1));
   memset(program.get(), '(', kProgramSize);
   program[kProgramSize] = '\0';
 
-  uintptr_t stack_limit = CcTest::i_isolate()->stack_guard()->real_climit();
+  uintptr_t stack_limit = isolate->stack_guard()->real_climit();
 
   auto stream = i::ScannerStream::ForTesting(program.get(), kProgramSize);
-  i::Scanner scanner(CcTest::i_isolate()->unicode_cache());
+  i::Scanner scanner(isolate->unicode_cache());
   scanner.Initialize(stream.get());
 
   i::Zone zone(CcTest::i_isolate()->allocator(), ZONE_NAME);
   i::AstValueFactory ast_value_factory(&zone,
                                        CcTest::i_isolate()->heap()->HashSeed());
-  i::PreParser preparser(&zone, &scanner, &ast_value_factory, stack_limit);
-  preparser.set_allow_lazy(true);
+  i::PendingCompilationErrorHandler pending_error_handler;
+  i::PreParser preparser(&zone, &scanner, stack_limit, &ast_value_factory,
+                         &pending_error_handler,
+                         isolate->counters()->runtime_call_stats());
   i::PreParser::PreParseResult result = preparser.PreParseProgram();
   CHECK_EQ(i::PreParser::kPreParseStackOverflow, result);
 }
@@ -680,74 +697,26 @@ TEST(RegExpScanning) {
   TestScanRegExp("/=?/", "=?");
 }
 
+static int Ucs2CharLength(unibrow::uchar c) {
+  if (c == unibrow::Utf8::kIncomplete || c == unibrow::Utf8::kBufferEmpty) {
+    return 0;
+  } else if (c < 0xffff) {
+    return 1;
+  } else {
+    return 2;
+  }
+}
 
 static int Utf8LengthHelper(const char* s) {
-  int len = i::StrLength(s);
-  int character_length = len;
-  for (int i = 0; i < len; i++) {
-    unsigned char c = s[i];
-    int input_offset = 0;
-    int output_adjust = 0;
-    if (c > 0x7f) {
-      if (c < 0xc0) continue;
-      if (c >= 0xf0) {
-        if (c >= 0xf8) {
-          // 5 and 6 byte UTF-8 sequences turn into a kBadChar for each UTF-8
-          // byte.
-          continue;  // Handle first UTF-8 byte.
-        }
-        if ((c & 7) == 0 && ((s[i + 1] & 0x30) == 0)) {
-          // This 4 byte sequence could have been coded as a 3 byte sequence.
-          // Record a single kBadChar for the first byte and continue.
-          continue;
-        }
-        input_offset = 3;
-        // 4 bytes of UTF-8 turn into 2 UTF-16 code units.
-        character_length -= 2;
-      } else if (c >= 0xe0) {
-        if ((c & 0xf) == 0 && ((s[i + 1] & 0x20) == 0)) {
-          // This 3 byte sequence could have been coded as a 2 byte sequence.
-          // Record a single kBadChar for the first byte and continue.
-          continue;
-        }
-        if (c == 0xed) {
-          unsigned char d = s[i + 1];
-          if ((d < 0x80) || (d > 0x9f)) {
-            // This 3 byte sequence is part of a surrogate pair which is not
-            // supported by UTF-8. Record a single kBadChar for the first byte
-            // and continue.
-            continue;
-          }
-        }
-        input_offset = 2;
-        // 3 bytes of UTF-8 turn into 1 UTF-16 code unit.
-        output_adjust = 2;
-      } else {
-        if ((c & 0x1e) == 0) {
-          // This 2 byte sequence could have been coded as a 1 byte sequence.
-          // Record a single kBadChar for the first byte and continue.
-          continue;
-        }
-        input_offset = 1;
-        // 2 bytes of UTF-8 turn into 1 UTF-16 code unit.
-        output_adjust = 1;
-      }
-      bool bad = false;
-      for (int j = 1; j <= input_offset; j++) {
-        if ((s[i + j] & 0xc0) != 0x80) {
-          // Bad UTF-8 sequence turns the first in the sequence into kBadChar,
-          // which is a single UTF-16 code unit.
-          bad = true;
-          break;
-        }
-      }
-      if (!bad) {
-        i += input_offset;
-        character_length -= output_adjust;
-      }
-    }
+  unibrow::Utf8::Utf8IncrementalBuffer buffer(unibrow::Utf8::kBufferEmpty);
+  int length = 0;
+  for (; *s != '\0'; s++) {
+    unibrow::uchar tmp = unibrow::Utf8::ValueOfIncremental(*s, &buffer);
+    length += Ucs2CharLength(tmp);
   }
-  return character_length;
+  unibrow::uchar tmp = unibrow::Utf8::ValueOfIncrementalFinish(&buffer);
+  length += Ucs2CharLength(tmp);
+  return length;
 }
 
 
@@ -974,169 +943,206 @@ TEST(ScopePositions) {
   };
 
   const SourceData source_data[] = {
-    { "  with ({}) ", "{ block; }", " more;", i::WITH_SCOPE, i::SLOPPY },
-    { "  with ({}) ", "{ block; }", "; more;", i::WITH_SCOPE, i::SLOPPY },
-    { "  with ({}) ", "{\n"
-      "    block;\n"
-      "  }", "\n"
-      "  more;", i::WITH_SCOPE, i::SLOPPY },
-    { "  with ({}) ", "statement;", " more;", i::WITH_SCOPE, i::SLOPPY },
-    { "  with ({}) ", "statement", "\n"
-      "  more;", i::WITH_SCOPE, i::SLOPPY },
-    { "  with ({})\n"
-      "    ", "statement;", "\n"
-      "  more;", i::WITH_SCOPE, i::SLOPPY },
-    { "  try {} catch ", "(e) { block; }", " more;",
-      i::CATCH_SCOPE, i::SLOPPY },
-    { "  try {} catch ", "(e) { block; }", "; more;",
-      i::CATCH_SCOPE, i::SLOPPY },
-    { "  try {} catch ", "(e) {\n"
-      "    block;\n"
-      "  }", "\n"
-      "  more;", i::CATCH_SCOPE, i::SLOPPY },
-    { "  try {} catch ", "(e) { block; }", " finally { block; } more;",
-      i::CATCH_SCOPE, i::SLOPPY },
-    { "  start;\n"
-      "  ", "{ let block; }", " more;", i::BLOCK_SCOPE, i::STRICT },
-    { "  start;\n"
-      "  ", "{ let block; }", "; more;", i::BLOCK_SCOPE, i::STRICT },
-    { "  start;\n"
-      "  ", "{\n"
-      "    let block;\n"
-      "  }", "\n"
-      "  more;", i::BLOCK_SCOPE, i::STRICT },
-    { "  start;\n"
-      "  function fun", "(a,b) { infunction; }", " more;",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    { "  start;\n"
-      "  function fun", "(a,b) {\n"
-      "    infunction;\n"
-      "  }", "\n"
-      "  more;", i::FUNCTION_SCOPE, i::SLOPPY },
-    { "  start;\n", "(a,b) => a + b", "; more;",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    { "  start;\n", "(a,b) => { return a+b; }", "\nmore;",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    { "  start;\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    { "  for ", "(let x = 1 ; x < 10; ++ x) { block; }", " more;",
-      i::BLOCK_SCOPE, i::STRICT },
-    { "  for ", "(let x = 1 ; x < 10; ++ x) { block; }", "; more;",
-      i::BLOCK_SCOPE, i::STRICT },
-    { "  for ", "(let x = 1 ; x < 10; ++ x) {\n"
-      "    block;\n"
-      "  }", "\n"
-      "  more;", i::BLOCK_SCOPE, i::STRICT },
-    { "  for ", "(let x = 1 ; x < 10; ++ x) statement;", " more;",
-      i::BLOCK_SCOPE, i::STRICT },
-    { "  for ", "(let x = 1 ; x < 10; ++ x) statement", "\n"
-      "  more;", i::BLOCK_SCOPE, i::STRICT },
-    { "  for ", "(let x = 1 ; x < 10; ++ x)\n"
-      "    statement;", "\n"
-      "  more;", i::BLOCK_SCOPE, i::STRICT },
-    { "  for ", "(let x in {}) { block; }", " more;",
-      i::BLOCK_SCOPE, i::STRICT },
-    { "  for ", "(let x in {}) { block; }", "; more;",
-      i::BLOCK_SCOPE, i::STRICT },
-    { "  for ", "(let x in {}) {\n"
-      "    block;\n"
-      "  }", "\n"
-      "  more;", i::BLOCK_SCOPE, i::STRICT },
-    { "  for ", "(let x in {}) statement;", " more;",
-      i::BLOCK_SCOPE, i::STRICT },
-    { "  for ", "(let x in {}) statement", "\n"
-      "  more;", i::BLOCK_SCOPE, i::STRICT },
-    { "  for ", "(let x in {})\n"
-      "    statement;", "\n"
-      "  more;", i::BLOCK_SCOPE, i::STRICT },
-    // Check that 6-byte and 4-byte encodings of UTF-8 strings do not throw
-    // the preparser off in terms of byte offsets.
-    // 6 byte encoding.
-    { "  'foo\355\240\201\355\260\211';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // 4 byte encoding.
-    { "  'foo\360\220\220\212';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // 3 byte encoding of \u0fff.
-    { "  'foo\340\277\277';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Broken 6 byte encoding with missing last byte.
-    { "  'foo\355\240\201\355\211';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Broken 3 byte encoding of \u0fff with missing last byte.
-    { "  'foo\340\277';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Broken 3 byte encoding of \u0fff with missing 2 last bytes.
-    { "  'foo\340';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Broken 3 byte encoding of \u00ff should be a 2 byte encoding.
-    { "  'foo\340\203\277';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Broken 3 byte encoding of \u007f should be a 2 byte encoding.
-    { "  'foo\340\201\277';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Unpaired lead surrogate.
-    { "  'foo\355\240\201';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Unpaired lead surrogate where following code point is a 3 byte sequence.
-    { "  'foo\355\240\201\340\277\277';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Unpaired lead surrogate where following code point is a 4 byte encoding
-    // of a trail surrogate.
-    { "  'foo\355\240\201\360\215\260\211';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Unpaired trail surrogate.
-    { "  'foo\355\260\211';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // 2 byte encoding of \u00ff.
-    { "  'foo\303\277';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Broken 2 byte encoding of \u00ff with missing last byte.
-    { "  'foo\303';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Broken 2 byte encoding of \u007f should be a 1 byte encoding.
-    { "  'foo\301\277';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Illegal 5 byte encoding.
-    { "  'foo\370\277\277\277\277';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Illegal 6 byte encoding.
-    { "  'foo\374\277\277\277\277\277';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Illegal 0xfe byte
-    { "  'foo\376\277\277\277\277\277\277';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    // Illegal 0xff byte
-    { "  'foo\377\277\277\277\277\277\277\277';\n"
-      "  (function fun", "(a,b) { infunction; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    { "  'foo';\n"
-      "  (function fun", "(a,b) { 'bar\355\240\201\355\260\213'; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    { "  'foo';\n"
-      "  (function fun", "(a,b) { 'bar\360\220\220\214'; }", ")();",
-      i::FUNCTION_SCOPE, i::SLOPPY },
-    { NULL, NULL, NULL, i::EVAL_SCOPE, i::SLOPPY }
-  };
+      {"  with ({}) ", "{ block; }", " more;", i::WITH_SCOPE, i::SLOPPY},
+      {"  with ({}) ", "{ block; }", "; more;", i::WITH_SCOPE, i::SLOPPY},
+      {"  with ({}) ",
+       "{\n"
+       "    block;\n"
+       "  }",
+       "\n"
+       "  more;",
+       i::WITH_SCOPE, i::SLOPPY},
+      {"  with ({}) ", "statement;", " more;", i::WITH_SCOPE, i::SLOPPY},
+      {"  with ({}) ", "statement",
+       "\n"
+       "  more;",
+       i::WITH_SCOPE, i::SLOPPY},
+      {"  with ({})\n"
+       "    ",
+       "statement;",
+       "\n"
+       "  more;",
+       i::WITH_SCOPE, i::SLOPPY},
+      {"  try {} catch ", "(e) { block; }", " more;", i::CATCH_SCOPE,
+       i::SLOPPY},
+      {"  try {} catch ", "(e) { block; }", "; more;", i::CATCH_SCOPE,
+       i::SLOPPY},
+      {"  try {} catch ",
+       "(e) {\n"
+       "    block;\n"
+       "  }",
+       "\n"
+       "  more;",
+       i::CATCH_SCOPE, i::SLOPPY},
+      {"  try {} catch ", "(e) { block; }", " finally { block; } more;",
+       i::CATCH_SCOPE, i::SLOPPY},
+      {"  start;\n"
+       "  ",
+       "{ let block; }", " more;", i::BLOCK_SCOPE, i::STRICT},
+      {"  start;\n"
+       "  ",
+       "{ let block; }", "; more;", i::BLOCK_SCOPE, i::STRICT},
+      {"  start;\n"
+       "  ",
+       "{\n"
+       "    let block;\n"
+       "  }",
+       "\n"
+       "  more;",
+       i::BLOCK_SCOPE, i::STRICT},
+      {"  start;\n"
+       "  function fun",
+       "(a,b) { infunction; }", " more;", i::FUNCTION_SCOPE, i::SLOPPY},
+      {"  start;\n"
+       "  function fun",
+       "(a,b) {\n"
+       "    infunction;\n"
+       "  }",
+       "\n"
+       "  more;",
+       i::FUNCTION_SCOPE, i::SLOPPY},
+      {"  start;\n", "(a,b) => a + b", "; more;", i::FUNCTION_SCOPE, i::SLOPPY},
+      {"  start;\n", "(a,b) => { return a+b; }", "\nmore;", i::FUNCTION_SCOPE,
+       i::SLOPPY},
+      {"  start;\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      {"  for ", "(let x = 1 ; x < 10; ++ x) { block; }", " more;",
+       i::BLOCK_SCOPE, i::STRICT},
+      {"  for ", "(let x = 1 ; x < 10; ++ x) { block; }", "; more;",
+       i::BLOCK_SCOPE, i::STRICT},
+      {"  for ",
+       "(let x = 1 ; x < 10; ++ x) {\n"
+       "    block;\n"
+       "  }",
+       "\n"
+       "  more;",
+       i::BLOCK_SCOPE, i::STRICT},
+      {"  for ", "(let x = 1 ; x < 10; ++ x) statement;", " more;",
+       i::BLOCK_SCOPE, i::STRICT},
+      {"  for ", "(let x = 1 ; x < 10; ++ x) statement",
+       "\n"
+       "  more;",
+       i::BLOCK_SCOPE, i::STRICT},
+      {"  for ",
+       "(let x = 1 ; x < 10; ++ x)\n"
+       "    statement;",
+       "\n"
+       "  more;",
+       i::BLOCK_SCOPE, i::STRICT},
+      {"  for ", "(let x in {}) { block; }", " more;", i::BLOCK_SCOPE,
+       i::STRICT},
+      {"  for ", "(let x in {}) { block; }", "; more;", i::BLOCK_SCOPE,
+       i::STRICT},
+      {"  for ",
+       "(let x in {}) {\n"
+       "    block;\n"
+       "  }",
+       "\n"
+       "  more;",
+       i::BLOCK_SCOPE, i::STRICT},
+      {"  for ", "(let x in {}) statement;", " more;", i::BLOCK_SCOPE,
+       i::STRICT},
+      {"  for ", "(let x in {}) statement",
+       "\n"
+       "  more;",
+       i::BLOCK_SCOPE, i::STRICT},
+      {"  for ",
+       "(let x in {})\n"
+       "    statement;",
+       "\n"
+       "  more;",
+       i::BLOCK_SCOPE, i::STRICT},
+      // Check that 6-byte and 4-byte encodings of UTF-8 strings do not throw
+      // the preparser off in terms of byte offsets.
+      // 2 surrogates, encode a character that doesn't need a surrogate.
+      {"  'foo\355\240\201\355\260\211';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // 4 byte encoding.
+      {"  'foo\360\220\220\212';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // 3 byte encoding of \u0fff.
+      {"  'foo\340\277\277';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // 3 byte surrogate, followed by broken 2-byte surrogate w/ impossible 2nd
+      // byte and last byte missing.
+      {"  'foo\355\240\201\355\211';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Broken 3 byte encoding of \u0fff with missing last byte.
+      {"  'foo\340\277';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Broken 3 byte encoding of \u0fff with missing 2 last bytes.
+      {"  'foo\340';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Broken 3 byte encoding of \u00ff should be a 2 byte encoding.
+      {"  'foo\340\203\277';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Broken 3 byte encoding of \u007f should be a 2 byte encoding.
+      {"  'foo\340\201\277';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Unpaired lead surrogate.
+      {"  'foo\355\240\201';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Unpaired lead surrogate where following code point is a 3 byte
+      // sequence.
+      {"  'foo\355\240\201\340\277\277';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Unpaired lead surrogate where following code point is a 4 byte encoding
+      // of a trail surrogate.
+      {"  'foo\355\240\201\360\215\260\211';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Unpaired trail surrogate.
+      {"  'foo\355\260\211';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // 2 byte encoding of \u00ff.
+      {"  'foo\303\277';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Broken 2 byte encoding of \u00ff with missing last byte.
+      {"  'foo\303';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Broken 2 byte encoding of \u007f should be a 1 byte encoding.
+      {"  'foo\301\277';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Illegal 5 byte encoding.
+      {"  'foo\370\277\277\277\277';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Illegal 6 byte encoding.
+      {"  'foo\374\277\277\277\277\277';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Illegal 0xfe byte
+      {"  'foo\376\277\277\277\277\277\277';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      // Illegal 0xff byte
+      {"  'foo\377\277\277\277\277\277\277\277';\n"
+       "  (function fun",
+       "(a,b) { infunction; }", ")();", i::FUNCTION_SCOPE, i::SLOPPY},
+      {"  'foo';\n"
+       "  (function fun",
+       "(a,b) { 'bar\355\240\201\355\260\213'; }", ")();", i::FUNCTION_SCOPE,
+       i::SLOPPY},
+      {"  'foo';\n"
+       "  (function fun",
+       "(a,b) { 'bar\360\220\220\214'; }", ")();", i::FUNCTION_SCOPE,
+       i::SLOPPY},
+      {NULL, NULL, NULL, i::EVAL_SCOPE, i::SLOPPY}};
 
   i::Isolate* isolate = CcTest::i_isolate();
   i::Factory* factory = isolate->factory();
@@ -1171,10 +1177,10 @@ TEST(ScopePositions) {
     i::Zone zone(CcTest::i_isolate()->allocator(), ZONE_NAME);
     i::ParseInfo info(&zone, script);
     i::Parser parser(&info);
-    parser.set_allow_lazy(true);
     info.set_language_mode(source_data[i].language_mode);
+    info.set_allow_lazy_parsing();
     parser.Parse(&info);
-    CHECK(info.literal() != NULL);
+    CHECK_NOT_NULL(info.literal());
 
     // Check scope types and positions.
     i::Scope* scope = info.literal()->scope();
@@ -1270,27 +1276,6 @@ const char* ReadString(unsigned* start) {
 }
 
 
-i::Handle<i::String> FormatMessage(i::Vector<unsigned> data) {
-  i::Isolate* isolate = CcTest::i_isolate();
-  int message = data[i::PreparseDataConstants::kMessageTemplatePos];
-  int arg_count = data[i::PreparseDataConstants::kMessageArgCountPos];
-  i::Handle<i::Object> arg_object;
-  if (arg_count == 1) {
-    // Position after text found by skipping past length field and
-    // length field content words.
-    const char* arg =
-        ReadString(&data[i::PreparseDataConstants::kMessageArgPos]);
-    arg_object = v8::Utils::OpenHandle(*v8_str(arg));
-    i::DeleteArray(arg);
-  } else {
-    CHECK_EQ(0, arg_count);
-    arg_object = isolate->factory()->undefined_value();
-  }
-
-  data.Dispose();
-  return i::MessageTemplate::FormatMessage(isolate, message, arg_object);
-}
-
 enum ParserFlag {
   kAllowLazy,
   kAllowNatives,
@@ -1310,7 +1295,6 @@ enum ParserSyncTestResult {
 template <typename Traits>
 void SetParserFlags(i::ParserBase<Traits>* parser,
                     i::EnumSet<ParserFlag> flags) {
-  parser->set_allow_lazy(flags.Contains(kAllowLazy));
   parser->set_allow_natives(flags.Contains(kAllowNatives));
   parser->set_allow_harmony_function_sent(
       flags.Contains(kAllowHarmonyFunctionSent));
@@ -1338,7 +1322,7 @@ void TestParserSyncWithFlags(i::Handle<i::String> source,
   int parser_materialized_literals = -2;
 
   // Preparse the data.
-  i::ParserLogger log;
+  i::PendingCompilationErrorHandler pending_error_handler;
   if (test_preparser) {
     i::Scanner scanner(isolate->unicode_cache());
     std::unique_ptr<i::Utf16CharacterStream> stream(
@@ -1346,20 +1330,15 @@ void TestParserSyncWithFlags(i::Handle<i::String> source,
     i::Zone zone(CcTest::i_isolate()->allocator(), ZONE_NAME);
     i::AstValueFactory ast_value_factory(
         &zone, CcTest::i_isolate()->heap()->HashSeed());
-    i::PreParser preparser(&zone, &scanner, &ast_value_factory, stack_limit);
+    i::PreParser preparser(&zone, &scanner, stack_limit, &ast_value_factory,
+                           &pending_error_handler,
+                           isolate->counters()->runtime_call_stats());
     SetParserFlags(&preparser, flags);
     scanner.Initialize(stream.get());
     i::PreParser::PreParseResult result =
         preparser.PreParseProgram(&preparser_materialized_literals, is_module);
     CHECK_EQ(i::PreParser::kPreParseSuccess, result);
-    i::PreParserLogger* logger = preparser.logger();
-    // Convert to complete log.
-    if (logger->has_error()) {
-      log.LogMessage(logger->start(), logger->end(), logger->message(),
-                     logger->argument_opt(), logger->error_type());
-    }
   }
-  bool preparse_error = log.HasError();
 
   // Parse the data
   i::FunctionLiteral* function;
@@ -1367,6 +1346,7 @@ void TestParserSyncWithFlags(i::Handle<i::String> source,
     i::Handle<i::Script> script = factory->NewScript(source);
     i::Zone zone(CcTest::i_isolate()->allocator(), ZONE_NAME);
     i::ParseInfo info(&zone, script);
+    info.set_allow_lazy_parsing(flags.Contains(kAllowLazy));
     i::Parser parser(&info);
     SetParserFlags(&parser, flags);
     if (is_module) info.set_module();
@@ -1399,7 +1379,7 @@ void TestParserSyncWithFlags(i::Handle<i::String> source,
       CHECK(false);
     }
 
-    if (test_preparser && !preparse_error) {
+    if (test_preparser && !pending_error_handler.has_pending_error()) {
       v8::base::OS::Print(
           "Parser failed on:\n"
           "\t%s\n"
@@ -1412,7 +1392,7 @@ void TestParserSyncWithFlags(i::Handle<i::String> source,
     // Check that preparser and parser produce the same error.
     if (test_preparser) {
       i::Handle<i::String> preparser_message =
-          FormatMessage(log.ErrorMessageData());
+          pending_error_handler.FormatMessage(CcTest::i_isolate());
       if (!i::String::Equals(message_string, preparser_message)) {
         v8::base::OS::Print(
             "Expected parser and preparser to produce the same error on:\n"
@@ -1425,7 +1405,7 @@ void TestParserSyncWithFlags(i::Handle<i::String> source,
         CHECK(false);
       }
     }
-  } else if (test_preparser && preparse_error) {
+  } else if (test_preparser && pending_error_handler.has_pending_error()) {
     v8::base::OS::Print(
         "Preparser failed on:\n"
         "\t%s\n"
@@ -1433,7 +1413,9 @@ void TestParserSyncWithFlags(i::Handle<i::String> source,
         "\t%s\n"
         "However, the parser succeeded",
         source->ToCString().get(),
-        FormatMessage(log.ErrorMessageData())->ToCString().get());
+        pending_error_handler.FormatMessage(CcTest::i_isolate())
+            ->ToCString()
+            .get());
     CHECK(false);
   } else if (result == kError) {
     v8::base::OS::Print(

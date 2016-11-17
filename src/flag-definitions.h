@@ -274,7 +274,7 @@ DEFINE_BOOL(track_field_types, true, "track field types")
 DEFINE_IMPLICATION(track_field_types, track_fields)
 DEFINE_IMPLICATION(track_field_types, track_heap_object_fields)
 DEFINE_BOOL(smi_binop, true, "support smi representation in binary operations")
-DEFINE_BOOL(mark_shared_functions_for_tier_up, true,
+DEFINE_BOOL(mark_shared_functions_for_tier_up, false,
             "mark shared functions for tier up")
 
 // Flags for optimization types.
@@ -467,7 +467,7 @@ DEFINE_BOOL(turbo_move_optimization, true, "optimize gap moves in TurboFan")
 DEFINE_BOOL(turbo_jt, true, "enable jump threading in TurboFan")
 DEFINE_BOOL(turbo_stress_loop_peeling, false,
             "stress loop peeling optimization")
-DEFINE_BOOL(turbo_loop_peeling, false, "Turbofan loop peeling")
+DEFINE_BOOL(turbo_loop_peeling, true, "Turbofan loop peeling")
 DEFINE_BOOL(turbo_loop_variable, true, "Turbofan loop variable optimization")
 DEFINE_BOOL(turbo_cf_optimization, true, "optimize control flow in TurboFan")
 DEFINE_BOOL(turbo_frame_elision, true, "elide frames in TurboFan")
@@ -627,6 +627,10 @@ DEFINE_BOOL(serialize_toplevel, true, "enable caching of toplevel scripts")
 DEFINE_BOOL(serialize_eager, false, "compile eagerly when caching scripts")
 DEFINE_BOOL(serialize_age_code, false, "pre age code in the code cache")
 DEFINE_BOOL(trace_serializer, false, "print code serializer trace")
+#ifdef DEBUG
+DEFINE_BOOL(external_reference_stats, false,
+            "print statistics on external references used during serialization")
+#endif  // DEBUG
 
 // compiler.cc
 DEFINE_INT(min_preparse_length, 1024,
@@ -725,7 +729,7 @@ DEFINE_BOOL(age_code, true,
             "track un-executed functions to age code and flush only "
             "old code (required for code flushing)")
 DEFINE_BOOL(incremental_marking, true, "use incremental marking")
-DEFINE_BOOL(incremental_marking_wrappers, false,
+DEFINE_BOOL(incremental_marking_wrappers, true,
             "use incremental marking for marking wrappers")
 DEFINE_INT(min_progress_during_incremental_marking_finalization, 32,
            "keep finalizing incremental marking as long as we discover at "
@@ -762,6 +766,9 @@ DEFINE_BOOL(move_object_start, true, "enable moving of object starts")
 DEFINE_BOOL(memory_reducer, true, "use memory reducer")
 DEFINE_INT(heap_growing_percent, 0,
            "specifies heap growing factor as (1 + heap_growing_percent/100)")
+
+// spaces.cc
+DEFINE_INT(v8_os_page_size, 0, "override OS page size (in KBytes)")
 
 // execution.cc, messages.cc
 DEFINE_BOOL(clear_exceptions_on_js_entry, false,
@@ -1015,7 +1022,6 @@ DEFINE_BOOL(collect_heap_spill_statistics, false,
             "(requires heap_stats)")
 DEFINE_BOOL(trace_live_bytes, false,
             "trace incrementing and resetting of live bytes")
-
 DEFINE_BOOL(trace_isolates, false, "trace isolate state changes")
 
 // Regexp

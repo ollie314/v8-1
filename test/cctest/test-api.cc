@@ -7770,7 +7770,7 @@ static void IndependentWeakHandle(bool global_gc, bool interlinked) {
 
   FlagAndPersistent object_a, object_b;
 
-  intptr_t big_heap_size;
+  size_t big_heap_size;
 
   {
     v8::HandleScope handle_scope(iso);
@@ -24123,65 +24123,69 @@ TEST(ScriptPositionInfo) {
 
   v8::internal::Script::PositionInfo info;
 
-  // With offset.
+  for (int i = 0; i < 2; ++i) {
+    // With offset.
 
-  // Behave as if 0 was passed if position is negative.
-  CHECK(script1->GetPositionInfo(-1, &info, script1->WITH_OFFSET));
-  CHECK_EQ(13, info.line);
-  CHECK_EQ(0, info.column);
-  CHECK_EQ(0, info.line_start);
-  CHECK_EQ(8, info.line_end);
+    // Behave as if 0 was passed if position is negative.
+    CHECK(script1->GetPositionInfo(-1, &info, script1->WITH_OFFSET));
+    CHECK_EQ(13, info.line);
+    CHECK_EQ(0, info.column);
+    CHECK_EQ(0, info.line_start);
+    CHECK_EQ(8, info.line_end);
 
-  CHECK(script1->GetPositionInfo(0, &info, script1->WITH_OFFSET));
-  CHECK_EQ(13, info.line);
-  CHECK_EQ(0, info.column);
-  CHECK_EQ(0, info.line_start);
-  CHECK_EQ(8, info.line_end);
+    CHECK(script1->GetPositionInfo(0, &info, script1->WITH_OFFSET));
+    CHECK_EQ(13, info.line);
+    CHECK_EQ(0, info.column);
+    CHECK_EQ(0, info.line_start);
+    CHECK_EQ(8, info.line_end);
 
-  CHECK(script1->GetPositionInfo(8, &info, script1->WITH_OFFSET));
-  CHECK_EQ(13, info.line);
-  CHECK_EQ(8, info.column);
-  CHECK_EQ(0, info.line_start);
-  CHECK_EQ(8, info.line_end);
+    CHECK(script1->GetPositionInfo(8, &info, script1->WITH_OFFSET));
+    CHECK_EQ(13, info.line);
+    CHECK_EQ(8, info.column);
+    CHECK_EQ(0, info.line_start);
+    CHECK_EQ(8, info.line_end);
 
-  CHECK(script1->GetPositionInfo(9, &info, script1->WITH_OFFSET));
-  CHECK_EQ(14, info.line);
-  CHECK_EQ(0, info.column);
-  CHECK_EQ(9, info.line_start);
-  CHECK_EQ(17, info.line_end);
+    CHECK(script1->GetPositionInfo(9, &info, script1->WITH_OFFSET));
+    CHECK_EQ(14, info.line);
+    CHECK_EQ(0, info.column);
+    CHECK_EQ(9, info.line_start);
+    CHECK_EQ(17, info.line_end);
 
-  // Fail when position is larger than script size.
-  CHECK(!script1->GetPositionInfo(220384, &info, script1->WITH_OFFSET));
+    // Fail when position is larger than script size.
+    CHECK(!script1->GetPositionInfo(220384, &info, script1->WITH_OFFSET));
 
-  // Without offset.
+    // Without offset.
 
-  // Behave as if 0 was passed if position is negative.
-  CHECK(script1->GetPositionInfo(-1, &info, script1->NO_OFFSET));
-  CHECK_EQ(0, info.line);
-  CHECK_EQ(0, info.column);
-  CHECK_EQ(0, info.line_start);
-  CHECK_EQ(8, info.line_end);
+    // Behave as if 0 was passed if position is negative.
+    CHECK(script1->GetPositionInfo(-1, &info, script1->NO_OFFSET));
+    CHECK_EQ(0, info.line);
+    CHECK_EQ(0, info.column);
+    CHECK_EQ(0, info.line_start);
+    CHECK_EQ(8, info.line_end);
 
-  CHECK(script1->GetPositionInfo(0, &info, script1->NO_OFFSET));
-  CHECK_EQ(0, info.line);
-  CHECK_EQ(0, info.column);
-  CHECK_EQ(0, info.line_start);
-  CHECK_EQ(8, info.line_end);
+    CHECK(script1->GetPositionInfo(0, &info, script1->NO_OFFSET));
+    CHECK_EQ(0, info.line);
+    CHECK_EQ(0, info.column);
+    CHECK_EQ(0, info.line_start);
+    CHECK_EQ(8, info.line_end);
 
-  CHECK(script1->GetPositionInfo(8, &info, script1->NO_OFFSET));
-  CHECK_EQ(0, info.line);
-  CHECK_EQ(8, info.column);
-  CHECK_EQ(0, info.line_start);
-  CHECK_EQ(8, info.line_end);
+    CHECK(script1->GetPositionInfo(8, &info, script1->NO_OFFSET));
+    CHECK_EQ(0, info.line);
+    CHECK_EQ(8, info.column);
+    CHECK_EQ(0, info.line_start);
+    CHECK_EQ(8, info.line_end);
 
-  CHECK(script1->GetPositionInfo(9, &info, script1->NO_OFFSET));
-  CHECK_EQ(1, info.line);
-  CHECK_EQ(0, info.column);
-  CHECK_EQ(9, info.line_start);
-  CHECK_EQ(17, info.line_end);
+    CHECK(script1->GetPositionInfo(9, &info, script1->NO_OFFSET));
+    CHECK_EQ(1, info.line);
+    CHECK_EQ(0, info.column);
+    CHECK_EQ(9, info.line_start);
+    CHECK_EQ(17, info.line_end);
 
-  // Fail when position is larger than script size.
-  CHECK(!script1->GetPositionInfo(220384, &info, script1->NO_OFFSET));
+    // Fail when position is larger than script size.
+    CHECK(!script1->GetPositionInfo(220384, &info, script1->NO_OFFSET));
+
+    i::Script::InitLineEnds(script1);
+  }
 }
 
 void CheckMagicComments(Local<Script> script, const char* expected_source_url,
@@ -25392,6 +25396,12 @@ TEST(ExtrasUtilsObject) {
   rejected_promise->Catch(env.local(), store).ToLocalChecked();
   isolate->RunMicrotasks();
   CHECK_EQ(3, CompileRun("result")->Int32Value(env.local()).FromJust());
+
+  auto rejected_but_handled_promise =
+      result->Get(env.local(), v8_str("rejectedButHandledPromise"))
+          .ToLocalChecked()
+          .As<v8::Promise>();
+  CHECK_EQ(true, rejected_but_handled_promise->HasHandler());
 }
 
 
@@ -26145,4 +26155,32 @@ THREADED_TEST(MutableProtoGlobal) {
       "})()");
   CHECK(result->Equals(context, v8::Integer::New(CcTest::isolate(), 0))
             .FromJust());
+}
+
+TEST(InternalFieldsOnTypedArray) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+  v8::Local<v8::Context> context = env.local();
+  Context::Scope context_scope(context);
+  v8::Local<v8::ArrayBuffer> buffer = v8::ArrayBuffer::New(isolate, 1);
+  v8::Local<v8::Uint8Array> array = v8::Uint8Array::New(buffer, 0, 1);
+  for (int i = 0; i < v8::ArrayBufferView::kInternalFieldCount; i++) {
+    CHECK_EQ(static_cast<void*>(nullptr),
+             array->GetAlignedPointerFromInternalField(i));
+  }
+}
+
+TEST(InternalFieldsOnDataView) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+  v8::Local<v8::Context> context = env.local();
+  Context::Scope context_scope(context);
+  v8::Local<v8::ArrayBuffer> buffer = v8::ArrayBuffer::New(isolate, 1);
+  v8::Local<v8::DataView> array = v8::DataView::New(buffer, 0, 1);
+  for (int i = 0; i < v8::ArrayBufferView::kInternalFieldCount; i++) {
+    CHECK_EQ(static_cast<void*>(nullptr),
+             array->GetAlignedPointerFromInternalField(i));
+  }
 }

@@ -191,13 +191,17 @@ class ParserBase {
   const Impl* impl() const { return static_cast<const Impl*>(this); }
 
   ParserBase(Zone* zone, Scanner* scanner, uintptr_t stack_limit,
-             v8::Extension* extension, AstValueFactory* ast_value_factory)
+             v8::Extension* extension, AstValueFactory* ast_value_factory,
+             RuntimeCallStats* runtime_call_stats,
+             bool parsing_on_main_thread = true)
       : scope_state_(nullptr),
         function_state_(nullptr),
         extension_(extension),
         fni_(nullptr),
         ast_value_factory_(ast_value_factory),
         ast_node_factory_(ast_value_factory),
+        runtime_call_stats_(runtime_call_stats),
+        parsing_on_main_thread_(parsing_on_main_thread),
         parsing_module_(false),
         stack_limit_(stack_limit),
         zone_(zone),
@@ -205,7 +209,6 @@ class ParserBase {
         scanner_(scanner),
         stack_overflow_(false),
         default_eager_compile_hint_(FunctionLiteral::kShouldLazyCompile),
-        allow_lazy_(false),
         allow_natives_(false),
         allow_tailcalls_(false),
         allow_harmony_do_expressions_(false),
@@ -219,7 +222,6 @@ class ParserBase {
   bool allow_##name() const { return allow_##name##_; } \
   void set_allow_##name(bool allow) { allow_##name##_ = allow; }
 
-  ALLOW_ACCESSORS(lazy);
   ALLOW_ACCESSORS(natives);
   ALLOW_ACCESSORS(tailcalls);
   ALLOW_ACCESSORS(harmony_do_expressions);
@@ -1420,6 +1422,8 @@ class ParserBase {
   FuncNameInferrer* fni_;
   AstValueFactory* ast_value_factory_;  // Not owned.
   typename Types::Factory ast_node_factory_;
+  RuntimeCallStats* runtime_call_stats_;
+  bool parsing_on_main_thread_;
   bool parsing_module_;
   uintptr_t stack_limit_;
 
@@ -1434,7 +1438,6 @@ class ParserBase {
 
   FunctionLiteral::EagerCompileHint default_eager_compile_hint_;
 
-  bool allow_lazy_;
   bool allow_natives_;
   bool allow_tailcalls_;
   bool allow_harmony_do_expressions_;
@@ -3887,6 +3890,15 @@ template <typename Impl>
 typename ParserBase<Impl>::ExpressionT
 ParserBase<Impl>::ParseArrowFunctionLiteral(
     bool accept_IN, const FormalParametersT& formal_parameters, bool* ok) {
+  const RuntimeCallStats::CounterId counters[2][2] = {
+      {&RuntimeCallStats::ParseArrowFunctionLiteral,
+       &RuntimeCallStats::ParseBackgroundArrowFunctionLiteral},
+      {&RuntimeCallStats::PreParseArrowFunctionLiteral,
+       &RuntimeCallStats::PreParseBackgroundArrowFunctionLiteral}};
+  RuntimeCallTimerScope runtime_timer(
+      runtime_call_stats_,
+      counters[Impl::IsPreParser()][parsing_on_main_thread_]);
+
   if (peek() == Token::ARROW && scanner_->HasAnyLineTerminatorBeforeNext()) {
     // ASI inserts `;` after arrow parameters if a line terminator is found.
     // `=> ...` is never a valid expression, so report as syntax error.

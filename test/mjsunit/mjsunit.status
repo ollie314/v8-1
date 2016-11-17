@@ -249,6 +249,9 @@
 
   # BUG(v8:4779): Crashes flakily with stress mode on arm64.
   'array-splice': [PASS, SLOW, ['arch == arm64', FAST_VARIANTS]],
+
+  # BUG(chromium:664490)
+  'debug-scopes': [SKIP],
 }],  # 'gc_stress == True'
 
 ##############################################################################
@@ -566,6 +569,10 @@
   # further down in this file, so we have to duplicate this here.
   # https://bugs.chromium.org/p/v8/issues/detail?id=5374
   'modules-*': [SKIP],
+
+  # Fails deopt_fuzzer due to --deopt_every_n_times or
+  # deopt_every_n_garbage_collections
+  'es6/array-iterator-turbo': [SKIP]
 }],  # 'deopt_fuzzer == True'
 
 ##############################################################################
@@ -592,19 +599,26 @@
 }],  # 'arch == ppc64'
 
 ##############################################################################
+['variant == nocrankshaft', {
+  'es6/array-iterator-turbo': [SKIP],
+}],  # variant == nocranshaft
+
+##############################################################################
 ['variant == stress', {
+  'es6/array-iterator-turbo': [SKIP],
+
   'ignition/regress-599001-verifyheap': [SKIP],
   'unicode-test': [SKIP],
 }],  # variant == stress
 
 ##############################################################################
 ['variant == turbofan_opt', {
+  'es6/array-iterator-turbo': [SKIP],
 
   # TODO(jarin/mstarzinger): Investigate debugger issues with TurboFan.
   'debug-evaluate-locals': [FAIL],
   'debug-set-variable-value': [FAIL],
   'debug-liveedit-double-call': [FAIL],
-  'es6/debug-evaluate-blockscopes': [FAIL],
 
   # TODO(jgruber): Fails in --turbo --always-opt mode.
   'regress/regress-105': [FAIL],

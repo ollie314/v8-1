@@ -1057,15 +1057,6 @@ void JavaScriptFrame::PrintTop(Isolate* isolate, FILE* file, bool print_args,
   }
 }
 
-
-void JavaScriptFrame::SaveOperandStack(FixedArray* store) const {
-  int operands_count = store->length();
-  DCHECK_LE(operands_count, ComputeOperandsCount());
-  for (int i = 0; i < operands_count; i++) {
-    store->set(i, GetOperand(i));
-  }
-}
-
 Object* JavaScriptFrame::GetParameter(int index) const {
   return Memory::Object_at(GetParameterSlot(index));
 }
@@ -1487,7 +1478,28 @@ void StackFrame::PrintIndex(StringStream* accumulator,
 
 void WasmFrame::Print(StringStream* accumulator, PrintMode mode,
                       int index) const {
-  accumulator->Add("wasm frame");
+  PrintIndex(accumulator, mode, index);
+  accumulator->Add("WASM [");
+  Script* script = this->script();
+  accumulator->PrintName(script->name());
+  int pc = static_cast<int>(this->pc() - LookupCode()->instruction_start());
+  Vector<const uint8_t> raw_func_name;
+  Object* instance_or_undef = this->wasm_instance();
+  if (instance_or_undef->IsUndefined(this->isolate())) {
+    raw_func_name = STATIC_CHAR_VECTOR("<undefined>");
+  } else {
+    raw_func_name = WasmInstanceObject::cast(instance_or_undef)
+                        ->get_compiled_module()
+                        ->GetRawFunctionName(this->function_index());
+  }
+  const int kMaxPrintedFunctionName = 64;
+  char func_name[kMaxPrintedFunctionName + 1];
+  int func_name_len = std::min(kMaxPrintedFunctionName, raw_func_name.length());
+  memcpy(func_name, raw_func_name.start(), func_name_len);
+  func_name[func_name_len] = '\0';
+  accumulator->Add("], function #%u ('%s'), pc=%p, pos=%d\n",
+                   this->function_index(), func_name, pc, this->position());
+  if (mode != OVERVIEW) accumulator->Add("\n");
 }
 
 Code* WasmFrame::unchecked_code() const {

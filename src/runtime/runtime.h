@@ -169,6 +169,7 @@ namespace internal {
   F(ChangeBreakOnException, 2, 1)               \
   F(IsBreakOnException, 1, 1)                   \
   F(PrepareStep, 2, 1)                          \
+  F(PrepareStepFrame, 0, 1)                     \
   F(ClearStepping, 0, 1)                        \
   F(DebugEvaluate, 6, 1)                        \
   F(DebugEvaluateGlobal, 4, 1)                  \
@@ -190,10 +191,11 @@ namespace internal {
   F(ScriptLocationFromLine, 4, 1)               \
   F(ScriptLocationFromLine2, 4, 1)              \
   F(ScriptPositionInfo, 3, 1)                   \
+  F(ScriptPositionInfo2, 3, 1)                  \
   F(ScriptSourceLine, 2, 1)                     \
   F(DebugPrepareStepInIfStepping, 1, 1)         \
   F(DebugPrepareStepInSuspendedGenerator, 0, 1) \
-  F(DebugRecordAsyncFunction, 1, 1)             \
+  F(DebugRecordGenerator, 1, 1)                 \
   F(DebugPushPromise, 1, 1)                     \
   F(DebugPopPromise, 0, 1)                      \
   F(DebugNextMicrotaskId, 0, 1)                 \
@@ -239,7 +241,6 @@ namespace internal {
 
 #define FOR_EACH_INTRINSIC_GENERATOR(F) \
   F(CreateJSGeneratorObject, 2, 1)      \
-  F(SuspendJSGeneratorObject, 1, 1)     \
   F(GeneratorClose, 1, 1)               \
   F(GeneratorGetFunction, 1, 1)         \
   F(GeneratorGetReceiver, 1, 1)         \
@@ -944,8 +945,8 @@ namespace internal {
   F(KeyedStoreIC_Miss, 5, 1)                 \
   F(KeyedStoreIC_Slow, 5, 1)                 \
   F(LoadElementWithInterceptor, 2, 1)        \
-  F(LoadGlobalIC_Miss, 2, 1)                 \
-  F(LoadGlobalIC_Slow, 2, 1)                 \
+  F(LoadGlobalIC_Miss, 3, 1)                 \
+  F(LoadGlobalIC_Slow, 1, 1)                 \
   F(LoadIC_Miss, 4, 1)                       \
   F(LoadPropertyWithInterceptor, 3, 1)       \
   F(LoadPropertyWithInterceptorOnly, 3, 1)   \

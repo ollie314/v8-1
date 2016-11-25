@@ -181,10 +181,6 @@ enum KeyedAccessStoreMode {
   STORE_NO_TRANSITION_HANDLE_COW
 };
 
-
-enum TypeofMode : int { INSIDE_TYPEOF, NOT_INSIDE_TYPEOF };
-
-
 enum MutableMode {
   MUTABLE,
   IMMUTABLE
@@ -2855,8 +2851,11 @@ class FixedArray: public FixedArrayBase {
 
   // Setters for frequently used oddballs located in old space.
   inline void set_undefined(int index);
+  inline void set_undefined(Isolate* isolate, int index);
   inline void set_null(int index);
+  inline void set_null(Isolate* isolate, int index);
   inline void set_the_hole(int index);
+  inline void set_the_hole(Isolate* isolate, int index);
 
   inline Object** GetFirstElementAddress();
   inline bool ContainsOnlySmisOrHoles();
@@ -2933,6 +2932,7 @@ class FixedDoubleArray: public FixedArrayBase {
   static inline Handle<Object> get(FixedDoubleArray* array, int index,
                                    Isolate* isolate);
   inline void set(int index, double value);
+  inline void set_the_hole(Isolate* isolate, int index);
   inline void set_the_hole(int index);
 
   // Checking for the hole.
@@ -5230,6 +5230,12 @@ class DeoptimizationInputData: public FixedArray {
 
   inline int DeoptCount();
 
+  static const int kNotInlinedIndex = -1;
+
+  // Returns the inlined function at the given position in LiteralArray, or the
+  // outer function if index == kNotInlinedIndex.
+  class SharedFunctionInfo* GetInlinedFunction(int index);
+
   // Allocates a DeoptimizationInputData.
   static Handle<DeoptimizationInputData> New(Isolate* isolate,
                                              int deopt_entry_count,
@@ -7105,11 +7111,6 @@ class Script: public Struct {
   inline CompilationState compilation_state();
   inline void set_compilation_state(CompilationState state);
 
-  // [hide_source]: determines whether the script source can be exposed as
-  // function source. Encoded in the 'flags' field.
-  inline bool hide_source();
-  inline void set_hide_source(bool value);
-
   // [origin_options]: optional attributes set by the embedder via ScriptOrigin,
   // and used by the embedder to make decisions about the script. V8 just passes
   // this through. Encoded in the 'flags' field.
@@ -7210,8 +7211,7 @@ class Script: public Struct {
   // Bit positions in the flags field.
   static const int kCompilationTypeBit = 0;
   static const int kCompilationStateBit = 1;
-  static const int kHideSourceBit = 2;
-  static const int kOriginOptionsShift = 3;
+  static const int kOriginOptionsShift = 2;
   static const int kOriginOptionsSize = 3;
   static const int kOriginOptionsMask = ((1 << kOriginOptionsSize) - 1)
                                         << kOriginOptionsShift;
@@ -7235,6 +7235,7 @@ class Script: public Struct {
   V(Array.prototype, push, ArrayPush)                       \
   V(Array.prototype, pop, ArrayPop)                         \
   V(Array.prototype, shift, ArrayShift)                     \
+  V(Date, now, DateNow)                                     \
   V(Date.prototype, getDate, DateGetDate)                   \
   V(Date.prototype, getDay, DateGetDay)                     \
   V(Date.prototype, getFullYear, DateGetFullYear)           \
@@ -7247,6 +7248,10 @@ class Script: public Struct {
   V(Function.prototype, apply, FunctionApply)               \
   V(Function.prototype, call, FunctionCall)                 \
   V(Object.prototype, hasOwnProperty, ObjectHasOwnProperty) \
+  V(RegExp.prototype, compile, RegExpCompile)               \
+  V(RegExp.prototype, exec, RegExpExec)                     \
+  V(RegExp.prototype, test, RegExpTest)                     \
+  V(RegExp.prototype, toString, RegExpToString)             \
   V(String.prototype, charCodeAt, StringCharCodeAt)         \
   V(String.prototype, charAt, StringCharAt)                 \
   V(String.prototype, concat, StringConcat)                 \
@@ -7319,6 +7324,7 @@ enum BuiltinFunctionId {
   kDataViewBuffer,
   kDataViewByteLength,
   kDataViewByteOffset,
+  kFunctionHasInstance,
   kGlobalDecodeURI,
   kGlobalDecodeURIComponent,
   kGlobalEncodeURI,
@@ -7643,8 +7649,10 @@ class SharedFunctionInfo: public HeapObject {
   // Is this a function or top-level/eval code.
   DECL_BOOLEAN_ACCESSORS(is_function)
 
-  // Indicates that code for this function cannot be compiled with Crankshaft.
-  DECL_BOOLEAN_ACCESSORS(dont_crankshaft)
+  // Indicates that code for this function must be compiled through the
+  // Ignition / TurboFan pipeline, and is unsupported by
+  // FullCodegen / Crankshaft.
+  DECL_BOOLEAN_ACCESSORS(must_use_ignition_turbo)
 
   // Indicates that code for this function cannot be flushed.
   DECL_BOOLEAN_ACCESSORS(dont_flush)
@@ -7727,8 +7735,8 @@ class SharedFunctionInfo: public HeapObject {
   // Tells whether this function should be subject to debugging.
   inline bool IsSubjectToDebugging();
 
-  // Whether this function is defined in native code or extensions.
-  inline bool IsBuiltin();
+  // Whether this function is defined in user-provided JavaScript code.
+  inline bool IsUserJavaScript();
 
   // Check whether or not this function is inlineable.
   bool IsInlineable();
@@ -7933,7 +7941,7 @@ class SharedFunctionInfo: public HeapObject {
     kIsAnonymousExpression,
     kNameShouldPrintAsAnonymous,
     kIsFunction,
-    kDontCrankshaft,
+    kMustUseIgnitionTurbo,
     kDontFlush,
     // byte 2
     kFunctionKind,
@@ -8060,8 +8068,7 @@ class JSGeneratorObject: public JSObject {
 
   // [input_or_debug_pos]
   // For executing generators: the most recent input value.
-  // For suspended new-style generators: debug information (bytecode offset).
-  // For suspended old-style generators: unused.
+  // For suspended generators: debug information (bytecode offset).
   // There is currently no need to remember the most recent input value for a
   // suspended generator.
   DECL_ACCESSORS(input_or_debug_pos, Object)
@@ -8085,8 +8092,8 @@ class JSGeneratorObject: public JSObject {
   // is suspended.
   int source_position() const;
 
-  // [operand_stack]: Saved operand stack.
-  DECL_ACCESSORS(operand_stack, FixedArray)
+  // [register_file]: Saved interpreter register file.
+  DECL_ACCESSORS(register_file, FixedArray)
 
   DECLARE_CAST(JSGeneratorObject)
 
@@ -8104,8 +8111,8 @@ class JSGeneratorObject: public JSObject {
   static const int kInputOrDebugPosOffset = kReceiverOffset + kPointerSize;
   static const int kResumeModeOffset = kInputOrDebugPosOffset + kPointerSize;
   static const int kContinuationOffset = kResumeModeOffset + kPointerSize;
-  static const int kOperandStackOffset = kContinuationOffset + kPointerSize;
-  static const int kSize = kOperandStackOffset + kPointerSize;
+  static const int kRegisterFileOffset = kContinuationOffset + kPointerSize;
+  static const int kSize = kRegisterFileOffset + kPointerSize;
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(JSGeneratorObject);
@@ -11017,6 +11024,9 @@ class JSArrayBuffer: public JSObject {
   inline bool is_shared();
   inline void set_is_shared(bool value);
 
+  inline bool has_guard_region();
+  inline void set_has_guard_region(bool value);
+
   DECLARE_CAST(JSArrayBuffer)
 
   void Neuter();
@@ -11056,6 +11066,7 @@ class JSArrayBuffer: public JSObject {
   class IsNeuterable : public BitField<bool, 2, 1> {};
   class WasNeutered : public BitField<bool, 3, 1> {};
   class IsShared : public BitField<bool, 4, 1> {};
+  class HasGuardRegion : public BitField<bool, 5, 1> {};
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(JSArrayBuffer);

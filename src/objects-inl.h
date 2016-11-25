@@ -2420,6 +2420,9 @@ void FixedDoubleArray::set(int index, double value) {
   DCHECK(!is_the_hole(index));
 }
 
+void FixedDoubleArray::set_the_hole(Isolate* isolate, int index) {
+  set_the_hole(index);
+}
 
 void FixedDoubleArray::set_the_hole(int index) {
   DCHECK(map() != GetHeap()->fixed_cow_array_map() &&
@@ -2597,8 +2600,9 @@ AllocationAlignment HeapObject::RequiredAlignment() {
 void FixedArray::set(int index,
                      Object* value,
                      WriteBarrierMode mode) {
-  DCHECK(map() != GetHeap()->fixed_cow_array_map());
-  DCHECK(index >= 0 && index < this->length());
+  DCHECK_NE(map(), GetHeap()->fixed_cow_array_map());
+  DCHECK_GE(index, 0);
+  DCHECK_LT(index, this->length());
   int offset = kHeaderSize + index * kPointerSize;
   WRITE_FIELD(this, offset, value);
   CONDITIONAL_WRITE_BARRIER(GetHeap(), this, offset, value, mode);
@@ -2608,45 +2612,38 @@ void FixedArray::set(int index,
 void FixedArray::NoWriteBarrierSet(FixedArray* array,
                                    int index,
                                    Object* value) {
-  DCHECK(array->map() != array->GetHeap()->fixed_cow_array_map());
-  DCHECK(index >= 0 && index < array->length());
+  DCHECK_NE(array->map(), array->GetHeap()->fixed_cow_array_map());
+  DCHECK_GE(index, 0);
+  DCHECK_LT(index, array->length());
   DCHECK(!array->GetHeap()->InNewSpace(value));
   WRITE_FIELD(array, kHeaderSize + index * kPointerSize, value);
 }
 
-
 void FixedArray::set_undefined(int index) {
-  DCHECK(map() != GetHeap()->fixed_cow_array_map());
-  DCHECK(index >= 0 && index < this->length());
-  DCHECK(!GetHeap()->InNewSpace(GetHeap()->undefined_value()));
-  WRITE_FIELD(this,
-              kHeaderSize + index * kPointerSize,
-              GetHeap()->undefined_value());
+  set_undefined(GetIsolate(), index);
 }
 
-
-void FixedArray::set_null(int index) {
-  DCHECK(index >= 0 && index < this->length());
-  DCHECK(!GetHeap()->InNewSpace(GetHeap()->null_value()));
-  WRITE_FIELD(this,
-              kHeaderSize + index * kPointerSize,
-              GetHeap()->null_value());
+void FixedArray::set_undefined(Isolate* isolate, int index) {
+  FixedArray::NoWriteBarrierSet(this, index,
+                                isolate->heap()->undefined_value());
 }
 
+void FixedArray::set_null(int index) { set_null(GetIsolate(), index); }
 
-void FixedArray::set_the_hole(int index) {
-  DCHECK(map() != GetHeap()->fixed_cow_array_map());
-  DCHECK(index >= 0 && index < this->length());
-  DCHECK(!GetHeap()->InNewSpace(GetHeap()->the_hole_value()));
-  WRITE_FIELD(this,
-              kHeaderSize + index * kPointerSize,
-              GetHeap()->the_hole_value());
+void FixedArray::set_null(Isolate* isolate, int index) {
+  FixedArray::NoWriteBarrierSet(this, index, isolate->heap()->null_value());
 }
 
+void FixedArray::set_the_hole(int index) { set_the_hole(GetIsolate(), index); }
+
+void FixedArray::set_the_hole(Isolate* isolate, int index) {
+  FixedArray::NoWriteBarrierSet(this, index, isolate->heap()->the_hole_value());
+}
 
 void FixedArray::FillWithHoles(int from, int to) {
+  Isolate* isolate = GetIsolate();
   for (int i = from; i < to; i++) {
-    set_the_hole(i);
+    set_the_hole(isolate, i);
   }
 }
 
@@ -4128,14 +4125,14 @@ void ByteArray::set(int index, byte value) {
 }
 
 void ByteArray::copy_in(int index, const byte* buffer, int length) {
-  DCHECK(index >= 0 && length >= 0 && index + length >= index &&
+  DCHECK(index >= 0 && length >= 0 && length <= kMaxInt - index &&
          index + length <= this->length());
   byte* dst_addr = FIELD_ADDR(this, kHeaderSize + index * kCharSize);
   memcpy(dst_addr, buffer, length);
 }
 
 void ByteArray::copy_out(int index, byte* buffer, int length) {
-  DCHECK(index >= 0 && length >= 0 && index + length >= index &&
+  DCHECK(index >= 0 && length >= 0 && length <= kMaxInt - index &&
          index + length <= this->length());
   const byte* src_addr = FIELD_ADDR(this, kHeaderSize + index * kCharSize);
   memcpy(buffer, src_addr, length);
@@ -5948,10 +5945,6 @@ void Script::set_compilation_type(CompilationType type) {
   set_flags(BooleanBit::set(flags(), kCompilationTypeBit,
       type == COMPILATION_TYPE_EVAL));
 }
-bool Script::hide_source() { return BooleanBit::get(flags(), kHideSourceBit); }
-void Script::set_hide_source(bool value) {
-  set_flags(BooleanBit::set(flags(), kHideSourceBit, value));
-}
 Script::CompilationState Script::compilation_state() {
   return BooleanBit::get(flags(), kCompilationStateBit) ?
       COMPILATION_STATE_COMPILED : COMPILATION_STATE_INITIAL;
@@ -6203,8 +6196,8 @@ BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints,
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_anonymous_expression,
                kIsAnonymousExpression)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_function, kIsFunction)
-BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, dont_crankshaft,
-               kDontCrankshaft)
+BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, must_use_ignition_turbo,
+               kMustUseIgnitionTurbo)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, dont_flush, kDontFlush)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_asm_wasm_broken,
                kIsAsmWasmBroken)
@@ -6497,17 +6490,15 @@ void SharedFunctionInfo::set_disable_optimization_reason(BailoutReason reason) {
       opt_count_and_bailout_reason(), reason));
 }
 
-
-bool SharedFunctionInfo::IsBuiltin() {
+bool SharedFunctionInfo::IsUserJavaScript() {
   Object* script_obj = script();
-  if (script_obj->IsUndefined(GetIsolate())) return true;
+  if (script_obj->IsUndefined(GetIsolate())) return false;
   Script* script = Script::cast(script_obj);
-  Script::Type type = static_cast<Script::Type>(script->type());
-  return type != Script::TYPE_NORMAL;
+  return static_cast<Script::Type>(script->type()) == Script::TYPE_NORMAL;
 }
 
 bool SharedFunctionInfo::IsSubjectToDebugging() {
-  return !IsBuiltin() && !HasAsmWasmData();
+  return IsUserJavaScript() && !HasAsmWasmData();
 }
 
 bool SharedFunctionInfo::OptimizedCodeMapIsCleared() const {
@@ -6750,7 +6741,7 @@ ACCESSORS(JSGeneratorObject, receiver, Object, kReceiverOffset)
 ACCESSORS(JSGeneratorObject, input_or_debug_pos, Object, kInputOrDebugPosOffset)
 SMI_ACCESSORS(JSGeneratorObject, resume_mode, kResumeModeOffset)
 SMI_ACCESSORS(JSGeneratorObject, continuation, kContinuationOffset)
-ACCESSORS(JSGeneratorObject, operand_stack, FixedArray, kOperandStackOffset)
+ACCESSORS(JSGeneratorObject, register_file, FixedArray, kRegisterFileOffset)
 
 bool JSGeneratorObject::is_suspended() const {
   DCHECK_LT(kGeneratorExecuting, 0);
@@ -6984,6 +6975,7 @@ bool JSArrayBuffer::is_external() { return IsExternal::decode(bit_field()); }
 
 
 void JSArrayBuffer::set_is_external(bool value) {
+  DCHECK(!value || !has_guard_region());
   set_bit_field(IsExternal::update(bit_field(), value));
 }
 
@@ -7013,6 +7005,13 @@ void JSArrayBuffer::set_is_shared(bool value) {
   set_bit_field(IsShared::update(bit_field(), value));
 }
 
+bool JSArrayBuffer::has_guard_region() {
+  return HasGuardRegion::decode(bit_field());
+}
+
+void JSArrayBuffer::set_has_guard_region(bool value) {
+  set_bit_field(HasGuardRegion::update(bit_field(), value));
+}
 
 Object* JSArrayBufferView::byte_offset() const {
   if (WasNeutered()) return Smi::kZero;
@@ -8129,11 +8128,13 @@ void JSArray::set_length(Smi* length) {
 
 
 bool JSArray::SetLengthWouldNormalize(Heap* heap, uint32_t new_length) {
+  // This constant is somewhat arbitrary. Any large enough value would work.
+  const uint32_t kMaxFastArrayLength = 32 * 1024 * 1024;
   // If the new array won't fit in a some non-trivial fraction of the max old
   // space size, then force it to go dictionary mode.
-  uint32_t max_fast_array_size =
+  uint32_t heap_based_upper_bound =
       static_cast<uint32_t>((heap->MaxOldGenerationSize() / kDoubleSize) / 4);
-  return new_length >= max_fast_array_size;
+  return new_length >= Min(kMaxFastArrayLength, heap_based_upper_bound);
 }
 
 

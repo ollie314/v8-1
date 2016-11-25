@@ -113,6 +113,11 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   // tree and its children are reparented.
   Scope* FinalizeBlockScope();
 
+  bool HasBeenRemoved() const;
+
+  // Find the first scope that hasn't been removed.
+  Scope* GetUnremovedScope();
+
   // Inserts outer_scope into this scope's scope chain (and removes this
   // from the current outer_scope_'s inner scope list).
   // Assumes outer_scope_ is non-null.
@@ -426,9 +431,8 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   }
 
  private:
-  Variable* Declare(Zone* zone, Scope* scope, const AstRawString* name,
-                    VariableMode mode, VariableKind kind,
-                    InitializationFlag initialization_flag,
+  Variable* Declare(Zone* zone, const AstRawString* name, VariableMode mode,
+                    VariableKind kind, InitializationFlag initialization_flag,
                     MaybeAssignedFlag maybe_assigned_flag = kNotAssigned);
 
   // This method should only be invoked on scopes created during parsing (i.e.,
@@ -624,7 +628,7 @@ class DeclarationScope : public Scope {
   bool asm_module() const { return asm_module_; }
   void set_asm_module();
   bool asm_function() const { return asm_function_; }
-  void set_asm_function() { asm_module_ = true; }
+  void set_asm_function() { asm_function_ = true; }
 
   void DeclareThis(AstValueFactory* ast_value_factory);
   void DeclareArguments(AstValueFactory* ast_value_factory);

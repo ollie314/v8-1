@@ -17,7 +17,6 @@
 #include "src/compiler/node-properties.h"
 #include "src/compiler/operator-properties.h"
 #include "src/compiler/state-values-utils.h"
-#include "src/compiler/type-hint-analyzer.h"
 
 namespace v8 {
 namespace internal {
@@ -413,8 +412,7 @@ class AstGraphBuilder::ControlScopeForFinally : public ControlScope {
 
 AstGraphBuilder::AstGraphBuilder(Zone* local_zone, CompilationInfo* info,
                                  JSGraph* jsgraph, float invocation_frequency,
-                                 LoopAssignmentAnalysis* loop,
-                                 TypeHintAnalysis* type_hint_analysis)
+                                 LoopAssignmentAnalysis* loop)
     : isolate_(info->isolate()),
       local_zone_(local_zone),
       info_(info),
@@ -430,7 +428,6 @@ AstGraphBuilder::AstGraphBuilder(Zone* local_zone, CompilationInfo* info,
       input_buffer_(nullptr),
       exit_controls_(local_zone),
       loop_assignment_analysis_(loop),
-      type_hint_analysis_(type_hint_analysis),
       state_values_cache_(jsgraph),
       liveness_analyzer_(static_cast<size_t>(info->scope()->num_stack_slots()),
                          false, local_zone),
@@ -1092,6 +1089,7 @@ void AstGraphBuilder::VisitVariableDeclaration(VariableDeclaration* decl) {
   switch (variable->location()) {
     case VariableLocation::UNALLOCATED: {
       DCHECK(!variable->binding_needs_init());
+      globals()->push_back(variable->name());
       FeedbackVectorSlot slot = decl->proxy()->VariableFeedbackSlot();
       DCHECK(!slot.IsInvalid());
       globals()->push_back(handle(Smi::FromInt(slot.ToInt()), isolate()));
@@ -1134,6 +1132,7 @@ void AstGraphBuilder::VisitFunctionDeclaration(FunctionDeclaration* decl) {
           decl->fun(), info()->script(), info());
       // Check for stack-overflow exception.
       if (function.is_null()) return SetStackOverflow();
+      globals()->push_back(variable->name());
       FeedbackVectorSlot slot = decl->proxy()->VariableFeedbackSlot();
       DCHECK(!slot.IsInvalid());
       globals()->push_back(handle(Smi::FromInt(slot.ToInt()), isolate()));
@@ -1277,13 +1276,7 @@ void AstGraphBuilder::VisitSwitchStatement(SwitchStatement* stmt) {
     Node* label = environment()->Pop();
     Node* tag = environment()->Top();
 
-    CompareOperationHint hint;
-    if (!type_hint_analysis_ ||
-        !type_hint_analysis_->GetCompareOperationHint(clause->CompareId(),
-                                                      &hint)) {
-      hint = CompareOperationHint::kAny;
-    }
-
+    CompareOperationHint hint = CompareOperationHint::kAny;
     const Operator* op = javascript()->StrictEqual(hint);
     Node* condition = NewNode(op, tag, label);
     compare_switch.BeginLabel(i, condition);
@@ -2205,8 +2198,7 @@ void AstGraphBuilder::VisitAssignment(Assignment* expr) {
 
 void AstGraphBuilder::VisitYield(Yield* expr) {
   // Generator functions are supported only by going through Ignition first.
-  SetStackOverflow();
-  ast_context()->ProduceValue(expr, jsgraph()->UndefinedConstant());
+  UNREACHABLE();
 }
 
 
@@ -2804,13 +2796,7 @@ void AstGraphBuilder::VisitCompareOperation(CompareOperation* expr) {
     return VisitLiteralCompareNil(expr, sub_expr, jsgraph()->NullConstant());
   }
 
-  CompareOperationHint hint;
-  if (!type_hint_analysis_ ||
-      !type_hint_analysis_->GetCompareOperationHint(
-          expr->CompareOperationFeedbackId(), &hint)) {
-    hint = CompareOperationHint::kAny;
-  }
-
+  CompareOperationHint hint = CompareOperationHint::kAny;
   const Operator* op;
   switch (expr->op()) {
     case Token::EQ:
@@ -2905,10 +2891,10 @@ void AstGraphBuilder::VisitDeclarations(Declaration::List* declarations) {
   for (Handle<Object> obj : *globals()) data->set(array_index++, *obj);
   int encoded_flags = info()->GetDeclareGlobalsFlags();
   Node* flags = jsgraph()->Constant(encoded_flags);
-  Node* pairs = jsgraph()->Constant(data);
+  Node* decls = jsgraph()->Constant(data);
   Node* vector = jsgraph()->Constant(feedback_vector);
   const Operator* op = javascript()->CallRuntime(Runtime::kDeclareGlobals);
-  Node* call = NewNode(op, pairs, flags, vector);
+  Node* call = NewNode(op, decls, flags, vector);
   PrepareFrameState(call, BailoutId::Declarations());
   globals()->clear();
 }
@@ -3551,7 +3537,7 @@ Node* AstGraphBuilder::BuildVariableAssignment(
 Node* AstGraphBuilder::BuildKeyedLoad(Node* object, Node* key,
                                       const VectorSlotPair& feedback) {
   const Operator* op = javascript()->LoadProperty(feedback);
-  Node* node = NewNode(op, object, key, GetFunctionClosure());
+  Node* node = NewNode(op, object, key);
   return node;
 }
 
@@ -3559,7 +3545,7 @@ Node* AstGraphBuilder::BuildKeyedLoad(Node* object, Node* key,
 Node* AstGraphBuilder::BuildNamedLoad(Node* object, Handle<Name> name,
                                       const VectorSlotPair& feedback) {
   const Operator* op = javascript()->LoadNamed(name, feedback);
-  Node* node = NewNode(op, object, GetFunctionClosure());
+  Node* node = NewNode(op, object);
   return node;
 }
 
@@ -3567,7 +3553,7 @@ Node* AstGraphBuilder::BuildNamedLoad(Node* object, Handle<Name> name,
 Node* AstGraphBuilder::BuildKeyedStore(Node* object, Node* key, Node* value,
                                        const VectorSlotPair& feedback) {
   const Operator* op = javascript()->StoreProperty(language_mode(), feedback);
-  Node* node = NewNode(op, object, key, value, GetFunctionClosure());
+  Node* node = NewNode(op, object, key, value);
   return node;
 }
 
@@ -3577,7 +3563,7 @@ Node* AstGraphBuilder::BuildNamedStore(Node* object, Handle<Name> name,
                                        const VectorSlotPair& feedback) {
   const Operator* op =
       javascript()->StoreNamed(language_mode(), name, feedback);
-  Node* node = NewNode(op, object, value, GetFunctionClosure());
+  Node* node = NewNode(op, object, value);
   return node;
 }
 
@@ -3628,7 +3614,7 @@ Node* AstGraphBuilder::BuildGlobalLoad(Handle<Name> name,
                                        const VectorSlotPair& feedback,
                                        TypeofMode typeof_mode) {
   const Operator* op = javascript()->LoadGlobal(name, feedback, typeof_mode);
-  Node* node = NewNode(op, GetFunctionClosure());
+  Node* node = NewNode(op);
   return node;
 }
 
@@ -3637,7 +3623,7 @@ Node* AstGraphBuilder::BuildGlobalStore(Handle<Name> name, Node* value,
                                         const VectorSlotPair& feedback) {
   const Operator* op =
       javascript()->StoreGlobal(language_mode(), name, feedback);
-  Node* node = NewNode(op, value, GetFunctionClosure());
+  Node* node = NewNode(op, value);
   return node;
 }
 
@@ -3679,11 +3665,7 @@ Node* AstGraphBuilder::BuildLoadNativeContextField(int index) {
 
 Node* AstGraphBuilder::BuildToBoolean(Node* input, TypeFeedbackId feedback_id) {
   if (Node* node = TryFastToBoolean(input)) return node;
-  ToBooleanHints hints;
-  if (!type_hint_analysis_ ||
-      !type_hint_analysis_->GetToBooleanHints(feedback_id, &hints)) {
-    hints = ToBooleanHint::kAny;
-  }
+  ToBooleanHints hints = ToBooleanHint::kAny;
   return NewNode(javascript()->ToBoolean(hints), input);
 }
 
@@ -3796,11 +3778,7 @@ Node* AstGraphBuilder::BuildThrow(Node* exception_value) {
 Node* AstGraphBuilder::BuildBinaryOp(Node* left, Node* right, Token::Value op,
                                      TypeFeedbackId feedback_id) {
   const Operator* js_op;
-  BinaryOperationHint hint;
-  if (!type_hint_analysis_ ||
-      !type_hint_analysis_->GetBinaryOperationHint(feedback_id, &hint)) {
-    hint = BinaryOperationHint::kAny;
-  }
+  BinaryOperationHint hint = BinaryOperationHint::kAny;
   switch (op) {
     case Token::BIT_OR:
       js_op = javascript()->BitwiseOr(hint);
@@ -4364,10 +4342,9 @@ Node* AstGraphBuilder::MergeValue(Node* value, Node* other, Node* control) {
 AstGraphBuilderWithPositions::AstGraphBuilderWithPositions(
     Zone* local_zone, CompilationInfo* info, JSGraph* jsgraph,
     float invocation_frequency, LoopAssignmentAnalysis* loop_assignment,
-    TypeHintAnalysis* type_hint_analysis, SourcePositionTable* source_positions,
-    int inlining_id)
+    SourcePositionTable* source_positions, int inlining_id)
     : AstGraphBuilder(local_zone, info, jsgraph, invocation_frequency,
-                      loop_assignment, type_hint_analysis),
+                      loop_assignment),
       source_positions_(source_positions),
       start_position_(info->shared_info()->start_position(), inlining_id) {}
 

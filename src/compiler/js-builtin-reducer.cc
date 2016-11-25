@@ -444,8 +444,9 @@ Reduction JSBuiltinReducer::ReduceFastArrayIteratorNext(
 
         if (kind == IterationKind::kEntries) {
           // Allocate elements for key/value pair
-          vtrue1 = etrue1 = graph()->NewNode(
-              javascript()->CreateKeyValueArray(), index, value, etrue1);
+          vtrue1 = etrue1 =
+              graph()->NewNode(javascript()->CreateKeyValueArray(), index,
+                               value, context, etrue1);
         } else {
           DCHECK_EQ(kind, IterationKind::kValues);
           vtrue1 = value;
@@ -620,8 +621,9 @@ Reduction JSBuiltinReducer::ReduceTypedArrayIteratorNext(
 
         if (kind == IterationKind::kEntries) {
           // Allocate elements for key/value pair
-          vtrue2 = etrue2 = graph()->NewNode(
-              javascript()->CreateKeyValueArray(), index, value, etrue2);
+          vtrue2 = etrue2 =
+              graph()->NewNode(javascript()->CreateKeyValueArray(), index,
+                               value, context, etrue2);
         } else {
           DCHECK(kind == IterationKind::kValues);
           vtrue2 = value;
@@ -960,6 +962,34 @@ Reduction JSBuiltinReducer::ReduceDateGetTime(Node* node) {
     return Replace(value);
   }
   return NoChange();
+}
+
+// ES6 section 19.2.3.6 Function.prototype [ @@hasInstance ] ( V )
+Reduction JSBuiltinReducer::ReduceFunctionHasInstance(Node* node) {
+  Node* receiver = NodeProperties::GetValueInput(node, 1);
+  Node* object = (node->op()->ValueInputCount() >= 3)
+                     ? NodeProperties::GetValueInput(node, 2)
+                     : jsgraph()->UndefinedConstant();
+  Node* context = NodeProperties::GetContextInput(node);
+  Node* frame_state = NodeProperties::GetFrameStateInput(node);
+  Node* effect = NodeProperties::GetEffectInput(node);
+  Node* control = NodeProperties::GetControlInput(node);
+
+  // TODO(turbofan): If JSOrdinaryToInstance raises an exception, the
+  // stack trace doesn't contain the @@hasInstance call; we have the
+  // corresponding bug in the baseline case. Some massaging of the frame
+  // state would be necessary here.
+
+  // Morph this {node} into a JSOrdinaryHasInstance node.
+  node->ReplaceInput(0, receiver);
+  node->ReplaceInput(1, object);
+  node->ReplaceInput(2, context);
+  node->ReplaceInput(3, frame_state);
+  node->ReplaceInput(4, effect);
+  node->ReplaceInput(5, control);
+  node->TrimInputCount(6);
+  NodeProperties::ChangeOp(node, javascript()->OrdinaryHasInstance());
+  return Changed(node);
 }
 
 // ES6 section 18.2.2 isFinite ( number )
@@ -1845,6 +1875,9 @@ Reduction JSBuiltinReducer::Reduce(Node* node) {
       return ReduceArrayPush(node);
     case kDateGetTime:
       return ReduceDateGetTime(node);
+    case kFunctionHasInstance:
+      return ReduceFunctionHasInstance(node);
+      break;
     case kGlobalIsFinite:
       reduction = ReduceGlobalIsFinite(node);
       break;

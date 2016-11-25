@@ -84,6 +84,7 @@ bool FullCodeGenerator::MakeCode(CompilationInfo* info) {
 bool FullCodeGenerator::MakeCode(CompilationInfo* info, uintptr_t stack_limit) {
   Isolate* isolate = info->isolate();
 
+  DCHECK(!info->shared_info()->must_use_ignition_turbo());
   DCHECK(!FLAG_minimal);
   RuntimeCallTimerScope runtimeTimer(isolate,
                                      &RuntimeCallStats::CompileFullCode);
@@ -508,6 +509,7 @@ void FullCodeGenerator::EmitGlobalVariableLoad(VariableProxy* proxy,
                proxy->VariableFeedbackSlot());
   Handle<Code> code = CodeFactory::LoadGlobalIC(isolate(), typeof_mode).code();
   __ Call(code, RelocInfo::CODE_TARGET);
+  RestoreContext();
 }
 
 void FullCodeGenerator::VisitSloppyBlockFunctionStatement(

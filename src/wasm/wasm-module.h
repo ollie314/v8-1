@@ -41,6 +41,11 @@ const uint32_t kWasmVersion = 0x0d;
 const uint8_t kWasmFunctionTypeForm = 0x60;
 const uint8_t kWasmAnyFunctionTypeForm = 0x70;
 
+const uint64_t kWasmMaxHeapOffset =
+    static_cast<uint64_t>(
+        std::numeric_limits<uint32_t>::max())  // maximum base value
+    + std::numeric_limits<uint32_t>::max();    // maximum index value
+
 enum WasmSectionCode {
   kUnknownSectionCode = 0,   // code for unknown sections
   kTypeSectionCode = 1,      // Function signature declarations
@@ -359,9 +364,6 @@ std::ostream& operator<<(std::ostream& os, const WasmFunctionName& name);
 Handle<String> GetWasmFunctionName(Isolate* isolate, Handle<Object> instance,
                                    uint32_t func_index);
 
-// Return the binary source bytes of a wasm module.
-Handle<SeqOneByteString> GetWasmBytes(Handle<JSObject> wasm);
-
 // Get the debug info associated with the given wasm object.
 // If no debug info exists yet, it is created automatically.
 Handle<WasmDebugInfo> GetDebugInfo(Handle<JSObject> wasm);
@@ -376,9 +378,6 @@ int GetNumberOfFunctions(Handle<JSObject> wasm);
 // else.
 bool IsWasmInstance(Object* instance);
 
-// Return the compiled module object for this WASM instance.
-WasmCompiledModule* GetCompiledModule(Object* wasm_instance);
-
 // Check whether the wasm module was generated from asm.js code.
 bool WasmIsAsmJs(Object* instance, Isolate* isolate);
 
@@ -391,6 +390,7 @@ Handle<Script> GetScript(Handle<JSObject> instance);
 // Returns the disassembly string and a list of <byte_offset, line, column>
 // entries, mapping wasm byte offsets to line and column in the disassembly.
 // The list is guaranteed to be ordered by the byte_offset.
+// Returns an empty string and empty vector if the function index is invalid.
 std::pair<std::string, std::vector<std::tuple<uint32_t, int, int>>>
 DisassembleFunction(Handle<WasmCompiledModule> compiled_module, int func_index);
 
@@ -413,11 +413,6 @@ V8_EXPORT_PRIVATE bool ValidateModuleBytes(Isolate* isolate, const byte* start,
 int GetFunctionCodeOffset(Handle<WasmCompiledModule> compiled_module,
                           int func_index);
 
-// Translate from byte offset in the module to function number and byte offset
-// within that function, encoded as line and column in the position info.
-bool GetPositionInfo(Handle<WasmCompiledModule> compiled_module,
-                     uint32_t position, Script::PositionInfo* info);
-
 // Assumed to be called with a code object associated to a wasm module instance.
 // Intended to be called from runtime functions.
 // Returns nullptr on failing to get owning instance.
@@ -431,6 +426,15 @@ int32_t GetInstanceMemorySize(Isolate* isolate,
 
 int32_t GrowInstanceMemory(Isolate* isolate,
                            Handle<WasmInstanceObject> instance, uint32_t pages);
+
+Handle<JSArrayBuffer> NewArrayBuffer(Isolate* isolate, size_t size,
+                                     bool enable_guard_regions);
+
+int32_t GrowWebAssemblyMemory(Isolate* isolate, Handle<Object> receiver,
+                              uint32_t pages);
+
+int32_t GrowMemory(Isolate* isolate, Handle<WasmInstanceObject> instance,
+                   uint32_t pages);
 
 void UpdateDispatchTables(Isolate* isolate, Handle<FixedArray> dispatch_tables,
                           int index, Handle<JSFunction> js_function);

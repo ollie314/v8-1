@@ -2311,7 +2311,7 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
   self->set_resource(resource);
   if (is_internalized) self->Hash();  // Force regeneration of the hash value.
 
-  heap->AdjustLiveBytes(this, new_size - size, Heap::CONCURRENT_TO_SWEEPER);
+  heap->AdjustLiveBytes(this, new_size - size);
   return true;
 }
 
@@ -2377,7 +2377,7 @@ bool String::MakeExternal(v8::String::ExternalOneByteStringResource* resource) {
   self->set_resource(resource);
   if (is_internalized) self->Hash();  // Force regeneration of the hash value.
 
-  heap->AdjustLiveBytes(this, new_size - size, Heap::CONCURRENT_TO_SWEEPER);
+  heap->AdjustLiveBytes(this, new_size - size);
   return true;
 }
 
@@ -3427,7 +3427,7 @@ void MigrateFastToFast(Handle<JSObject> object, Handle<Map> new_map) {
   // If there are properties in the new backing store, trim it to the correct
   // size and install the backing store into the object.
   if (external > 0) {
-    heap->RightTrimFixedArray<Heap::CONCURRENT_TO_SWEEPER>(*array, inobject);
+    heap->RightTrimFixedArray(*array, inobject);
     object->set_properties(*array);
   }
 
@@ -3440,8 +3440,7 @@ void MigrateFastToFast(Handle<JSObject> object, Handle<Map> new_map) {
     Address address = object->address();
     heap->CreateFillerObjectAt(address + new_instance_size, instance_size_delta,
                                ClearRecordedSlots::kYes);
-    heap->AdjustLiveBytes(*object, -instance_size_delta,
-                          Heap::CONCURRENT_TO_SWEEPER);
+    heap->AdjustLiveBytes(*object, -instance_size_delta);
   }
 
   // We are storing the new map using release store after creating a filler for
@@ -3536,8 +3535,7 @@ void MigrateFastToSlow(Handle<JSObject> object, Handle<Map> new_map,
     Heap* heap = isolate->heap();
     heap->CreateFillerObjectAt(object->address() + new_instance_size,
                                instance_size_delta, ClearRecordedSlots::kYes);
-    heap->AdjustLiveBytes(*object, -instance_size_delta,
-                          Heap::CONCURRENT_TO_SWEEPER);
+    heap->AdjustLiveBytes(*object, -instance_size_delta);
   }
 
   // We are storing the new map using release store after creating a filler for
@@ -10141,8 +10139,7 @@ Handle<FixedArray> FixedArray::SetAndGrow(Handle<FixedArray> array, int index,
 void FixedArray::Shrink(int new_length) {
   DCHECK(0 <= new_length && new_length <= length());
   if (new_length < length()) {
-    GetHeap()->RightTrimFixedArray<Heap::CONCURRENT_TO_SWEEPER>(
-        this, length() - new_length);
+    GetHeap()->RightTrimFixedArray(this, length() - new_length);
   }
 }
 
@@ -10578,6 +10575,14 @@ Handle<DeoptimizationOutputData> DeoptimizationOutputData::New(
         LengthOfFixedArray(number_of_deopt_points), pretenure);
   }
   return Handle<DeoptimizationOutputData>::cast(result);
+}
+
+SharedFunctionInfo* DeoptimizationInputData::GetInlinedFunction(int index) {
+  if (index == -1) {
+    return SharedFunctionInfo::cast(SharedFunctionInfo());
+  } else {
+    return SharedFunctionInfo::cast(LiteralArray()->get(index));
+  }
 }
 
 const int LiteralsArray::kFeedbackVectorOffset =
@@ -12050,7 +12055,7 @@ Handle<String> SeqString::Truncate(Handle<SeqString> string, int new_length) {
   // that are a multiple of pointer size.
   heap->CreateFillerObjectAt(start_of_string + new_size, delta,
                              ClearRecordedSlots::kNo);
-  heap->AdjustLiveBytes(*string, -delta, Heap::CONCURRENT_TO_SWEEPER);
+  heap->AdjustLiveBytes(*string, -delta);
 
   // We are storing the new length using release store after creating a filler
   // for the left-over space to avoid races with the sweeper thread.
@@ -12470,8 +12475,7 @@ void SharedFunctionInfo::EvictFromOptimizedCodeMap(Code* optimized_code,
   }
   if (dst != length) {
     // Always trim even when array is cleared because of heap verifier.
-    heap->RightTrimFixedArray<Heap::CONCURRENT_TO_SWEEPER>(code_map,
-                                                           length - dst);
+    heap->RightTrimFixedArray(code_map, length - dst);
     if (code_map->length() == kEntriesStart) {
       ClearOptimizedCodeMap();
     }
@@ -12484,8 +12488,7 @@ void SharedFunctionInfo::TrimOptimizedCodeMap(int shrink_by) {
   DCHECK(shrink_by % kEntryLength == 0);
   DCHECK(shrink_by <= code_map->length() - kEntriesStart);
   // Always trim even when array is cleared because of heap verifier.
-  GetHeap()->RightTrimFixedArray<Heap::SEQUENTIAL_TO_SWEEPER>(code_map,
-                                                              shrink_by);
+  GetHeap()->RightTrimFixedArray(code_map, shrink_by);
   if (code_map->length() == kEntriesStart) {
     ClearOptimizedCodeMap();
   }
@@ -12544,19 +12547,10 @@ void Map::CompleteInobjectSlackTracking() {
 static bool PrototypeBenefitsFromNormalization(Handle<JSObject> object) {
   DisallowHeapAllocation no_gc;
   if (!object->HasFastProperties()) return false;
-  Map* map = object->map();
-  if (map->is_prototype_map()) return false;
-  DescriptorArray* descriptors = map->instance_descriptors();
-  for (int i = 0; i < map->NumberOfOwnDescriptors(); i++) {
-    PropertyDetails details = descriptors->GetDetails(i);
-    if (details.location() == kDescriptor) continue;
-    if (details.representation().IsHeapObject() ||
-        details.representation().IsTagged()) {
-      FieldIndex index = FieldIndex::ForDescriptor(map, i);
-      if (object->RawFastPropertyAt(index)->IsJSFunction()) return true;
-    }
-  }
-  return false;
+  if (object->IsJSGlobalProxy()) return false;
+  if (object->GetIsolate()->bootstrapper()->IsActive()) return false;
+  return !object->map()->is_prototype_map() ||
+         !object->map()->should_be_fast_prototype_map();
 }
 
 // static
@@ -12571,8 +12565,10 @@ void JSObject::MakePrototypesFast(Handle<Object> receiver,
     if (!current->IsJSObject()) return;
     Handle<JSObject> current_obj = Handle<JSObject>::cast(current);
     Map* current_map = current_obj->map();
-    if (current_map->is_prototype_map() &&
-        !current_map->should_be_fast_prototype_map()) {
+    if (current_map->is_prototype_map()) {
+      // If the map is already marked as should be fast, we're done. Its
+      // prototypes will have been marked already as well.
+      if (current_map->should_be_fast_prototype_map()) return;
       Handle<Map> map(current_map);
       Map::SetShouldBeFastPrototypeMap(map, true, isolate);
       JSObject::OptimizeAsPrototype(current_obj, FAST_PROTOTYPE);
@@ -12778,9 +12774,17 @@ void Map::SetShouldBeFastPrototypeMap(Handle<Map> map, bool value,
 // static
 Handle<Cell> Map::GetOrCreatePrototypeChainValidityCell(Handle<Map> map,
                                                         Isolate* isolate) {
-  Handle<Object> maybe_prototype(
-      map->GetPrototypeChainRootMap(isolate)->prototype(), isolate);
-  if (!maybe_prototype->IsJSObject()) return Handle<Cell>::null();
+  Handle<Object> maybe_prototype;
+  if (map->IsJSGlobalObjectMap()) {
+    DCHECK(map->is_prototype_map());
+    // Global object is prototype of a global proxy and therefore we can
+    // use its validity cell for guarding global object's prototype change.
+    maybe_prototype = isolate->global_object();
+  } else {
+    maybe_prototype =
+        handle(map->GetPrototypeChainRootMap(isolate)->prototype(), isolate);
+    if (!maybe_prototype->IsJSObject()) return Handle<Cell>::null();
+  }
   Handle<JSObject> prototype = Handle<JSObject>::cast(maybe_prototype);
   // Ensure the prototype is registered with its own prototypes so its cell
   // will be invalidated when necessary.
@@ -13301,8 +13305,7 @@ Handle<String> JSFunction::ToString(Handle<JSFunction> function) {
   Handle<SharedFunctionInfo> shared_info(function->shared(), isolate);
 
   // Check if {function} should hide its source code.
-  if (!shared_info->script()->IsScript() ||
-      Script::cast(shared_info->script())->hide_source()) {
+  if (!shared_info->IsUserJavaScript()) {
     return NativeCodeFunctionSourceString(shared_info);
   }
 
@@ -13429,15 +13432,7 @@ bool Script::GetPositionInfo(Handle<Script> script, int position,
                              PositionInfo* info, OffsetFlag offset_flag) {
   // For wasm, we do not create an artificial line_ends array, but do the
   // translation directly.
-  if (script->type() == Script::TYPE_WASM) {
-    Handle<WasmCompiledModule> compiled_module(
-        WasmCompiledModule::cast(script->wasm_compiled_module()));
-    DCHECK_LE(0, position);
-    return wasm::GetPositionInfo(compiled_module,
-                                 static_cast<uint32_t>(position), info);
-  }
-
-  InitLineEnds(script);
+  if (script->type() != Script::TYPE_WASM) InitLineEnds(script);
   return script->GetPositionInfo(position, info, offset_flag);
 }
 
@@ -13472,6 +13467,16 @@ bool GetPositionInfoSlow(const Script* script, int position,
 bool Script::GetPositionInfo(int position, PositionInfo* info,
                              OffsetFlag offset_flag) const {
   DisallowHeapAllocation no_allocation;
+
+  // For wasm, we do not rely on the line_ends array, but do the translation
+  // directly.
+  if (type() == Script::TYPE_WASM) {
+    Handle<WasmCompiledModule> compiled_module(
+        WasmCompiledModule::cast(wasm_compiled_module()));
+    DCHECK_LE(0, position);
+    return compiled_module->GetPositionInfo(static_cast<uint32_t>(position),
+                                            info);
+  }
 
   if (line_ends()->IsUndefined(GetIsolate())) {
     // Slow mode: we do not have line_ends. We have to iterate through source.
@@ -17523,11 +17528,11 @@ Handle<Object> JSObject::PrepareElementsForSort(Handle<JSObject> object,
     }
     result = undefs;
     while (undefs < holes) {
-      elements->set_undefined(undefs);
+      elements->set_undefined(isolate, undefs);
       undefs++;
     }
     while (holes < limit) {
-      elements->set_the_hole(holes);
+      elements->set_the_hole(isolate, holes);
       holes++;
     }
   }
@@ -19744,24 +19749,14 @@ void PropertyCell::SetValueWithInvalidation(Handle<PropertyCell> cell,
 
 int JSGeneratorObject::source_position() const {
   CHECK(is_suspended());
-  AbstractCode* code;
-  int code_offset;
-  if (function()->shared()->HasBytecodeArray()) {
-    // New-style generators.
-    DCHECK(!function()->shared()->HasBaselineCode());
-    code_offset = Smi::cast(input_or_debug_pos())->value();
-    // The stored bytecode offset is relative to a different base than what
-    // is used in the source position table, hence the subtraction.
-    code_offset -= BytecodeArray::kHeaderSize - kHeapObjectTag;
-    code = AbstractCode::cast(function()->shared()->bytecode_array());
-  } else {
-    // Old-style generators.
-    DCHECK(function()->shared()->HasBaselineCode());
-    code_offset = continuation();
-    CHECK(0 <= code_offset);
-    CHECK(code_offset < function()->code()->instruction_size());
-    code = AbstractCode::cast(function()->shared()->code());
-  }
+  DCHECK(function()->shared()->HasBytecodeArray());
+  DCHECK(!function()->shared()->HasBaselineCode());
+  int code_offset = Smi::cast(input_or_debug_pos())->value();
+  // The stored bytecode offset is relative to a different base than what
+  // is used in the source position table, hence the subtraction.
+  code_offset -= BytecodeArray::kHeaderSize - kHeapObjectTag;
+  AbstractCode* code =
+      AbstractCode::cast(function()->shared()->bytecode_array());
   return code->SourcePosition(code_offset);
 }
 

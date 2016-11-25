@@ -1233,6 +1233,10 @@ Type* Typer::Visitor::TypeJSStoreGlobal(Node* node) {
   return nullptr;
 }
 
+Type* Typer::Visitor::TypeJSStoreDataPropertyInLiteral(Node* node) {
+  UNREACHABLE();
+  return nullptr;
+}
 
 Type* Typer::Visitor::TypeJSDeleteProperty(Node* node) {
   return Type::Boolean();
@@ -1241,6 +1245,10 @@ Type* Typer::Visitor::TypeJSDeleteProperty(Node* node) {
 Type* Typer::Visitor::TypeJSHasProperty(Node* node) { return Type::Boolean(); }
 
 Type* Typer::Visitor::TypeJSInstanceOf(Node* node) { return Type::Boolean(); }
+
+Type* Typer::Visitor::TypeJSOrdinaryHasInstance(Node* node) {
+  return Type::Boolean();
+}
 
 // JS context operators.
 
@@ -1340,6 +1348,8 @@ Type* Typer::Visitor::JSCallFunctionTyper(Type* fun, Typer* t) {
         case kMathClz32:
           return t->cache_.kZeroToThirtyTwo;
         // Date functions.
+        case kDateNow:
+          return t->cache_.kTimeValueType;
         case kDateGetDate:
           return t->cache_.kJSDateDayType;
         case kDateGetDay:
@@ -1402,9 +1412,25 @@ Type* Typer::Visitor::JSCallFunctionTyper(Type* fun, Typer* t) {
           return Type::Range(-1, kMaxSafeInteger, t->zone());
         case kArrayPush:
           return t->cache_.kPositiveSafeInteger;
+
         // Object functions.
         case kObjectHasOwnProperty:
           return Type::Boolean();
+
+        // RegExp functions.
+        case kRegExpCompile:
+          return Type::OtherObject();
+        case kRegExpExec:
+          return Type::Union(Type::OtherObject(), Type::Null(), t->zone());
+        case kRegExpTest:
+          return Type::Boolean();
+        case kRegExpToString:
+          return Type::String();
+
+        // Function functions.
+        case kFunctionHasInstance:
+          return Type::Boolean();
+
         // Global functions.
         case kGlobalDecodeURI:
         case kGlobalDecodeURIComponent:

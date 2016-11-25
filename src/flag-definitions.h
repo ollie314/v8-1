@@ -420,8 +420,6 @@ DEFINE_BOOL(omit_map_checks_for_leaf_maps, true,
 // Flags for TurboFan.
 DEFINE_BOOL(turbo, false, "enable TurboFan compiler")
 DEFINE_IMPLICATION(turbo, turbo_asm_deoptimization)
-DEFINE_IMPLICATION(turbo, turbo_loop_peeling)
-DEFINE_IMPLICATION(turbo, turbo_escape)
 DEFINE_BOOL(turbo_sp_frame_access, false,
             "use stack pointer-relative access to frame wherever possible")
 DEFINE_BOOL(turbo_preprocess_ranges, true,
@@ -450,8 +448,6 @@ DEFINE_BOOL(turbo_stats, false, "print TurboFan statistics")
 DEFINE_BOOL(turbo_stats_nvp, false,
             "print TurboFan statistics in machine-readable format")
 DEFINE_BOOL(turbo_splitting, true, "split nodes during scheduling in TurboFan")
-DEFINE_BOOL(turbo_type_feedback, true,
-            "use typed feedback for representation inference in Turbofan")
 DEFINE_BOOL(function_context_specialization, false,
             "enable function context specialization in TurboFan")
 DEFINE_BOOL(turbo_inlining, true, "enable inlining in TurboFan")
@@ -471,7 +467,7 @@ DEFINE_BOOL(turbo_loop_peeling, true, "Turbofan loop peeling")
 DEFINE_BOOL(turbo_loop_variable, true, "Turbofan loop variable optimization")
 DEFINE_BOOL(turbo_cf_optimization, true, "optimize control flow in TurboFan")
 DEFINE_BOOL(turbo_frame_elision, true, "elide frames in TurboFan")
-DEFINE_BOOL(turbo_escape, false, "enable escape analysis")
+DEFINE_BOOL(turbo_escape, true, "enable escape analysis")
 DEFINE_BOOL(turbo_instruction_scheduling, false,
             "enable instruction scheduling in TurboFan")
 DEFINE_BOOL(turbo_stress_instruction_scheduling, false,
@@ -499,6 +495,10 @@ DEFINE_BOOL(trace_wasm_interpreter, false, "trace interpretation of wasm code")
 DEFINE_INT(trace_wasm_ast_start, 0,
            "start function for WASM AST trace (inclusive)")
 DEFINE_INT(trace_wasm_ast_end, 0, "end function for WASM AST trace (exclusive)")
+DEFINE_INT(trace_wasm_text_start, 0,
+           "start function for WASM text generation (inclusive)")
+DEFINE_INT(trace_wasm_text_end, 0,
+           "end function for WASM text generation (exclusive)")
 DEFINE_INT(skip_compiling_wasm_funcs, 0, "start compiling at function N")
 DEFINE_BOOL(wasm_break_on_decoder_error, false,
             "debug break when wasm decoder encounters an error")
@@ -522,10 +522,20 @@ DEFINE_BOOL(wasm_mv_prototype, false,
 DEFINE_BOOL(wasm_atomics_prototype, false,
             "enable prototype atomic opcodes for wasm")
 
+DEFINE_BOOL(wasm_no_bounds_checks, false,
+            "disable bounds checks (performance testing only)")
+DEFINE_BOOL(wasm_no_stack_checks, false,
+            "disable stack checks (performance testing only)")
+
 DEFINE_BOOL(wasm_trap_handler, false,
             "use signal handlers to catch out of bounds memory access in wasm"
-            " (currently Linux x86_64 only)")
-
+            " (experimental, currently Linux x86_64 only)")
+DEFINE_BOOL(wasm_guard_pages, false,
+            "add guard pages to the end of WebWassembly memory"
+            " (experimental, no effect on 32-bit)")
+DEFINE_IMPLICATION(wasm_trap_handler, wasm_guard_pages)
+DEFINE_BOOL(wasm_code_fuzzer_gen_test, false,
+            "Generate a test case when running the wasm-code fuzzer")
 // Profiler flags.
 DEFINE_INT(frame_count, 1, "number of stack frames inspected by the profiler")
 // 0x1800 fits in the immediate field of an ARM instruction.
@@ -633,8 +643,6 @@ DEFINE_BOOL(external_reference_stats, false,
 #endif  // DEBUG
 
 // compiler.cc
-DEFINE_INT(min_preparse_length, 1024,
-           "minimum length for automatic enable preparsing")
 DEFINE_INT(max_opt_count, 10,
            "maximum number of optimization attempts before giving up.")
 

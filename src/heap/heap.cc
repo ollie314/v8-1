@@ -855,6 +855,7 @@ void Heap::CollectAllAvailableGarbage(GarbageCollectionReason gc_reason) {
   // Note: as weak callbacks can execute arbitrary code, we cannot
   // hope that eventually there will be no weak callbacks invocations.
   // Therefore stop recollecting after several attempts.
+  RuntimeCallTimerScope(isolate(), &RuntimeCallStats::GC_AllAvailableGarbage);
   if (isolate()->concurrent_recompilation_enabled()) {
     // The optimizing compiler may be unnecessarily holding on to memory.
     DisallowHeapAllocation no_recursive_gc;
@@ -936,6 +937,7 @@ bool Heap::CollectGarbage(GarbageCollector collector,
                           const v8::GCCallbackFlags gc_callback_flags) {
   // The VM is in the GC state until exiting this function.
   VMState<GC> state(isolate_);
+  RuntimeCallTimerScope(isolate(), &RuntimeCallStats::GC);
 
 #ifdef DEBUG
   // Reset the allocation timeout to the GC interval, but make sure to
@@ -956,10 +958,11 @@ bool Heap::CollectGarbage(GarbageCollector collector,
     }
   }
 
-  if (collector == MARK_COMPACTOR && !ShouldFinalizeIncrementalMarking() &&
-      !ShouldAbortIncrementalMarking() && !incremental_marking()->IsStopped() &&
-      !incremental_marking()->should_hurry() && FLAG_incremental_marking &&
-      OldGenerationSpaceAvailable() <= 0) {
+  if (collector == MARK_COMPACTOR && FLAG_incremental_marking &&
+      !ShouldFinalizeIncrementalMarking() && !ShouldAbortIncrementalMarking() &&
+      !incremental_marking()->IsStopped() &&
+      !incremental_marking()->should_hurry() &&
+      !IsCloseToOutOfMemory(new_space_->Capacity())) {
     if (!incremental_marking()->IsComplete() &&
         !mark_compact_collector()->marking_deque()->IsEmpty() &&
         !FLAG_gc_global) {
@@ -1013,6 +1016,7 @@ bool Heap::CollectGarbage(GarbageCollector collector,
           (committed_memory_before > committed_memory_after + MB) ||
           HasHighFragmentation(used_memory_after, committed_memory_after) ||
           (detached_contexts()->length() > 0);
+      event.committed_memory = committed_memory_after;
       if (deserialization_complete_) {
         memory_reducer_->NotifyMarkCompact(event);
       }
@@ -1384,6 +1388,7 @@ bool Heap::PerformGarbageCollection(
 
 
 void Heap::CallGCPrologueCallbacks(GCType gc_type, GCCallbackFlags flags) {
+  RuntimeCallTimerScope(isolate(), &RuntimeCallStats::GCPrologueCallback);
   for (int i = 0; i < gc_prologue_callbacks_.length(); ++i) {
     if (gc_type & gc_prologue_callbacks_[i].gc_type) {
       if (!gc_prologue_callbacks_[i].pass_isolate) {
@@ -1405,6 +1410,7 @@ void Heap::CallGCPrologueCallbacks(GCType gc_type, GCCallbackFlags flags) {
 
 void Heap::CallGCEpilogueCallbacks(GCType gc_type,
                                    GCCallbackFlags gc_callback_flags) {
+  RuntimeCallTimerScope(isolate(), &RuntimeCallStats::GCEpilogueCallback);
   for (int i = 0; i < gc_epilogue_callbacks_.length(); ++i) {
     if (gc_type & gc_epilogue_callbacks_[i].gc_type) {
       if (!gc_epilogue_callbacks_[i].pass_isolate) {
@@ -1501,21 +1507,6 @@ static bool IsUnscavengedHeapObject(Heap* heap, Object** p) {
   return heap->InNewSpace(*p) &&
          !HeapObject::cast(*p)->map_word().IsForwardingAddress();
 }
-
-
-static bool IsUnmodifiedHeapObject(Object** p) {
-  Object* object = *p;
-  if (object->IsSmi()) return false;
-  HeapObject* heap_object = HeapObject::cast(object);
-  if (!object->IsJSObject()) return false;
-  JSObject* js_object = JSObject::cast(object);
-  if (!js_object->WasConstructedFromApiFunction()) return false;
-  JSFunction* constructor =
-      JSFunction::cast(js_object->map()->GetConstructor());
-
-  return constructor->initial_map() == heap_object->map();
-}
-
 
 void PromotionQueue::Initialize() {
   // The last to-space page may be used for promotion queue. On promotion
@@ -1691,8 +1682,10 @@ void Heap::Scavenge() {
   isolate()->global_handles()->MarkNewSpaceWeakUnmodifiedObjectsPending(
       &IsUnscavengedHeapObject);
 
-  isolate()->global_handles()->IterateNewSpaceWeakUnmodifiedRoots(
-      &scavenge_visitor);
+  isolate()
+      ->global_handles()
+      ->IterateNewSpaceWeakUnmodifiedRoots<
+          GlobalHandles::HANDLE_PHANTOM_NODES_VISIT_OTHERS>(&scavenge_visitor);
   new_space_front = DoScavenge(&scavenge_visitor, new_space_front);
 
   UpdateNewSpaceReferencesInExternalStringTable(
@@ -1872,7 +1865,7 @@ void Heap::VisitExternalResources(v8::ExternalResourceVisitor* visitor) {
     v8::ExternalResourceVisitor* visitor_;
   } external_string_table_visitor(visitor);
 
-  external_string_table_.Iterate(&external_string_table_visitor);
+  external_string_table_.IterateAll(&external_string_table_visitor);
 }
 
 Address Heap::DoScavenge(ObjectVisitor* scavenge_visitor,
@@ -2912,6 +2905,18 @@ bool Heap::RootCanBeTreatedAsConstant(RootListIndex root_index) {
          !InNewSpace(root(root_index));
 }
 
+bool Heap::IsUnmodifiedHeapObject(Object** p) {
+  Object* object = *p;
+  if (object->IsSmi()) return false;
+  HeapObject* heap_object = HeapObject::cast(object);
+  if (!object->IsJSObject()) return false;
+  JSObject* js_object = JSObject::cast(object);
+  if (!js_object->WasConstructedFromApiFunction()) return false;
+  JSFunction* constructor =
+      JSFunction::cast(js_object->map()->GetConstructor());
+
+  return constructor->initial_map() == heap_object->map();
+}
 
 int Heap::FullSizeNumberStringCacheLength() {
   // Compute the size of the number string cache based on the max newspace size.
@@ -3095,8 +3100,7 @@ bool Heap::CanMoveObjectStart(HeapObject* object) {
   return Page::FromAddress(address)->SweepingDone();
 }
 
-
-void Heap::AdjustLiveBytes(HeapObject* object, int by, InvocationMode mode) {
+void Heap::AdjustLiveBytes(HeapObject* object, int by) {
   // As long as the inspected object is black and we are currently not iterating
   // the heap using HeapIterator, we can update the live byte count. We cannot
   // update while using HeapIterator because the iterator is temporarily
@@ -3106,11 +3110,8 @@ void Heap::AdjustLiveBytes(HeapObject* object, int by, InvocationMode mode) {
   } else if (!in_heap_iterator() &&
              !mark_compact_collector()->sweeping_in_progress() &&
              Marking::IsBlack(ObjectMarking::MarkBitFrom(object->address()))) {
-    if (mode == SEQUENTIAL_TO_SWEEPER) {
-      MemoryChunk::IncrementLiveBytesFromGC(object, by);
-    } else {
-      MemoryChunk::IncrementLiveBytesFromMutator(object, by);
-    }
+    DCHECK(MemoryChunk::FromAddress(object->address())->SweepingDone());
+    MemoryChunk::IncrementLiveBytes(object, by);
   }
 }
 
@@ -3165,7 +3166,7 @@ FixedArrayBase* Heap::LeftTrimFixedArray(FixedArrayBase* object,
       FixedArrayBase::cast(HeapObject::FromAddress(new_start));
 
   // Maintain consistency of live bytes during incremental marking
-  AdjustLiveBytes(new_object, -bytes_to_trim, Heap::CONCURRENT_TO_SWEEPER);
+  AdjustLiveBytes(new_object, -bytes_to_trim);
 
   // Remove recorded slots for the new map and length offset.
   ClearRecordedSlot(new_object, HeapObject::RawField(new_object, 0));
@@ -3177,15 +3178,6 @@ FixedArrayBase* Heap::LeftTrimFixedArray(FixedArrayBase* object,
   return new_object;
 }
 
-
-// Force instantiation of templatized method.
-template void Heap::RightTrimFixedArray<Heap::SEQUENTIAL_TO_SWEEPER>(
-    FixedArrayBase*, int);
-template void Heap::RightTrimFixedArray<Heap::CONCURRENT_TO_SWEEPER>(
-    FixedArrayBase*, int);
-
-
-template<Heap::InvocationMode mode>
 void Heap::RightTrimFixedArray(FixedArrayBase* object, int elements_to_trim) {
   const int len = object->length();
   DCHECK_LE(elements_to_trim, len);
@@ -3238,7 +3230,7 @@ void Heap::RightTrimFixedArray(FixedArrayBase* object, int elements_to_trim) {
   object->synchronized_set_length(len - elements_to_trim);
 
   // Maintain consistency of live bytes during incremental marking
-  AdjustLiveBytes(object, -bytes_to_trim, mode);
+  AdjustLiveBytes(object, -bytes_to_trim);
 
   // Notify the heap profiler of change in object layout. The array may not be
   // moved during GC, and size has to be adjusted nevertheless.
@@ -4831,7 +4823,7 @@ void Heap::IterateWeakRoots(ObjectVisitor* v, VisitMode mode) {
   v->Synchronize(VisitorSynchronization::kStringTable);
   if (mode != VISIT_ALL_IN_SCAVENGE && mode != VISIT_ALL_IN_SWEEP_NEWSPACE) {
     // Scavenge collections have special processing for this.
-    external_string_table_.Iterate(v);
+    external_string_table_.IterateAll(v);
   }
   v->Synchronize(VisitorSynchronization::kExternalStringsTable);
 }
@@ -6322,7 +6314,7 @@ void Heap::UpdateTotalGCTime(double duration) {
   }
 }
 
-void Heap::ExternalStringTable::CleanUp() {
+void Heap::ExternalStringTable::CleanUpNewSpaceStrings() {
   int last = 0;
   Isolate* isolate = heap_->isolate();
   for (int i = 0; i < new_space_strings_.length(); ++i) {
@@ -6338,8 +6330,12 @@ void Heap::ExternalStringTable::CleanUp() {
   }
   new_space_strings_.Rewind(last);
   new_space_strings_.Trim();
+}
 
-  last = 0;
+void Heap::ExternalStringTable::CleanUpAll() {
+  CleanUpNewSpaceStrings();
+  int last = 0;
+  Isolate* isolate = heap_->isolate();
   for (int i = 0; i < old_space_strings_.length(); ++i) {
     if (old_space_strings_[i]->IsTheHole(isolate)) {
       continue;

@@ -180,10 +180,10 @@ PreParser::Expression PreParser::ParseFunctionLiteral(
   // Function ::
   //   '(' FormalParameterList? ')' '{' FunctionBody '}'
   const RuntimeCallStats::CounterId counters[2][2] = {
-      {&RuntimeCallStats::PreParseWithVariableResolution,
-       &RuntimeCallStats::PreParseBackgroundWithVariableResolution},
-      {&RuntimeCallStats::PreParseNoVariableResolution,
-       &RuntimeCallStats::PreParseBackgroundNoVariableResolution}};
+      {&RuntimeCallStats::PreParseBackgroundWithVariableResolution,
+       &RuntimeCallStats::PreParseWithVariableResolution},
+      {&RuntimeCallStats::PreParseBackgroundNoVariableResolution,
+       &RuntimeCallStats::PreParseNoVariableResolution}};
   RuntimeCallTimerScope runtime_timer(
       runtime_call_stats_,
       counters[track_unresolved_variables_][parsing_on_main_thread_]);
@@ -266,8 +266,11 @@ PreParserExpression PreParser::ExpressionFromIdentifier(
     // AstValueFactory doesn't know about it.
     factory.set_zone(zone());
     DCHECK_NOT_NULL(name.string_);
-    scope()->NewUnresolved(&factory, name.string_, start_position,
-                           NORMAL_VARIABLE);
+    VariableProxy* proxy = scope()->NewUnresolved(
+        &factory, name.string_, start_position, NORMAL_VARIABLE);
+    // We don't know whether the preparsed function assigns or not, so we set
+    // is_assigned pessimistically.
+    proxy->set_is_assigned();
   }
   return PreParserExpression::FromIdentifier(name, zone());
 }

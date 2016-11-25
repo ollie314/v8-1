@@ -1031,7 +1031,7 @@ Response V8DebuggerAgentImpl::currentCallFrames(
   Response response = toProtocolValue(debuggerContext, objects, &protocolValue);
   if (!response.isSuccess()) return response;
   protocol::ErrorSupport errorSupport;
-  *result = Array<CallFrame>::parse(protocolValue.get(), &errorSupport);
+  *result = Array<CallFrame>::fromValue(protocolValue.get(), &errorSupport);
   if (!*result) return Response::Error(errorSupport.errors());
   TranslateWasmStackTraceLocations(result->get(), m_debugger->wasmTranslation(),
                                    m_session->contextGroupId());
@@ -1056,7 +1056,7 @@ void V8DebuggerAgentImpl::didParseSource(
   std::unique_ptr<protocol::DictionaryValue> executionContextAuxData;
   if (!script->executionContextAuxData().isEmpty())
     executionContextAuxData = protocol::DictionaryValue::cast(
-        protocol::parseJSON(script->executionContextAuxData()));
+        protocol::StringUtil::parseJSON(script->executionContextAuxData()));
   bool isLiveEdit = script->isLiveEdit();
   bool hasSourceURL = script->hasSourceURL();
   String16 scriptId = script->scriptId();
@@ -1164,7 +1164,7 @@ V8DebuggerAgentImpl::SkipPauseRequest V8DebuggerAgentImpl::didPause(
       injectedScript->wrapObject(exception, kBacktraceObjectGroup, false, false,
                                  &obj);
       if (obj) {
-        m_breakAuxData = obj->serialize();
+        m_breakAuxData = obj->toValue();
         m_breakAuxData->setBoolean("uncaught", isUncaught);
       } else {
         m_breakAuxData = nullptr;

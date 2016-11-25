@@ -150,7 +150,7 @@ class PreParserExpression {
   static PreParserExpression BinaryOperation(PreParserExpression left,
                                              Token::Value op,
                                              PreParserExpression right) {
-    return PreParserExpression(TypeField::encode(kBinaryOperationExpression));
+    return PreParserExpression(TypeField::encode(kExpression));
   }
 
   static PreParserExpression Assignment() {
@@ -284,11 +284,6 @@ class PreParserExpression {
             ExpressionTypeField::decode(code_) == kCallEvalExpression);
   }
 
-  bool IsDirectEvalCall() const {
-    return TypeField::decode(code_) == kExpression &&
-           ExpressionTypeField::decode(code_) == kCallEvalExpression;
-  }
-
   bool IsSuperCallReference() const {
     return TypeField::decode(code_) == kExpression &&
            ExpressionTypeField::decode(code_) == kSuperCallReference;
@@ -313,10 +308,6 @@ class PreParserExpression {
 
   PreParserExpression AsFunctionLiteral() { return *this; }
 
-  bool IsBinaryOperation() const {
-    return TypeField::decode(code_) == kBinaryOperationExpression;
-  }
-
   // Dummy implementation for making expression->somefunc() work in both Parser
   // and PreParser.
   PreParserExpression* operator->() { return this; }
@@ -337,7 +328,6 @@ class PreParserExpression {
     kExpression,
     kIdentifierExpression,
     kStringLiteralExpression,
-    kBinaryOperationExpression,
     kSpreadExpression,
     kObjectLiteralExpression,
     kArrayLiteralExpression
@@ -1149,10 +1139,6 @@ class PreParser : public ParserBase<PreParser> {
     return identifier.IsConstructor();
   }
 
-  V8_INLINE bool IsDirectEvalCall(PreParserExpression expression) const {
-    return expression.IsDirectEvalCall();
-  }
-
   V8_INLINE static bool IsBoilerplateProperty(PreParserExpression property) {
     // PreParser doesn't count boilerplate properties.
     return false;
@@ -1205,11 +1191,10 @@ class PreParser : public ParserBase<PreParser> {
   V8_INLINE static void CheckAssigningFunctionLiteralToProperty(
       PreParserExpression left, PreParserExpression right) {}
 
-  V8_INLINE static PreParserExpression MarkExpressionAsAssigned(
+  V8_INLINE static void MarkExpressionAsAssigned(
       PreParserExpression expression) {
     // TODO(marja): To be able to produce the same errors, the preparser needs
     // to start tracking which expressions are variables and which are assigned.
-    return expression;
   }
 
   V8_INLINE bool ShortcutNumericLiteralBinaryExpression(PreParserExpression* x,

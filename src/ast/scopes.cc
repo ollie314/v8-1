@@ -243,8 +243,8 @@ Scope::Scope(Zone* zone, const AstRawString* catch_variable_name,
   // Cache the catch variable, even though it's also available via the
   // scope_info, as the parser expects that a catch scope always has the catch
   // variable as first and only variable.
-  Variable* variable = Declare(zone, this, catch_variable_name, VAR,
-                               NORMAL_VARIABLE, kCreatedInitialized);
+  Variable* variable = Declare(zone, catch_variable_name, VAR, NORMAL_VARIABLE,
+                               kCreatedInitialized);
   AllocateHeapSlot(variable);
 }
 
@@ -579,7 +579,7 @@ void DeclarationScope::DeclareThis(AstValueFactory* ast_value_factory) {
 
   bool subclass_constructor = IsSubclassConstructor(function_kind_);
   Variable* var = Declare(
-      zone(), this, ast_value_factory->this_string(),
+      zone(), ast_value_factory->this_string(),
       subclass_constructor ? CONST : VAR, THIS_VARIABLE,
       subclass_constructor ? kNeedsInitialization : kCreatedInitialized);
   receiver_ = var;
@@ -594,8 +594,8 @@ void DeclarationScope::DeclareArguments(AstValueFactory* ast_value_factory) {
     // Declare 'arguments' variable which exists in all non arrow functions.
     // Note that it might never be accessed, in which case it won't be
     // allocated during variable allocation.
-    arguments_ = Declare(zone(), this, ast_value_factory->arguments_string(),
-                         VAR, NORMAL_VARIABLE, kCreatedInitialized);
+    arguments_ = Declare(zone(), ast_value_factory->arguments_string(), VAR,
+                         NORMAL_VARIABLE, kCreatedInitialized);
   } else if (IsLexicalVariableMode(arguments_->mode())) {
     // Check if there's lexically declared variable named arguments to avoid
     // redeclaration. See ES#sec-functiondeclarationinstantiation, step 20.
@@ -609,14 +609,13 @@ void DeclarationScope::DeclareDefaultFunctionVariables(
   DCHECK(!is_arrow_scope());
 
   DeclareThis(ast_value_factory);
-  new_target_ = Declare(zone(), this, ast_value_factory->new_target_string(),
-                        CONST, NORMAL_VARIABLE, kCreatedInitialized);
+  new_target_ = Declare(zone(), ast_value_factory->new_target_string(), CONST,
+                        NORMAL_VARIABLE, kCreatedInitialized);
 
   if (IsConciseMethod(function_kind_) || IsClassConstructor(function_kind_) ||
       IsAccessorFunction(function_kind_)) {
-    this_function_ =
-        Declare(zone(), this, ast_value_factory->this_function_string(), CONST,
-                NORMAL_VARIABLE, kCreatedInitialized);
+    this_function_ = Declare(zone(), ast_value_factory->this_function_string(),
+                             CONST, NORMAL_VARIABLE, kCreatedInitialized);
   }
 }
 
@@ -634,6 +633,35 @@ Variable* DeclarationScope::DeclareFunctionVar(const AstRawString* name) {
     variables_.Add(zone(), function_);
   }
   return function_;
+}
+
+bool Scope::HasBeenRemoved() const {
+  // TODO(neis): Store this information somewhere instead of calculating it.
+
+  if (!is_block_scope()) return false;  // Shortcut.
+
+  Scope* parent = outer_scope();
+  if (parent == nullptr) {
+    DCHECK(is_script_scope());
+    return false;
+  }
+
+  Scope* sibling = parent->inner_scope();
+  for (; sibling != nullptr; sibling = sibling->sibling()) {
+    if (sibling == this) return false;
+  }
+
+  DCHECK_NULL(inner_scope_);
+  return true;
+}
+
+Scope* Scope::GetUnremovedScope() {
+  Scope* scope = this;
+  while (scope != nullptr && scope->HasBeenRemoved()) {
+    scope = scope->outer_scope();
+  }
+  DCHECK_NOT_NULL(scope);
+  return scope;
 }
 
 Scope* Scope::FinalizeBlockScope() {
@@ -686,13 +714,13 @@ void DeclarationScope::AddLocal(Variable* var) {
   locals_.Add(var);
 }
 
-Variable* Scope::Declare(Zone* zone, Scope* scope, const AstRawString* name,
+Variable* Scope::Declare(Zone* zone, const AstRawString* name,
                          VariableMode mode, VariableKind kind,
                          InitializationFlag initialization_flag,
                          MaybeAssignedFlag maybe_assigned_flag) {
   bool added;
   Variable* var =
-      variables_.Declare(zone, scope, name, mode, kind, initialization_flag,
+      variables_.Declare(zone, this, name, mode, kind, initialization_flag,
                          maybe_assigned_flag, &added);
   if (added) locals_.Add(var);
   return var;
@@ -844,8 +872,7 @@ Variable* DeclarationScope::DeclareParameter(
   if (mode == TEMPORARY) {
     var = NewTemporary(name);
   } else {
-    var =
-        Declare(zone(), this, name, mode, NORMAL_VARIABLE, kCreatedInitialized);
+    var = Declare(zone(), name, mode, NORMAL_VARIABLE, kCreatedInitialized);
     // TODO(wingo): Avoid O(n^2) check.
     *is_duplicate = IsDeclaredParameter(name);
   }
@@ -865,8 +892,7 @@ Variable* Scope::DeclareLocal(const AstRawString* name, VariableMode mode,
   // introduced during variable allocation, and TEMPORARY variables are
   // allocated via NewTemporary().
   DCHECK(IsDeclaredVariableMode(mode));
-  return Declare(zone(), this, name, mode, kind, init_flag,
-                 maybe_assigned_flag);
+  return Declare(zone(), name, mode, kind, init_flag, maybe_assigned_flag);
 }
 
 Variable* Scope::DeclareVariable(
@@ -1612,29 +1638,6 @@ void Scope::ResolveVariable(ParseInfo* info, VariableProxy* proxy) {
   DCHECK(!proxy->is_resolved());
   Variable* var = LookupRecursive(proxy, nullptr);
   ResolveTo(info, proxy, var);
-
-  if (FLAG_lazy_inner_functions) {
-    if (info != nullptr && info->is_native()) return;
-    // Pessimistically force context allocation for all variables to which inner
-    // scope variables could potentially resolve to.
-    Scope* scope = GetClosureScope()->outer_scope_;
-    while (scope != nullptr && scope->scope_info_.is_null()) {
-      var = scope->LookupLocal(proxy->raw_name());
-      if (var != nullptr) {
-        // Since we don't lazy parse inner arrow functions, inner functions
-        // cannot refer to the outer "this".
-        if (!var->is_dynamic() && !var->is_this() &&
-            !var->has_forced_context_allocation()) {
-          var->ForceContextAllocation();
-          var->set_is_used();
-          // We don't know what the (potentially lazy parsed) inner function
-          // does with the variable; pessimistically assume that it's assigned.
-          var->set_maybe_assigned();
-        }
-      }
-      scope = scope->outer_scope_;
-    }
-  }
 }
 
 namespace {

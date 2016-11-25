@@ -458,16 +458,12 @@ class ParserBase {
       return &non_patterns_to_rewrite_;
     }
 
-    bool next_function_is_parenthesized() const {
-      return next_function_is_parenthesized_;
+    bool next_function_is_likely_called() const {
+      return next_function_is_likely_called_;
     }
 
-    void set_next_function_is_parenthesized(bool parenthesized) {
-      next_function_is_parenthesized_ = parenthesized;
-    }
-
-    bool this_function_is_parenthesized() const {
-      return this_function_is_parenthesized_;
+    void set_next_function_is_likely_called() {
+      next_function_is_likely_called_ = true;
     }
 
    private:
@@ -508,13 +504,12 @@ class ParserBase {
 
     ZoneList<typename ExpressionClassifier::Error> reported_errors_;
 
-    // If true, the next (and immediately following) function literal is
-    // preceded by a parenthesis.
-    bool next_function_is_parenthesized_;
-
-    // The value of the parents' next_function_is_parenthesized_, as it applies
-    // to this function. Filled in by constructor.
-    bool this_function_is_parenthesized_;
+    // Record whether the next (=== immediately following) function literal is
+    // preceded by a parenthesis / exclamation mark.
+    // The FunctionState constructor will reset a parents'
+    // next_function_is_likely_called_ to prevent it from being 'reused' in the
+    // next function literal.
+    bool next_function_is_likely_called_;
 
     friend Impl;
     friend class Checkpoint;
@@ -1466,13 +1461,10 @@ ParserBase<Impl>::FunctionState::FunctionState(
       return_expr_context_(ReturnExprContext::kInsideValidBlock),
       non_patterns_to_rewrite_(0, scope->zone()),
       reported_errors_(16, scope->zone()),
-      next_function_is_parenthesized_(false),
-      this_function_is_parenthesized_(false) {
+      next_function_is_likely_called_(false) {
   *function_state_stack = this;
   if (outer_function_state_) {
-    this_function_is_parenthesized_ =
-        outer_function_state_->next_function_is_parenthesized_;
-    outer_function_state_->next_function_is_parenthesized_ = false;
+    outer_function_state_->next_function_is_likely_called_ = false;
   }
 }
 
@@ -1789,8 +1781,9 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParsePrimaryExpression(
       }
       // Heuristically try to detect immediately called functions before
       // seeing the call parentheses.
-      function_state_->set_next_function_is_parenthesized(peek() ==
-                                                          Token::FUNCTION);
+      if (peek() == Token::FUNCTION) {
+        function_state_->set_next_function_is_likely_called();
+      }
       ExpressionT expr = ParseExpressionCoverGrammar(true, CHECK_OK);
       Expect(Token::RPAREN, CHECK_OK);
       return expr;
@@ -2732,7 +2725,7 @@ ParserBase<Impl>::ParseAssignmentExpression(bool accept_IN, bool* ok) {
         MessageTemplate::kInvalidLhsInAssignment, CHECK_OK);
   }
 
-  expression = impl()->MarkExpressionAsAssigned(expression);
+  impl()->MarkExpressionAsAssigned(expression);
 
   Token::Value op = Next();  // Get assignment operator.
   if (op != Token::ASSIGN) {
@@ -2944,6 +2937,12 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseUnaryExpression(
 
     op = Next();
     int pos = position();
+
+    // Assume "! function ..." indicates the function is likely to be called.
+    if (op == Token::NOT && peek() == Token::FUNCTION) {
+      function_state_->set_next_function_is_likely_called();
+    }
+
     ExpressionT expression = ParseUnaryExpression(CHECK_OK);
     impl()->RewriteNonPattern(CHECK_OK);
 
@@ -2973,7 +2972,7 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseUnaryExpression(
     expression = CheckAndRewriteReferenceExpression(
         expression, beg_pos, scanner()->location().end_pos,
         MessageTemplate::kInvalidLhsInPrefixOp, CHECK_OK);
-    expression = impl()->MarkExpressionAsAssigned(expression);
+    impl()->MarkExpressionAsAssigned(expression);
     impl()->RewriteNonPattern(CHECK_OK);
 
     return factory()->NewCountOperation(op,
@@ -3013,7 +3012,7 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParsePostfixExpression(
     expression = CheckAndRewriteReferenceExpression(
         expression, lhs_beg_pos, scanner()->location().end_pos,
         MessageTemplate::kInvalidLhsInPostfixOp, CHECK_OK);
-    expression = impl()->MarkExpressionAsAssigned(expression);
+    impl()->MarkExpressionAsAssigned(expression);
     impl()->RewriteNonPattern(CHECK_OK);
 
     Token::Value next = Next();
@@ -3891,10 +3890,10 @@ typename ParserBase<Impl>::ExpressionT
 ParserBase<Impl>::ParseArrowFunctionLiteral(
     bool accept_IN, const FormalParametersT& formal_parameters, bool* ok) {
   const RuntimeCallStats::CounterId counters[2][2] = {
-      {&RuntimeCallStats::ParseArrowFunctionLiteral,
-       &RuntimeCallStats::ParseBackgroundArrowFunctionLiteral},
-      {&RuntimeCallStats::PreParseArrowFunctionLiteral,
-       &RuntimeCallStats::PreParseBackgroundArrowFunctionLiteral}};
+      {&RuntimeCallStats::ParseBackgroundArrowFunctionLiteral,
+       &RuntimeCallStats::ParseArrowFunctionLiteral},
+      {&RuntimeCallStats::PreParseBackgroundArrowFunctionLiteral,
+       &RuntimeCallStats::PreParseArrowFunctionLiteral}};
   RuntimeCallTimerScope runtime_timer(
       runtime_call_stats_,
       counters[Impl::IsPreParser()][parsing_on_main_thread_]);

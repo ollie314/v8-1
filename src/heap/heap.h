@@ -556,12 +556,6 @@ class Heap {
 
   enum HeapState { NOT_IN_GC, SCAVENGE, MARK_COMPACT };
 
-  // Indicates whether live bytes adjustment is triggered
-  // - from within the GC code before sweeping started (SEQUENTIAL_TO_SWEEPER),
-  // - or from within GC (CONCURRENT_TO_SWEEPER),
-  // - or mutator code (CONCURRENT_TO_SWEEPER).
-  enum InvocationMode { SEQUENTIAL_TO_SWEEPER, CONCURRENT_TO_SWEEPER };
-
   enum UpdateAllocationSiteMode { kGlobal, kCached };
 
   // Taking this lock prevents the GC from entering a phase that relocates
@@ -675,6 +669,8 @@ class Heap {
   // they are in new space.
   static bool RootCanBeWrittenAfterInitialization(RootListIndex root_index);
 
+  static bool IsUnmodifiedHeapObject(Object** p);
+
   // Zapping is needed for verify heap, and always done in debug builds.
   static inline bool ShouldZapGarbage() {
 #ifdef DEBUG
@@ -751,14 +747,13 @@ class Heap {
   bool CanMoveObjectStart(HeapObject* object);
 
   // Maintain consistency of live bytes during incremental marking.
-  void AdjustLiveBytes(HeapObject* object, int by, InvocationMode mode);
+  void AdjustLiveBytes(HeapObject* object, int by);
 
   // Trim the given array from the left. Note that this relocates the object
   // start and hence is only valid if there is only a single reference to it.
   FixedArrayBase* LeftTrimFixedArray(FixedArrayBase* obj, int elements_to_trim);
 
   // Trim the given array from the right.
-  template<Heap::InvocationMode mode>
   void RightTrimFixedArray(FixedArrayBase* obj, int elements_to_trim);
 
   // Converts the given boolean condition to JavaScript boolean value.
@@ -788,6 +783,9 @@ class Heap {
   }
   Object* encountered_weak_collections() const {
     return encountered_weak_collections_;
+  }
+  void VisitEncounteredWeakCollections(ObjectVisitor* visitor) {
+    visitor->VisitPointer(&encountered_weak_collections_);
   }
 
   void set_encountered_weak_cells(Object* weak_cell) {
@@ -1513,11 +1511,13 @@ class Heap {
     // Registers an external string.
     inline void AddString(String* string);
 
-    inline void Iterate(ObjectVisitor* v);
+    inline void IterateAll(ObjectVisitor* v);
+    inline void IterateNewSpaceStrings(ObjectVisitor* v);
 
-    // Restores internal invariant and gets rid of collected strings.
-    // Must be called after each Iterate() that modified the strings.
-    void CleanUp();
+    // Restores internal invariant and gets rid of collected strings. Must be
+    // called after each Iterate*() that modified the strings.
+    void CleanUpAll();
+    void CleanUpNewSpaceStrings();
 
     // Destroys all allocated memory.
     void TearDown();
@@ -1850,6 +1850,10 @@ class Heap {
   bool CanExpandOldGeneration(int size) {
     if (force_oom_) return false;
     return (OldGenerationCapacity() + size) < MaxOldGenerationSize();
+  }
+
+  bool IsCloseToOutOfMemory(size_t slack) {
+    return OldGenerationCapacity() + slack >= MaxOldGenerationSize();
   }
 
   bool ShouldExpandOldGenerationOnAllocationFailure();

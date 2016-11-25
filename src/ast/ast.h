@@ -154,7 +154,7 @@ class AstProperties final BASE_EMBEDDED {
   enum Flag {
     kNoFlags = 0,
     kDontSelfOptimize = 1 << 0,
-    kDontCrankshaft = 1 << 1
+    kMustUseIgnitionTurbo = 1 << 1
   };
 
   typedef base::Flags<Flag> Flags;
@@ -1662,6 +1662,7 @@ class VariableProxy final : public Expression {
 
   bool is_assigned() const { return IsAssignedField::decode(bit_field_); }
   void set_is_assigned() {
+    DCHECK(!is_resolved());
     bit_field_ = IsAssignedField::update(bit_field_, true);
   }
 

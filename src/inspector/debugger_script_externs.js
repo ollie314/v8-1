@@ -198,7 +198,8 @@ var ScopeType = { Global: 0,
                   Closure: 3,
                   Catch: 4,
                   Block: 5,
-                  Script: 6 };
+                  Script: 6,
+                  Eval: 7 };
 
 
 /** @typedef {{
@@ -390,6 +391,15 @@ GeneratorMirror.prototype.sourceLocation = function() {}
 
 /** @return {!FunctionMirror} */
 GeneratorMirror.prototype.func = function() {}
+
+/** @return {number} */
+GeneratorMirror.prototype.scopeCount = function() {}
+
+/**
+ * @param {number} index
+ * @return {!ScopeMirror|undefined}
+ */
+GeneratorMirror.prototype.scope = function(index) {}
 
 
 /**

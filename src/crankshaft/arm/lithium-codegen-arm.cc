@@ -2873,7 +2873,7 @@ void LCodeGen::DoLoadKeyedFixedArray(LLoadKeyed* instr) {
       // protector cell contains (Smi) Isolate::kProtectorValid. Otherwise
       // it needs to bail out.
       __ LoadRoot(result, Heap::kArrayProtectorRootIndex);
-      __ ldr(result, FieldMemOperand(result, Cell::kValueOffset));
+      __ ldr(result, FieldMemOperand(result, PropertyCell::kValueOffset));
       __ cmp(result, Operand(Smi::FromInt(Isolate::kProtectorValid)));
       DeoptimizeIf(ne, instr, DeoptimizeReason::kHole);
     }
@@ -3125,7 +3125,7 @@ void LCodeGen::DoContext(LContext* instr) {
 
 void LCodeGen::DoDeclareGlobals(LDeclareGlobals* instr) {
   DCHECK(ToRegister(instr->context()).is(cp));
-  __ Move(scratch0(), instr->hydrogen()->pairs());
+  __ Move(scratch0(), instr->hydrogen()->declarations());
   __ push(scratch0());
   __ mov(scratch0(), Operand(Smi::FromInt(instr->hydrogen()->flags())));
   __ push(scratch0());

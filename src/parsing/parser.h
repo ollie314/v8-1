@@ -290,12 +290,10 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
     return compile_options_;
   }
   bool consume_cached_parse_data() const {
-    return allow_lazy_ &&
-           compile_options_ == ScriptCompiler::kConsumeParserCache;
+    return compile_options_ == ScriptCompiler::kConsumeParserCache;
   }
   bool produce_cached_parse_data() const {
-    return allow_lazy_ &&
-           compile_options_ == ScriptCompiler::kProduceParserCache;
+    return compile_options_ == ScriptCompiler::kProduceParserCache;
   }
 
   void ParseModuleItemList(ZoneList<Statement*>* body, bool* ok);
@@ -640,14 +638,16 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
                             MessageTemplate::Template message,
                             const AstRawString* arg, int pos);
 
-  void FinalizeIteratorUse(Variable* completion, Expression* condition,
-                           Variable* iter, Block* iterator_use, Block* result);
+  void FinalizeIteratorUse(Scope* use_scope, Variable* completion,
+                           Expression* condition, Variable* iter,
+                           Block* iterator_use, Block* result);
 
   Statement* FinalizeForOfStatement(ForOfStatement* loop, Variable* completion,
                                     int pos);
   void BuildIteratorClose(ZoneList<Statement*>* statements, Variable* iterator,
                           Variable* input, Variable* output);
-  void BuildIteratorCloseForCompletion(ZoneList<Statement*>* statements,
+  void BuildIteratorCloseForCompletion(Scope* scope,
+                                       ZoneList<Statement*>* statements,
                                        Variable* iterator,
                                        Expression* completion);
   Statement* CheckCallable(Variable* var, Expression* error, int pos);
@@ -720,12 +720,6 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
 
   V8_INLINE bool IsConstructor(const AstRawString* identifier) const {
     return identifier == ast_value_factory()->constructor_string();
-  }
-
-  V8_INLINE bool IsDirectEvalCall(Expression* expression) const {
-    if (!expression->IsCall()) return false;
-    expression = expression->AsCall()->expression();
-    return IsIdentifier(expression) && IsEval(AsIdentifier(expression));
   }
 
   V8_INLINE static bool IsBoilerplateProperty(
@@ -824,12 +818,11 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
 
   // Determine if the expression is a variable proxy and mark it as being used
   // in an assignment or with a increment/decrement operator.
-  V8_INLINE static Expression* MarkExpressionAsAssigned(
-      Expression* expression) {
-    VariableProxy* proxy =
-        expression != NULL ? expression->AsVariableProxy() : NULL;
-    if (proxy != NULL) proxy->set_is_assigned();
-    return expression;
+  V8_INLINE static void MarkExpressionAsAssigned(Expression* expression) {
+    DCHECK_NOT_NULL(expression);
+    if (expression->IsVariableProxy()) {
+      expression->AsVariableProxy()->set_is_assigned();
+    }
   }
 
   // Returns true if we have a binary expression between two numeric
@@ -1146,6 +1139,7 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   int use_counts_[v8::Isolate::kUseCounterFeatureCount];
   int total_preparse_skipped_;
   bool allow_lazy_;
+  bool temp_zoned_;
   ParserLogger* log_;
 };
 

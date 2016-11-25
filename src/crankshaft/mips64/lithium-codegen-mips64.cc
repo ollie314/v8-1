@@ -2976,7 +2976,7 @@ void LCodeGen::DoLoadKeyedFixedArray(LLoadKeyed* instr) {
       // it needs to bail out.
       __ LoadRoot(result, Heap::kArrayProtectorRootIndex);
       // The comparison only needs LS bits of value, which is a smi.
-      __ ld(result, FieldMemOperand(result, Cell::kValueOffset));
+      __ ld(result, FieldMemOperand(result, PropertyCell::kValueOffset));
       DeoptimizeIf(ne, instr, DeoptimizeReason::kHole, result,
                    Operand(Smi::FromInt(Isolate::kProtectorValid)));
     }
@@ -3245,7 +3245,7 @@ void LCodeGen::DoContext(LContext* instr) {
 
 void LCodeGen::DoDeclareGlobals(LDeclareGlobals* instr) {
   DCHECK(ToRegister(instr->context()).is(cp));
-  __ li(scratch0(), instr->hydrogen()->pairs());
+  __ li(scratch0(), instr->hydrogen()->declarations());
   __ li(scratch1(), Operand(Smi::FromInt(instr->hydrogen()->flags())));
   __ Push(scratch0(), scratch1());
   __ li(scratch0(), instr->hydrogen()->feedback_vector());

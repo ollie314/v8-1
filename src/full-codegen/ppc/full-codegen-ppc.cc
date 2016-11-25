@@ -152,8 +152,6 @@ void FullCodeGenerator::Generate() {
   {
     Comment cmnt(masm_, "[ Allocate locals");
     int locals_count = info->scope()->num_stack_slots();
-    // Generators allocate locals, if any, in context slots.
-    DCHECK(!IsGeneratorFunction(info->literal()->kind()) || locals_count == 0);
     OperandStackDepthIncrement(locals_count);
     if (locals_count > 0) {
       if (locals_count >= 128) {
@@ -751,6 +749,7 @@ void FullCodeGenerator::VisitVariableDeclaration(
   switch (variable->location()) {
     case VariableLocation::UNALLOCATED: {
       DCHECK(!variable->binding_needs_init());
+      globals_->Add(variable->name(), zone());
       FeedbackVectorSlot slot = proxy->VariableFeedbackSlot();
       DCHECK(!slot.IsInvalid());
       globals_->Add(handle(Smi::FromInt(slot.ToInt()), isolate()), zone());
@@ -800,6 +799,7 @@ void FullCodeGenerator::VisitFunctionDeclaration(
   Variable* variable = proxy->var();
   switch (variable->location()) {
     case VariableLocation::UNALLOCATED: {
+      globals_->Add(variable->name(), zone());
       FeedbackVectorSlot slot = proxy->VariableFeedbackSlot();
       DCHECK(!slot.IsInvalid());
       globals_->Add(handle(Smi::FromInt(slot.ToInt()), isolate()), zone());
@@ -1730,57 +1730,8 @@ void FullCodeGenerator::VisitAssignment(Assignment* expr) {
 
 
 void FullCodeGenerator::VisitYield(Yield* expr) {
-  Comment cmnt(masm_, "[ Yield");
-  SetExpressionPosition(expr);
-
-  // Evaluate yielded value first; the initial iterator definition depends on
-  // this.  It stays on the stack while we update the iterator.
-  VisitForStackValue(expr->expression());
-
-  Label suspend, continuation, post_runtime, resume, exception;
-
-  __ b(&suspend);
-  __ bind(&continuation);
-  // When we arrive here, r3 holds the generator object.
-  __ RecordGeneratorContinuation();
-  __ LoadP(r4, FieldMemOperand(r3, JSGeneratorObject::kResumeModeOffset));
-  __ LoadP(r3, FieldMemOperand(r3, JSGeneratorObject::kInputOrDebugPosOffset));
-  STATIC_ASSERT(JSGeneratorObject::kNext < JSGeneratorObject::kReturn);
-  STATIC_ASSERT(JSGeneratorObject::kThrow > JSGeneratorObject::kReturn);
-  __ CmpSmiLiteral(r4, Smi::FromInt(JSGeneratorObject::kReturn), r0);
-  __ blt(&resume);
-  __ Push(result_register());
-  __ bgt(&exception);
-  EmitCreateIteratorResult(true);
-  EmitUnwindAndReturn();
-
-  __ bind(&exception);
-  __ CallRuntime(expr->rethrow_on_exception() ? Runtime::kReThrow
-                                              : Runtime::kThrow);
-
-  __ bind(&suspend);
-  OperandStackDepthIncrement(1);  // Not popped on this path.
-  VisitForAccumulatorValue(expr->generator_object());
-  DCHECK(continuation.pos() > 0 && Smi::IsValid(continuation.pos()));
-  __ LoadSmiLiteral(r4, Smi::FromInt(continuation.pos()));
-  __ StoreP(r4, FieldMemOperand(r3, JSGeneratorObject::kContinuationOffset),
-            r0);
-  __ StoreP(cp, FieldMemOperand(r3, JSGeneratorObject::kContextOffset), r0);
-  __ mr(r4, cp);
-  __ RecordWriteField(r3, JSGeneratorObject::kContextOffset, r4, r5,
-                      kLRHasBeenSaved, kDontSaveFPRegs);
-  __ addi(r4, fp, Operand(StandardFrameConstants::kExpressionsOffset));
-  __ cmp(sp, r4);
-  __ beq(&post_runtime);
-  __ push(r3);  // generator object
-  __ CallRuntime(Runtime::kSuspendJSGeneratorObject, 1);
-  RestoreContext();
-  __ bind(&post_runtime);
-  PopOperand(result_register());
-  EmitReturnSequence();
-
-  __ bind(&resume);
-  context()->Plug(result_register());
+  // Resumable functions are not supported.
+  UNREACHABLE();
 }
 
 void FullCodeGenerator::PushOperands(Register reg1, Register reg2) {

@@ -126,14 +126,12 @@ void V8Debugger::getCompiledScripts(
   for (size_t i = 0; i < scripts.Size(); ++i) {
     v8::Local<v8::DebugInterface::Script> script = scripts.Get(i);
     if (!script->WasCompiled()) continue;
-    v8::ScriptOriginOptions origin = script->OriginOptions();
-    if (origin.IsEmbedderDebugScript()) continue;
     v8::Local<v8::String> v8ContextData;
     if (!script->ContextData().ToLocal(&v8ContextData)) continue;
     String16 contextData = toProtocolString(v8ContextData);
     if (contextData.find(contextPrefix) != 0) continue;
-    result.push_back(
-        wrapUnique(new V8DebuggerScript(m_isolate, script, false)));
+    result.push_back(std::unique_ptr<V8DebuggerScript>(
+        new V8DebuggerScript(m_isolate, script, false)));
   }
 }
 
@@ -356,7 +354,7 @@ Response V8Debugger::setScriptSource(
 
   std::unique_ptr<v8::Context::Scope> contextScope;
   if (!isPaused())
-    contextScope = wrapUnique(new v8::Context::Scope(debuggerContext()));
+    contextScope.reset(new v8::Context::Scope(debuggerContext()));
 
   v8::Local<v8::Value> argv[] = {toV8String(m_isolate, sourceID), newSource,
                                  v8Boolean(dryRun, m_isolate)};
@@ -598,7 +596,8 @@ void V8Debugger::handleV8DebugEvent(
       m_wasmTranslation.AddScript(scriptWrapper.As<v8::Object>());
     } else if (m_ignoreScriptParsedEventsCounter == 0) {
       agent->didParseSource(
-          wrapUnique(new V8DebuggerScript(m_isolate, script, inLiveEditScope)),
+          std::unique_ptr<V8DebuggerScript>(
+              new V8DebuggerScript(m_isolate, script, inLiveEditScope)),
           event == v8::AfterCompile);
     }
   } else if (event == v8::Exception) {
@@ -690,15 +689,27 @@ v8::Local<v8::Context> V8Debugger::debuggerContext() const {
   return m_debuggerContext.Get(m_isolate);
 }
 
-v8::MaybeLocal<v8::Value> V8Debugger::functionScopes(
-    v8::Local<v8::Context> context, v8::Local<v8::Function> function) {
+v8::MaybeLocal<v8::Value> V8Debugger::getTargetScopes(
+    v8::Local<v8::Context> context, v8::Local<v8::Value> value,
+    ScopeTargetKind kind) {
   if (!enabled()) {
     UNREACHABLE();
     return v8::Local<v8::Value>::New(m_isolate, v8::Undefined(m_isolate));
   }
-  v8::Local<v8::Value> argv[] = {function};
+  v8::Local<v8::Value> argv[] = {value};
   v8::Local<v8::Value> scopesValue;
-  if (!callDebuggerMethod("getFunctionScopes", 1, argv).ToLocal(&scopesValue))
+
+  const char* debuggerMethod = nullptr;
+  switch (kind) {
+    case FUNCTION:
+      debuggerMethod = "getFunctionScopes";
+      break;
+    case GENERATOR:
+      debuggerMethod = "getGeneratorScopes";
+      break;
+  }
+
+  if (!callDebuggerMethod(debuggerMethod, 1, argv).ToLocal(&scopesValue))
     return v8::MaybeLocal<v8::Value>();
   v8::Local<v8::Value> copied;
   if (!copyValueFromDebuggerContext(m_isolate, debuggerContext(), context,
@@ -713,6 +724,16 @@ v8::MaybeLocal<v8::Value> V8Debugger::functionScopes(
                                   V8InternalValueType::kScope))
     return v8::MaybeLocal<v8::Value>();
   return copied;
+}
+
+v8::MaybeLocal<v8::Value> V8Debugger::functionScopes(
+    v8::Local<v8::Context> context, v8::Local<v8::Function> function) {
+  return getTargetScopes(context, function, FUNCTION);
+}
+
+v8::MaybeLocal<v8::Value> V8Debugger::generatorScopes(
+    v8::Local<v8::Context> context, v8::Local<v8::Value> generator) {
+  return getTargetScopes(context, generator, GENERATOR);
 }
 
 v8::MaybeLocal<v8::Array> V8Debugger::internalProperties(
@@ -756,6 +777,12 @@ v8::MaybeLocal<v8::Array> V8Debugger::internalProperties(
           context, properties, properties->Length(),
           toV8StringInternalized(m_isolate, "[[GeneratorLocation]]"));
       createDataProperty(context, properties, properties->Length(), location);
+    }
+    v8::Local<v8::Value> scopes;
+    if (generatorScopes(context, value).ToLocal(&scopes)) {
+      createDataProperty(context, properties, properties->Length(),
+                         toV8StringInternalized(m_isolate, "[[Scopes]]"));
+      createDataProperty(context, properties, properties->Length(), scopes);
     }
   }
   if (value->IsFunction()) {

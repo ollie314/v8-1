@@ -3243,7 +3243,7 @@ void LCodeGen::DoLoadKeyedFixed(LLoadKeyedFixed* instr) {
       // protector cell contains (Smi) Isolate::kProtectorValid. Otherwise
       // it needs to bail out.
       __ LoadRoot(result, Heap::kArrayProtectorRootIndex);
-      __ Ldr(result, FieldMemOperand(result, Cell::kValueOffset));
+      __ Ldr(result, FieldMemOperand(result, PropertyCell::kValueOffset));
       __ Cmp(result, Operand(Smi::FromInt(Isolate::kProtectorValid)));
       DeoptimizeIf(ne, instr, DeoptimizeReason::kHole);
     }
@@ -4595,7 +4595,7 @@ void LCodeGen::DoDeclareGlobals(LDeclareGlobals* instr) {
 
   // TODO(all): if Mov could handle object in new space then it could be used
   // here.
-  __ LoadHeapObject(scratch1, instr->hydrogen()->pairs());
+  __ LoadHeapObject(scratch1, instr->hydrogen()->declarations());
   __ Mov(scratch2, Smi::FromInt(instr->hydrogen()->flags()));
   __ Push(scratch1, scratch2);
   __ LoadHeapObject(scratch1, instr->hydrogen()->feedback_vector());

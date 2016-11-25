@@ -45,6 +45,14 @@ class DebugWrapper {
                         StepFrame: 3,
                       };
 
+    // The different types of scripts matching enum ScriptType in objects.h.
+    this.ScriptType = { Native: 0,
+                        Extension: 1,
+                        Normal: 2,
+                        Wasm: 3,
+                        Inspector: 4,
+                      };
+
     // A copy of the scope types from runtime-debug.cc.
     // NOTE: these constants should be backward-compatible, so
     // add new ones to the end of this list.
@@ -70,8 +78,16 @@ class DebugWrapper {
       BreakPosition: 1
     };
 
+    // The different script break point types.
+    this.ScriptBreakPointType = { ScriptId: 0,
+                                  ScriptName: 1,
+                                  ScriptRegExp: 2 };
+
     // Store the current script id so we can skip corresponding break events.
     this.thisScriptId = %FunctionGetScriptId(receive);
+
+    // Stores all set breakpoints.
+    this.breakpoints = new Set();
 
     // Register as the active wrapper.
     assertTrue(activeWrapper === undefined);
@@ -131,33 +147,41 @@ class DebugWrapper {
     const offset = %FunctionGetScriptSourcePosition(func);
     const loc =
       %ScriptLocationFromLine2(scriptid, opt_line, opt_column, offset);
-
-    const params = { location :
-                       { scriptId : scriptid.toString(),
-                         lineNumber : loc.line,
-                         columnNumber : loc.column,
-                       }};
-    if (!!opt_condition) {
-      params.condition = opt_condition;
-    }
-
-    const {msgid, msg} = this.createMessage(
-        "Debugger.setBreakpoint", params);
-    this.sendMessage(msg);
-
-    const reply = this.takeReplyChecked(msgid);
-    assertTrue(reply.result !== undefined);
-    const breakid = reply.result.breakpointId;
-    assertTrue(breakid !== undefined);
-
-    return breakid;
+    return this.setBreakPointAtLocation(scriptid, loc, opt_condition);
   }
 
-  clearBreakPoint(breakid) {
+  setScriptBreakPoint(type, scriptid, opt_line, opt_column, opt_condition) {
+    // Only sets by script id are supported for now.
+    assertEquals(this.ScriptBreakPointType.ScriptId, type);
+    return this.setScriptBreakPointById(scriptid, opt_line, opt_column,
+                                        opt_condition);
+  }
+
+  setScriptBreakPointById(scriptid, opt_line, opt_column, opt_condition) {
+    const loc = %ScriptLocationFromLine2(scriptid, opt_line, opt_column, 0);
+    return this.setBreakPointAtLocation(scriptid, loc, opt_condition);
+  }
+
+  setBreakPointByScriptIdAndPosition(scriptid, position) {
+    const loc = %ScriptPositionInfo2(scriptid, position, false);
+    return this.setBreakPointAtLocation(scriptid, loc, undefined);
+  }
+
+  clearBreakPoint(breakpoint) {
+    assertTrue(this.breakpoints.has(breakpoint));
+    const breakid = breakpoint.id;
     const {msgid, msg} = this.createMessage(
         "Debugger.removeBreakpoint", { breakpointId : breakid });
     this.sendMessage(msg);
     this.takeReplyChecked(msgid);
+    this.breakpoints.delete(breakid);
+  }
+
+  clearAllBreakPoints() {
+    for (let breakpoint of this.breakpoints) {
+      this.clearBreakPoint(breakpoint);
+    }
+    this.breakpoints.clear();
   }
 
   showBreakPoints(f, opt_position_alignment) {
@@ -202,10 +226,10 @@ class DebugWrapper {
   }
 
   // Returns a Script object. If the parameter is a function the return value
-  // is the script in which the function is defined. If the parameter is a string
-  // the return value is the script for which the script name has that string
-  // value.  If it is a regexp and there is a unique script whose name matches
-  // we return that, otherwise undefined.
+  // is the script in which the function is defined. If the parameter is a
+  // string the return value is the script for which the script name has that
+  // string value.  If it is a regexp and there is a unique script whose name
+  // matches we return that, otherwise undefined.
   findScript(func_or_script_name) {
     if (%IsFunction(func_or_script_name)) {
       return %FunctionGetScript(func_or_script_name);
@@ -235,16 +259,86 @@ class DebugWrapper {
     }
   }
 
+  // Returns the script source. If the parameter is a function the return value
+  // is the script source for the script in which the function is defined. If the
+  // parameter is a string the return value is the script for which the script
+  // name has that string value.
+  scriptSource(func_or_script_name) {
+    return this.findScript(func_or_script_name).source;
+  };
+
   sourcePosition(f) {
     if (!%IsFunction(f)) throw new Error("Not passed a Function");
     return %FunctionGetScriptSourcePosition(f);
   };
+
+  // Returns the character position in a script based on a line number and an
+  // optional position within that line.
+  findScriptSourcePosition(script, opt_line, opt_column) {
+    var location = %ScriptLocationFromLine(script, opt_line, opt_column, 0);
+    return location ? location.position : null;
+  };
+
+  findFunctionSourceLocation(func, opt_line, opt_column) {
+    var script = %FunctionGetScript(func);
+    var script_offset = %FunctionGetScriptSourcePosition(func);
+    return %ScriptLocationFromLine(script, opt_line, opt_column, script_offset);
+  }
 
   setBreakPointsActive(enabled) {
     const {msgid, msg} = this.createMessage(
         "Debugger.setBreakpointsActive", { active : enabled });
     this.sendMessage(msg);
     this.takeReplyChecked(msgid);
+  }
+
+  generatorScopeCount(gen) {
+    return %GetGeneratorScopeCount(gen);
+  }
+
+  generatorScope(gen, index) {
+    // These indexes correspond definitions in debug-scopes.h.
+    const kScopeDetailsTypeIndex = 0;
+    const kScopeDetailsObjectIndex = 1;
+
+    const details = %GetGeneratorScopeDetails(gen, index);
+
+    function scopeObjectProperties() {
+      const obj = details[kScopeDetailsObjectIndex];
+      return Object.keys(obj).map((k, v) => v);
+    }
+
+    function setScopeVariableValue(name, value) {
+      const res = %SetScopeVariableValue(gen, null, null, index, name, value);
+      if (!res) throw new Error("Failed to set variable value");
+    }
+
+    const scopeObject =
+        { value : () => details[kScopeDetailsObjectIndex],
+          property : (prop) => details[kScopeDetailsObjectIndex][prop],
+          properties : scopeObjectProperties,
+          propertyNames : () => Object.keys(details[kScopeDetailsObjectIndex])
+              .map((key, _) => key),
+        };
+    return { scopeType : () => details[kScopeDetailsTypeIndex],
+             scopeIndex : () => index,
+             scopeObject : () => scopeObject,
+             setVariableValue : setScopeVariableValue,
+           }
+  }
+
+  generatorScopes(gen) {
+    const count = %GetGeneratorScopeCount(gen);
+    const scopes = [];
+    for (let i = 0; i < count; i++) {
+      scopes.push(this.generatorScope(gen, i));
+    }
+    return scopes;
+  }
+
+  get LiveEdit() {
+    const debugContext = %GetDebugContext();
+    return debugContext.Debug.LiveEdit;
   }
 
   // --- Internal methods. -----------------------------------------------------
@@ -264,9 +358,10 @@ class DebugWrapper {
   }
 
   receiveMessage(message) {
-    if (printProtocolMessages) print(message);
-
     const parsedMessage = JSON.parse(message);
+    if (printProtocolMessages) {
+      print(JSON.stringify(parsedMessage, undefined, 1));
+    }
     if (parsedMessage.id !== undefined) {
       this.receivedMessages.set(parsedMessage.id, parsedMessage);
     }
@@ -292,11 +387,42 @@ class DebugWrapper {
     return reply;
   }
 
+  setBreakPointAtLocation(scriptid, loc, opt_condition) {
+    const params = { location :
+                       { scriptId : scriptid.toString(),
+                         lineNumber : loc.line,
+                         columnNumber : loc.column,
+                       },
+                     condition : opt_condition,
+                   };
+
+    const {msgid, msg} = this.createMessage("Debugger.setBreakpoint", params);
+    this.sendMessage(msg);
+
+    const reply = this.takeReplyChecked(msgid);
+    const result = reply.result;
+    assertTrue(result !== undefined);
+    const breakid = result.breakpointId;
+    assertTrue(breakid !== undefined);
+
+    const actualLoc = %ScriptLocationFromLine2(scriptid,
+        result.actualLocation.lineNumber, result.actualLocation.columnNumber,
+        0);
+
+    const breakpoint = { id : result.breakpointId,
+                         actual_position : actualLoc.position,
+                       }
+
+    this.breakpoints.add(breakpoint);
+    return breakpoint;
+  }
+
   execStatePrepareStep(action) {
     switch(action) {
       case this.StepAction.StepOut: this.stepOut(); break;
       case this.StepAction.StepNext: this.stepOver(); break;
       case this.StepAction.StepIn: this.stepInto(); break;
+      case this.StepAction.StepFrame: %PrepareStepFrame(); break;
       default: %AbortJS("Unsupported StepAction"); break;
     }
   }
@@ -310,6 +436,7 @@ class DebugWrapper {
       case "catch": return this.ScopeType.Catch;
       case "block": return this.ScopeType.Block;
       case "script": return this.ScopeType.Script;
+      case "eval": return this.ScopeType.Eval;
       default: %AbortJS("Unexpected scope type");
     }
   }
@@ -324,7 +451,7 @@ class DebugWrapper {
       }
     }
 
-    if (found == null) return { isUndefined : true }
+    if (found == null) return { isUndefined : () => true };
 
     const val = { value : () => found.value.value };
     return { value : () => val,
@@ -354,7 +481,10 @@ class DebugWrapper {
           newValue : { value : value }
         });
     this.sendMessage(msg);
-    this.takeReplyChecked(msgid);
+    const reply = this.takeReplyChecked(msgid);
+    if (reply.error) {
+      throw new Error("Failed to set variable value");
+    }
   }
 
   execStateScope(frame, scope_index) {
@@ -391,7 +521,7 @@ class DebugWrapper {
 
   getProperties(objectId) {
     const {msgid, msg} = this.createMessage(
-        "Runtime.getProperties", { objectId : objectId });
+        "Runtime.getProperties", { objectId : objectId, ownProperties: true });
     this.sendMessage(msg);
     const reply = this.takeReplyChecked(msgid);
     return reply.result.result;
@@ -435,35 +565,86 @@ class DebugWrapper {
     return { value : () => localValue };
   }
 
+  reconstructValue(objectId) {
+    const {msgid, msg} = this.createMessage(
+        "Runtime.getProperties", { objectId : objectId, ownProperties: true });
+    this.sendMessage(msg);
+    const reply = this.takeReplyChecked(msgid);
+    return Object(reply.result.internalProperties[0].value.value);
+  }
+
   reconstructRemoteObject(obj) {
     let value = obj.value;
-    if (obj.type == "object") {
-      if (obj.subtype == "error") {
-        const desc = obj.description;
-        switch (obj.className) {
-          case "EvalError": throw new EvalError(desc);
-          case "RangeError": throw new RangeError(desc);
-          case "ReferenceError": throw new ReferenceError(desc);
-          case "SyntaxError": throw new SyntaxError(desc);
-          case "TypeError": throw new TypeError(desc);
-          case "URIError": throw new URIError(desc);
-          default: throw new Error(desc);
+    let isUndefined = false;
+
+    switch (obj.type) {
+      case "object": {
+        switch (obj.subtype) {
+          case "error": {
+            const desc = obj.description;
+            switch (obj.className) {
+              case "EvalError": throw new EvalError(desc);
+              case "RangeError": throw new RangeError(desc);
+              case "ReferenceError": throw new ReferenceError(desc);
+              case "SyntaxError": throw new SyntaxError(desc);
+              case "TypeError": throw new TypeError(desc);
+              case "URIError": throw new URIError(desc);
+              default: throw new Error(desc);
+            }
+            break;
+          }
+          case "array": {
+            const array = [];
+            const props = this.propertiesToObject(
+                this.getProperties(obj.objectId));
+            for (let i = 0; i < props.length; i++) {
+              array[i] = props[i];
+            }
+            value = array;
+            break;
+          }
+          case "null": {
+            value = null;
+            break;
+          }
+          default: {
+            switch (obj.className) {
+              case "global":
+                value = Function('return this')();
+                break;
+              case "Number":
+              case "String":
+              case "Boolean":
+                value = this.reconstructValue(obj.objectId);
+                break;
+              default:
+                value = this.propertiesToObject(
+                    this.getProperties(obj.objectId));
+                break;
+            }
+            break;
+          }
         }
-      } else if (obj.subtype == "array") {
-        const array = [];
-        const props = this.propertiesToObject(
-            this.getProperties(obj.objectId));
-        for (let i = 0; i < props.length; i++) {
-          array[i] = props[i];
-        }
-        value = array;
+        break;
+      }
+      case "undefined": {
+        value = undefined;
+        isUndefined = true;
+        break;
+      }
+      case "string":
+      case "number":
+      case "boolean": {
+        break;
+      }
+      default: {
+        break;
       }
     }
 
     return { value : () => value,
-             isUndefined : () => obj.type == "undefined"
+             isUndefined : () => isUndefined
            };
-
   }
 
   evaluateOnCallFrame(frame, expr) {
@@ -480,12 +661,21 @@ class DebugWrapper {
     return this.reconstructRemoteObject(result);
   }
 
+  execStateFrameRestart(frame) {
+    const frameid = frame.callFrameId;
+    const {msgid, msg} = this.createMessage(
+        "Debugger.restartFrame", { callFrameId : frameid });
+    this.sendMessage(msg);
+    this.takeReplyChecked(msgid);
+  }
+
   execStateFrame(frame) {
     const scriptid = parseInt(frame.location.scriptId);
     const line = frame.location.lineNumber;
     const column = frame.location.columnNumber;
     const loc = %ScriptLocationFromLine2(scriptid, line, column, 0);
     const func = { name : () => frame.functionName };
+    const index = JSON.parse(frame.callFrameId).ordinal;
 
     function allScopes() {
       const scopes = [];
@@ -495,15 +685,18 @@ class DebugWrapper {
       return scopes;
     };
 
-    return { sourceColumn : () => loc.column,
-             sourceLine : () => loc.line + 1,
+    return { sourceColumn : () => column,
+             sourceLine : () => line + 1,
              sourceLineText : () => loc.sourceText,
              evaluate : (expr) => this.evaluateOnCallFrame(frame, expr),
              functionName : () => frame.functionName,
              func : () => func,
+             index : () => index,
              localCount : () => this.execStateFrameLocalCount(frame),
              localName : (ix) => this.execStateFrameLocalName(frame, ix),
              localValue: (ix) => this.execStateFrameLocalValue(frame, ix),
+             receiver : () => this.evaluateOnCallFrame(frame, "this"),
+             restart : () => this.execStateFrameRestart(frame),
              scopeCount : () => frame.scopeChain.length,
              scope : (index) => this.execStateScope(frame, index),
              allScopes : allScopes.bind(this)
@@ -527,7 +720,7 @@ class DebugWrapper {
 
   eventDataScriptSource(id) {
     const {msgid, msg} = this.createMessage(
-        "Debugger.getScriptSource", { scriptId : id });
+        "Debugger.getScriptSource", { scriptId : String(id) });
     this.sendMessage(msg);
     const reply = this.takeReplyChecked(msgid);
     return reply.result.scriptSource;
@@ -541,12 +734,12 @@ class DebugWrapper {
   }
 
   eventDataScript(params) {
-    const id = params.scriptId;
+    const id = parseInt(params.scriptId);
     const name = params.url ? params.url : undefined;
 
     return { id : () => id,
              name : () => name,
-             source : () => this.eventDataScriptSource(id),
+             source : () => this.eventDataScriptSource(params.scriptId),
              setSource : (src) => this.eventDataScriptSetSource(id, src)
            };
   }

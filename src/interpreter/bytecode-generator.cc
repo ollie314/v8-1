@@ -496,24 +496,24 @@ class BytecodeGenerator::GlobalDeclarationsBuilder final : public ZoneObject {
         constant_pool_entry_(0),
         has_constant_pool_entry_(false) {}
 
-  void AddFunctionDeclaration(FeedbackVectorSlot slot, FunctionLiteral* func) {
+  void AddFunctionDeclaration(Handle<String> name, FeedbackVectorSlot slot,
+                              FunctionLiteral* func) {
     DCHECK(!slot.IsInvalid());
-    declarations_.push_back(std::make_pair(slot, func));
+    declarations_.push_back(Declaration(name, slot, func));
   }
 
-  void AddUndefinedDeclaration(FeedbackVectorSlot slot) {
+  void AddUndefinedDeclaration(Handle<String> name, FeedbackVectorSlot slot) {
     DCHECK(!slot.IsInvalid());
-    declarations_.push_back(std::make_pair(slot, nullptr));
+    declarations_.push_back(Declaration(name, slot, nullptr));
   }
 
-  Handle<FixedArray> AllocateDeclarationPairs(CompilationInfo* info) {
+  Handle<FixedArray> AllocateDeclarations(CompilationInfo* info) {
     DCHECK(has_constant_pool_entry_);
     int array_index = 0;
-    Handle<FixedArray> pairs = info->isolate()->factory()->NewFixedArray(
-        static_cast<int>(declarations_.size() * 2), TENURED);
-    for (std::pair<FeedbackVectorSlot, FunctionLiteral*> declaration :
-         declarations_) {
-      FunctionLiteral* func = declaration.second;
+    Handle<FixedArray> data = info->isolate()->factory()->NewFixedArray(
+        static_cast<int>(declarations_.size() * 3), TENURED);
+    for (const Declaration& declaration : declarations_) {
+      FunctionLiteral* func = declaration.func;
       Handle<Object> initial_value;
       if (func == nullptr) {
         initial_value = info->isolate()->factory()->undefined_value();
@@ -526,10 +526,11 @@ class BytecodeGenerator::GlobalDeclarationsBuilder final : public ZoneObject {
       // will set stack overflow.
       if (initial_value.is_null()) return Handle<FixedArray>();
 
-      pairs->set(array_index++, Smi::FromInt(declaration.first.ToInt()));
-      pairs->set(array_index++, *initial_value);
+      data->set(array_index++, *declaration.name);
+      data->set(array_index++, Smi::FromInt(declaration.slot.ToInt()));
+      data->set(array_index++, *initial_value);
     }
-    return pairs;
+    return data;
   }
 
   size_t constant_pool_entry() {
@@ -547,7 +548,17 @@ class BytecodeGenerator::GlobalDeclarationsBuilder final : public ZoneObject {
   bool empty() { return declarations_.empty(); }
 
  private:
-  ZoneVector<std::pair<FeedbackVectorSlot, FunctionLiteral*>> declarations_;
+  struct Declaration {
+    Declaration() : slot(FeedbackVectorSlot::Invalid()), func(nullptr) {}
+    Declaration(Handle<String> name, FeedbackVectorSlot slot,
+                FunctionLiteral* func)
+        : name(name), slot(slot), func(func) {}
+
+    Handle<String> name;
+    FeedbackVectorSlot slot;
+    FunctionLiteral* func;
+  };
+  ZoneVector<Declaration> declarations_;
   size_t constant_pool_entry_;
   bool has_constant_pool_entry_;
 };
@@ -589,7 +600,7 @@ void BytecodeGenerator::AllocateDeferredConstants() {
   // Build global declaration pair arrays.
   for (GlobalDeclarationsBuilder* globals_builder : global_declarations_) {
     Handle<FixedArray> declarations =
-        globals_builder->AllocateDeclarationPairs(info());
+        globals_builder->AllocateDeclarations(info());
     if (declarations.is_null()) return SetStackOverflow();
     builder()->InsertConstantPoolEntryAt(globals_builder->constant_pool_entry(),
                                          declarations);
@@ -795,7 +806,7 @@ void BytecodeGenerator::VisitVariableDeclaration(VariableDeclaration* decl) {
     case VariableLocation::UNALLOCATED: {
       DCHECK(!variable->binding_needs_init());
       FeedbackVectorSlot slot = decl->proxy()->VariableFeedbackSlot();
-      globals_builder()->AddUndefinedDeclaration(slot);
+      globals_builder()->AddUndefinedDeclaration(variable->name(), slot);
       break;
     }
     case VariableLocation::LOCAL:
@@ -849,7 +860,8 @@ void BytecodeGenerator::VisitFunctionDeclaration(FunctionDeclaration* decl) {
   switch (variable->location()) {
     case VariableLocation::UNALLOCATED: {
       FeedbackVectorSlot slot = decl->proxy()->VariableFeedbackSlot();
-      globals_builder()->AddFunctionDeclaration(slot, decl->fun());
+      globals_builder()->AddFunctionDeclaration(variable->name(), slot,
+                                                decl->fun());
       break;
     }
     case VariableLocation::PARAMETER:
@@ -1431,9 +1443,8 @@ void BytecodeGenerator::VisitClassLiteralProperties(ClassLiteral* expr,
                                                     Register literal,
                                                     Register prototype) {
   RegisterAllocationScope register_scope(this);
-  RegisterList args = register_allocator()->NewRegisterList(5);
-  Register receiver = args[0], key = args[1], value = args[2], attr = args[3],
-           set_function_name = args[4];
+  RegisterList args = register_allocator()->NewRegisterList(4);
+  Register receiver = args[0], key = args[1], value = args[2], attr = args[3];
 
   bool attr_assigned = false;
   Register old_receiver = Register::invalid_value();
@@ -1480,18 +1491,15 @@ void BytecodeGenerator::VisitClassLiteralProperties(ClassLiteral* expr,
       case ClassLiteral::Property::METHOD: {
         builder()
             ->LoadLiteral(Smi::FromInt(property->NeedsSetFunctionName()))
-            .StoreAccumulatorInRegister(set_function_name)
-            .CallRuntime(Runtime::kDefineDataPropertyInLiteral, args);
+            .StoreDataPropertyInLiteral(receiver, key, value, attr);
         break;
       }
       case ClassLiteral::Property::GETTER: {
-        builder()->CallRuntime(Runtime::kDefineGetterPropertyUnchecked,
-                               args.Truncate(4));
+        builder()->CallRuntime(Runtime::kDefineGetterPropertyUnchecked, args);
         break;
       }
       case ClassLiteral::Property::SETTER: {
-        builder()->CallRuntime(Runtime::kDefineSetterPropertyUnchecked,
-                               args.Truncate(4));
+        builder()->CallRuntime(Runtime::kDefineSetterPropertyUnchecked, args);
         break;
       }
       case ClassLiteral::Property::FIELD: {
@@ -1699,18 +1707,20 @@ void BytecodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
       case ObjectLiteral::Property::CONSTANT:
       case ObjectLiteral::Property::COMPUTED:
       case ObjectLiteral::Property::MATERIALIZED_LITERAL: {
-        RegisterList args = register_allocator()->NewRegisterList(5);
-        builder()->MoveRegister(literal, args[0]);
+        Register key = register_allocator()->NewRegister();
         VisitForAccumulatorValue(property->key());
-        builder()->ConvertAccumulatorToName(args[1]);
-        VisitForRegisterValue(property->value(), args[2]);
-        VisitSetHomeObject(args[2], literal, property);
+        builder()->ConvertAccumulatorToName(key);
+
+        Register value = VisitForRegisterValue(property->value());
+        VisitSetHomeObject(value, literal, property);
+
+        Register attr = register_allocator()->NewRegister();
+
         builder()
             ->LoadLiteral(Smi::FromInt(NONE))
-            .StoreAccumulatorInRegister(args[3])
+            .StoreAccumulatorInRegister(attr)
             .LoadLiteral(Smi::FromInt(property->NeedsSetFunctionName()))
-            .StoreAccumulatorInRegister(args[4]);
-        builder()->CallRuntime(Runtime::kDefineDataPropertyInLiteral, args);
+            .StoreDataPropertyInLiteral(literal, key, value, attr);
         break;
       }
       case ObjectLiteral::Property::GETTER:

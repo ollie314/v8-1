@@ -1847,95 +1847,6 @@ void MacroAssembler::FastAllocate(int object_size, Register result,
   AddP(result, result, Operand(kHeapObjectTag));
 }
 
-void MacroAssembler::AllocateTwoByteString(Register result, Register length,
-                                           Register scratch1, Register scratch2,
-                                           Register scratch3,
-                                           Label* gc_required) {
-  // Calculate the number of bytes needed for the characters in the string while
-  // observing object alignment.
-  DCHECK((SeqTwoByteString::kHeaderSize & kObjectAlignmentMask) == 0);
-
-  ShiftLeftP(scratch1, length, Operand(1));  // Length in bytes, not chars.
-  AddP(scratch1, Operand(kObjectAlignmentMask + SeqTwoByteString::kHeaderSize));
-
-  AndP(scratch1, Operand(~kObjectAlignmentMask));
-
-  // Allocate two-byte string in new space.
-  Allocate(scratch1, result, scratch2, scratch3, gc_required,
-           NO_ALLOCATION_FLAGS);
-
-  // Set the map, length and hash field.
-  InitializeNewString(result, length, Heap::kStringMapRootIndex, scratch1,
-                      scratch2);
-}
-
-void MacroAssembler::AllocateOneByteString(Register result, Register length,
-                                           Register scratch1, Register scratch2,
-                                           Register scratch3,
-                                           Label* gc_required) {
-  // Calculate the number of bytes needed for the characters in the string while
-  // observing object alignment.
-  DCHECK((SeqOneByteString::kHeaderSize & kObjectAlignmentMask) == 0);
-  DCHECK(kCharSize == 1);
-  AddP(scratch1, length,
-       Operand(kObjectAlignmentMask + SeqOneByteString::kHeaderSize));
-  AndP(scratch1, Operand(~kObjectAlignmentMask));
-
-  // Allocate one-byte string in new space.
-  Allocate(scratch1, result, scratch2, scratch3, gc_required,
-           NO_ALLOCATION_FLAGS);
-
-  // Set the map, length and hash field.
-  InitializeNewString(result, length, Heap::kOneByteStringMapRootIndex,
-                      scratch1, scratch2);
-}
-
-void MacroAssembler::AllocateTwoByteConsString(Register result, Register length,
-                                               Register scratch1,
-                                               Register scratch2,
-                                               Label* gc_required) {
-  Allocate(ConsString::kSize, result, scratch1, scratch2, gc_required,
-           NO_ALLOCATION_FLAGS);
-
-  InitializeNewString(result, length, Heap::kConsStringMapRootIndex, scratch1,
-                      scratch2);
-}
-
-void MacroAssembler::AllocateOneByteConsString(Register result, Register length,
-                                               Register scratch1,
-                                               Register scratch2,
-                                               Label* gc_required) {
-  Allocate(ConsString::kSize, result, scratch1, scratch2, gc_required,
-           NO_ALLOCATION_FLAGS);
-
-  InitializeNewString(result, length, Heap::kConsOneByteStringMapRootIndex,
-                      scratch1, scratch2);
-}
-
-void MacroAssembler::AllocateTwoByteSlicedString(Register result,
-                                                 Register length,
-                                                 Register scratch1,
-                                                 Register scratch2,
-                                                 Label* gc_required) {
-  Allocate(SlicedString::kSize, result, scratch1, scratch2, gc_required,
-           NO_ALLOCATION_FLAGS);
-
-  InitializeNewString(result, length, Heap::kSlicedStringMapRootIndex, scratch1,
-                      scratch2);
-}
-
-void MacroAssembler::AllocateOneByteSlicedString(Register result,
-                                                 Register length,
-                                                 Register scratch1,
-                                                 Register scratch2,
-                                                 Label* gc_required) {
-  Allocate(SlicedString::kSize, result, scratch1, scratch2, gc_required,
-           NO_ALLOCATION_FLAGS);
-
-  InitializeNewString(result, length, Heap::kSlicedOneByteStringMapRootIndex,
-                      scratch1, scratch2);
-}
-
 void MacroAssembler::CompareObjectType(Register object, Register map,
                                        Register type_reg, InstanceType type) {
   const Register temp = type_reg.is(no_reg) ? r0 : type_reg;
@@ -2790,20 +2701,6 @@ void MacroAssembler::JumpIfBothInstanceTypesAreNotSequentialOneByte(
   bne(failure);
   nilf(scratch2, Operand(kFlatOneByteStringMask));
   CmpP(scratch2, Operand(kFlatOneByteStringTag));
-  bne(failure);
-}
-
-void MacroAssembler::JumpIfInstanceTypeIsNotSequentialOneByte(Register type,
-                                                              Register scratch,
-                                                              Label* failure) {
-  const int kFlatOneByteStringMask =
-      kIsNotStringMask | kStringEncodingMask | kStringRepresentationMask;
-  const int kFlatOneByteStringTag =
-      kStringTag | kOneByteStringTag | kSeqStringTag;
-
-  if (!scratch.is(type)) LoadRR(scratch, type);
-  nilf(scratch, Operand(kFlatOneByteStringMask));
-  CmpP(scratch, Operand(kFlatOneByteStringTag));
   bne(failure);
 }
 
@@ -3831,8 +3728,8 @@ void MacroAssembler::SubP(Register dst, const MemOperand& opnd) {
 }
 
 void MacroAssembler::MovIntToFloat(DoubleRegister dst, Register src) {
-  sllg(src, src, Operand(32));
-  ldgr(dst, src);
+  sllg(r0, src, Operand(32));
+  ldgr(dst, r0);
 }
 
 void MacroAssembler::MovFloatToInt(Register dst, DoubleRegister src) {
@@ -4215,7 +4112,7 @@ void MacroAssembler::Load(Register dst, const Operand& opnd) {
 #endif
   } else {
 #if V8_TARGET_ARCH_S390X
-    llilf(dst, opnd);
+    lgfi(dst, opnd);
 #else
     iilf(dst, opnd);
 #endif
@@ -4432,8 +4329,12 @@ void MacroAssembler::LoadFloat32Literal(DoubleRegister result, float value,
 
 void MacroAssembler::CmpSmiLiteral(Register src1, Smi* smi, Register scratch) {
 #if V8_TARGET_ARCH_S390X
-  LoadSmiLiteral(scratch, smi);
-  cgr(src1, scratch);
+  if (CpuFeatures::IsSupported(DISTINCT_OPS)) {
+    cih(src1, Operand(reinterpret_cast<intptr_t>(smi) >> 32));
+  } else {
+    LoadSmiLiteral(scratch, smi);
+    cgr(src1, scratch);
+  }
 #else
   // CFI takes 32-bit immediate.
   cfi(src1, Operand(smi));
@@ -4443,8 +4344,12 @@ void MacroAssembler::CmpSmiLiteral(Register src1, Smi* smi, Register scratch) {
 void MacroAssembler::CmpLogicalSmiLiteral(Register src1, Smi* smi,
                                           Register scratch) {
 #if V8_TARGET_ARCH_S390X
-  LoadSmiLiteral(scratch, smi);
-  clgr(src1, scratch);
+  if (CpuFeatures::IsSupported(DISTINCT_OPS)) {
+    clih(src1, Operand(reinterpret_cast<intptr_t>(smi) >> 32));
+  } else {
+    LoadSmiLiteral(scratch, smi);
+    clgr(src1, scratch);
+  }
 #else
   // CLFI takes 32-bit immediate
   clfi(src1, Operand(smi));
@@ -4454,8 +4359,13 @@ void MacroAssembler::CmpLogicalSmiLiteral(Register src1, Smi* smi,
 void MacroAssembler::AddSmiLiteral(Register dst, Register src, Smi* smi,
                                    Register scratch) {
 #if V8_TARGET_ARCH_S390X
-  LoadSmiLiteral(scratch, smi);
-  AddP(dst, src, scratch);
+  if (CpuFeatures::IsSupported(DISTINCT_OPS)) {
+    if (!dst.is(src)) LoadRR(dst, src);
+    aih(dst, Operand(reinterpret_cast<intptr_t>(smi) >> 32));
+  } else {
+    LoadSmiLiteral(scratch, smi);
+    AddP(dst, src, scratch);
+  }
 #else
   AddP(dst, src, Operand(reinterpret_cast<intptr_t>(smi)));
 #endif
@@ -4464,8 +4374,13 @@ void MacroAssembler::AddSmiLiteral(Register dst, Register src, Smi* smi,
 void MacroAssembler::SubSmiLiteral(Register dst, Register src, Smi* smi,
                                    Register scratch) {
 #if V8_TARGET_ARCH_S390X
-  LoadSmiLiteral(scratch, smi);
-  SubP(dst, src, scratch);
+  if (CpuFeatures::IsSupported(DISTINCT_OPS)) {
+    if (!dst.is(src)) LoadRR(dst, src);
+    aih(dst, Operand((-reinterpret_cast<intptr_t>(smi)) >> 32));
+  } else {
+    LoadSmiLiteral(scratch, smi);
+    SubP(dst, src, scratch);
+  }
 #else
   AddP(dst, src, Operand(-(reinterpret_cast<intptr_t>(smi))));
 #endif

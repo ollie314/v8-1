@@ -27,15 +27,11 @@ class DebugWrapper {
     // The listener method called on certain events.
     this.listener = undefined;
 
-    // TODO(jgruber): Determine which of these are still required and possible.
     // Debug events which can occur in the V8 JavaScript engine.
     this.DebugEvent = { Break: 1,
                         Exception: 2,
-                        NewFunction: 3,
-                        BeforeCompile: 4,
-                        AfterCompile: 5,
-                        CompileError: 6,
-                        AsyncTaskEvent: 7
+                        AfterCompile: 3,
+                        CompileError: 4,
                       };
 
     // The different types of steps.
@@ -437,6 +433,7 @@ class DebugWrapper {
       case "block": return this.ScopeType.Block;
       case "script": return this.ScopeType.Script;
       case "eval": return this.ScopeType.Eval;
+      case "module": return this.ScopeType.Module;
       default: %AbortJS("Unexpected scope type");
     }
   }
@@ -454,8 +451,10 @@ class DebugWrapper {
     if (found == null) return { isUndefined : () => true };
 
     const val = { value : () => found.value.value };
+    // Not undefined in the sense that we did find a property, even though
+    // the value can be 'undefined'.
     return { value : () => val,
-             isUndefined : () => found.value.type == "undefined"
+             isUndefined : () => false,
            };
   }
 
@@ -467,7 +466,30 @@ class DebugWrapper {
     const scope = this.propertiesToObject(serialized_scope);
     return { value : () => scope,
              property : (prop) =>
-                 this.execStateScopeObjectProperty(serialized_scope, prop)
+                 this.execStateScopeObjectProperty(serialized_scope, prop),
+             properties : () => serialized_scope.map(elem => elem.value),
+             propertyNames : () => serialized_scope.map(elem => elem.name)
+           };
+  }
+
+  execStateScopeDetails(scope) {
+    var start_position;
+    var end_position
+    const start = scope.startLocation;
+    const end = scope.endLocation;
+    if (start) {
+      start_position = %ScriptLocationFromLine2(
+          parseInt(start.scriptId), start.lineNumber, start.columnNumber, 0)
+          .position;
+    }
+    if (end) {
+      end_position = %ScriptLocationFromLine2(
+          parseInt(end.scriptId), end.lineNumber, end.columnNumber, 0)
+          .position;
+    }
+    return { name : () => scope.name,
+             startPosition : () => start_position,
+             endPosition : () => end_position
            };
   }
 
@@ -490,10 +512,13 @@ class DebugWrapper {
   execStateScope(frame, scope_index) {
     const scope = frame.scopeChain[scope_index];
     return { scopeType : () => this.execStateScopeType(scope.type),
+             scopeIndex : () => scope_index,
+             frameIndex : () => frame.callFrameId,
              scopeObject : () => this.execStateScopeObject(scope.object),
              setVariableValue :
                 (name, value) => this.setVariableValue(frame, scope_index,
-                                                       name, value)
+                                                       name, value),
+             details : () => this.execStateScopeDetails(scope)
            };
   }
 
@@ -643,7 +668,9 @@ class DebugWrapper {
     }
 
     return { value : () => value,
-             isUndefined : () => isUndefined
+             isUndefined : () => isUndefined,
+             type : () => obj.type,
+             className : () => obj.className
            };
   }
 
@@ -659,6 +686,14 @@ class DebugWrapper {
 
     const result = reply.result.result;
     return this.reconstructRemoteObject(result);
+  }
+
+  frameReceiver(frame) {
+    return this.reconstructRemoteObject(frame.this);
+  }
+
+  frameReturnValue(frame) {
+    return this.reconstructRemoteObject(frame.returnValue);
   }
 
   execStateFrameRestart(frame) {
@@ -683,11 +718,12 @@ class DebugWrapper {
         scopes.push(this.execStateScope(frame, i));
       }
       return scopes;
-    };
+    }
 
     return { sourceColumn : () => column,
              sourceLine : () => line + 1,
              sourceLineText : () => loc.sourceText,
+             sourcePosition : () => loc.position,
              evaluate : (expr) => this.evaluateOnCallFrame(frame, expr),
              functionName : () => frame.functionName,
              func : () => func,
@@ -695,12 +731,23 @@ class DebugWrapper {
              localCount : () => this.execStateFrameLocalCount(frame),
              localName : (ix) => this.execStateFrameLocalName(frame, ix),
              localValue: (ix) => this.execStateFrameLocalValue(frame, ix),
-             receiver : () => this.evaluateOnCallFrame(frame, "this"),
+             receiver : () => this.frameReceiver(frame),
              restart : () => this.execStateFrameRestart(frame),
+             returnValue : () => this.frameReturnValue(frame),
              scopeCount : () => frame.scopeChain.length,
              scope : (index) => this.execStateScope(frame, index),
              allScopes : allScopes.bind(this)
            };
+  }
+
+  execStateEvaluateGlobal(expr) {
+    const {msgid, msg} = this.createMessage(
+        "Runtime.evaluate", { expression : expr });
+    this.sendMessage(msg);
+    const reply = this.takeReplyChecked(msgid);
+
+    const result = reply.result.result;
+    return this.reconstructRemoteObject(result);
   }
 
   eventDataException(params) {
@@ -772,12 +819,16 @@ class DebugWrapper {
         break;
     }
 
+    if (!params.callFrames[0]) return;
+
     // Skip break events in this file.
     if (params.callFrames[0].location.scriptId == this.thisScriptId) return;
 
     // TODO(jgruber): Arguments as needed.
     let execState = { frames : params.callFrames,
                       prepareStep : this.execStatePrepareStep.bind(this),
+                      evaluateGlobal :
+                        (expr) => this.execStateEvaluateGlobal(expr),
                       frame : (index) => this.execStateFrame(
                           index ? params.callFrames[index]
                                 : params.callFrames[0]),

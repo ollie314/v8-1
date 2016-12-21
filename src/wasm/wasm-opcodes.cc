@@ -4,6 +4,7 @@
 
 #include "src/wasm/wasm-opcodes.h"
 #include "src/messages.h"
+#include "src/runtime/runtime.h"
 #include "src/signature.h"
 
 namespace v8 {

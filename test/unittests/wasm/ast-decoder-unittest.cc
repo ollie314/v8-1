@@ -314,13 +314,13 @@ TEST_F(AstDecoderTest, NumLocalAboveLimit) {
 }
 
 TEST_F(AstDecoderTest, GetLocal_varint) {
-  const int kMaxLocals = kMaxNumWasmLocals;
+  const int kMaxLocals = kMaxNumWasmLocals - 1;
   AddLocals(kAstI32, kMaxLocals);
 
   EXPECT_VERIFIES(i_i, kExprGetLocal, U32V_1(66));
   EXPECT_VERIFIES(i_i, kExprGetLocal, U32V_2(7777));
-  EXPECT_VERIFIES(i_i, kExprGetLocal, U32V_3(888888));
-  EXPECT_VERIFIES(i_i, kExprGetLocal, U32V_4(3999999));
+  EXPECT_VERIFIES(i_i, kExprGetLocal, U32V_3(8888));
+  EXPECT_VERIFIES(i_i, kExprGetLocal, U32V_4(9999));
 
   EXPECT_VERIFIES(i_i, kExprGetLocal, U32V_5(kMaxLocals - 1));
 
@@ -332,6 +332,14 @@ TEST_F(AstDecoderTest, GetLocal_varint) {
 
   EXPECT_FAILURE(i_v, kExprGetLocal, U32V_4(kMaxLocals));
   EXPECT_FAILURE(i_v, kExprGetLocal, U32V_4(kMaxLocals + 1));
+}
+
+TEST_F(AstDecoderTest, GetLocal_toomany) {
+  AddLocals(kAstI32, kMaxNumWasmLocals - 100);
+  AddLocals(kAstI32, 100);
+
+  EXPECT_VERIFIES(i_v, kExprGetLocal, U32V_1(66));
+  EXPECT_FAILURE(i_i, kExprGetLocal, U32V_1(66));
 }
 
 TEST_F(AstDecoderTest, Binops_off_end) {
@@ -1279,9 +1287,9 @@ namespace {
 // globals.
 class TestModuleEnv : public ModuleEnv {
  public:
-  TestModuleEnv() {
-    instance = nullptr;
-    module = &mod;
+  explicit TestModuleEnv(ModuleOrigin origin = kWasmOrigin)
+      : ModuleEnv(&mod, nullptr) {
+    mod.origin = origin;
   }
   byte AddGlobal(LocalType type, bool mutability = true) {
     mod.globals.push_back({type, mutability, WasmInitExpr(), 0, false, false});
@@ -1654,7 +1662,6 @@ TEST_F(AstDecoderTest, AllSetGlobalCombinations) {
 TEST_F(AstDecoderTest, WasmGrowMemory) {
   TestModuleEnv module_env;
   module = &module_env;
-  module->origin = kWasmOrigin;
 
   byte code[] = {WASM_GET_LOCAL(0), kExprGrowMemory, 0};
   EXPECT_VERIFIES_C(i_i, code);
@@ -1662,9 +1669,8 @@ TEST_F(AstDecoderTest, WasmGrowMemory) {
 }
 
 TEST_F(AstDecoderTest, AsmJsGrowMemory) {
-  TestModuleEnv module_env;
+  TestModuleEnv module_env(kAsmJsOrigin);
   module = &module_env;
-  module->origin = kAsmJsOrigin;
 
   byte code[] = {WASM_GET_LOCAL(0), kExprGrowMemory, 0};
   EXPECT_FAILURE_C(i_i, code);
@@ -1694,9 +1700,8 @@ TEST_F(AstDecoderTest, AsmJsBinOpsCheckOrigin) {
   };
 
   {
-    TestModuleEnv module_env;
+    TestModuleEnv module_env(kAsmJsOrigin);
     module = &module_env;
-    module->origin = kAsmJsOrigin;
     for (size_t i = 0; i < arraysize(AsmJsBinOps); i++) {
       TestBinop(AsmJsBinOps[i].op, AsmJsBinOps[i].sig);
     }
@@ -1705,7 +1710,6 @@ TEST_F(AstDecoderTest, AsmJsBinOpsCheckOrigin) {
   {
     TestModuleEnv module_env;
     module = &module_env;
-    module->origin = kWasmOrigin;
     for (size_t i = 0; i < arraysize(AsmJsBinOps); i++) {
       byte code[] = {
           WASM_BINOP(AsmJsBinOps[i].op, WASM_GET_LOCAL(0), WASM_GET_LOCAL(1))};
@@ -1742,9 +1746,8 @@ TEST_F(AstDecoderTest, AsmJsUnOpsCheckOrigin) {
                     {kExprI32AsmjsSConvertF64, sigs.i_d()},
                     {kExprI32AsmjsUConvertF64, sigs.i_d()}};
   {
-    TestModuleEnv module_env;
+    TestModuleEnv module_env(kAsmJsOrigin);
     module = &module_env;
-    module->origin = kAsmJsOrigin;
     for (size_t i = 0; i < arraysize(AsmJsUnOps); i++) {
       TestUnop(AsmJsUnOps[i].op, AsmJsUnOps[i].sig);
     }
@@ -1753,7 +1756,6 @@ TEST_F(AstDecoderTest, AsmJsUnOpsCheckOrigin) {
   {
     TestModuleEnv module_env;
     module = &module_env;
-    module->origin = kWasmOrigin;
     for (size_t i = 0; i < arraysize(AsmJsUnOps); i++) {
       byte code[] = {WASM_UNOP(AsmJsUnOps[i].op, WASM_GET_LOCAL(0))};
       EXPECT_FAILURE_SC(AsmJsUnOps[i].sig, code);
@@ -2667,7 +2669,7 @@ TEST_F(BytecodeIteratorTest, SimpleForeach) {
   WasmOpcode expected[] = {kExprI8Const, kExprIf,      kExprI8Const,
                            kExprElse,    kExprI8Const, kExprEnd};
   size_t pos = 0;
-  for (WasmOpcode opcode : iter) {
+  for (WasmOpcode opcode : iter.opcodes()) {
     if (pos >= arraysize(expected)) {
       EXPECT_TRUE(false);
       break;
@@ -2683,15 +2685,35 @@ TEST_F(BytecodeIteratorTest, ForeachTwice) {
   int count = 0;
 
   count = 0;
-  for (WasmOpcode opcode : iter) {
+  for (WasmOpcode opcode : iter.opcodes()) {
     USE(opcode);
     count++;
   }
   EXPECT_EQ(6, count);
 
   count = 0;
-  for (WasmOpcode opcode : iter) {
+  for (WasmOpcode opcode : iter.opcodes()) {
     USE(opcode);
+    count++;
+  }
+  EXPECT_EQ(6, count);
+}
+
+TEST_F(BytecodeIteratorTest, ForeachOffset) {
+  byte code[] = {WASM_IF_ELSE(WASM_ZERO, WASM_ZERO, WASM_ZERO)};
+  BytecodeIterator iter(code, code + sizeof(code));
+  int count = 0;
+
+  count = 0;
+  for (auto offset : iter.offsets()) {
+    USE(offset);
+    count++;
+  }
+  EXPECT_EQ(6, count);
+
+  count = 0;
+  for (auto offset : iter.offsets()) {
+    USE(offset);
     count++;
   }
   EXPECT_EQ(6, count);

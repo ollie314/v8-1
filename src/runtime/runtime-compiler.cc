@@ -11,7 +11,6 @@
 #include "src/deoptimizer.h"
 #include "src/frames-inl.h"
 #include "src/full-codegen/full-codegen.h"
-#include "src/interpreter/bytecode-array-iterator.h"
 #include "src/isolate-inl.h"
 #include "src/messages.h"
 #include "src/v8threads.h"
@@ -93,11 +92,11 @@ RUNTIME_FUNCTION(Runtime_InstantiateAsmJs) {
   }
   Handle<JSObject> foreign;
   if (args[2]->IsJSObject()) {
-    foreign = args.at<i::JSObject>(2);
+    foreign = args.at<JSObject>(2);
   }
   Handle<JSArrayBuffer> memory;
   if (args[3]->IsJSArrayBuffer()) {
-    memory = args.at<i::JSArrayBuffer>(3);
+    memory = args.at<JSArrayBuffer>(3);
   }
   if (function->shared()->HasAsmWasmData() &&
       AsmJs::IsStdlibValid(isolate, handle(function->shared()->asm_wasm_data()),
@@ -270,9 +269,9 @@ BailoutId DetermineEntryAndDisarmOSRForBaseline(JavaScriptFrame* frame) {
   // Revert the patched back edge table, regardless of whether OSR succeeds.
   BackEdgeTable::Revert(frame->isolate(), *caller_code);
 
+  // Return a BailoutId representing an AST id of the {IterationStatement}.
   uint32_t pc_offset =
       static_cast<uint32_t>(frame->pc() - caller_code->instruction_start());
-
   return caller_code->TranslatePcOffsetToAstId(pc_offset);
 }
 
@@ -293,20 +292,8 @@ BailoutId DetermineEntryAndDisarmOSRForInterpreter(JavaScriptFrame* frame) {
   // Reset the OSR loop nesting depth to disarm back edges.
   bytecode->set_osr_loop_nesting_level(0);
 
-  // Translate the offset of the jump instruction to the jump target offset of
-  // that instruction so that the derived BailoutId points to the loop header.
-  // TODO(mstarzinger): This can be merged with {BytecodeBranchAnalysis} which
-  // already performs a pre-pass over the bytecode stream anyways.
-  int jump_offset = iframe->GetBytecodeOffset();
-  interpreter::BytecodeArrayIterator iterator(bytecode);
-  while (iterator.current_offset() + iterator.current_prefix_offset() <
-         jump_offset) {
-    iterator.Advance();
-  }
-  DCHECK(interpreter::Bytecodes::IsJump(iterator.current_bytecode()));
-  int jump_target_offset = iterator.GetJumpTargetOffset();
-
-  return BailoutId(jump_target_offset);
+  // Return a BailoutId representing the bytecode offset of the back branch.
+  return BailoutId(iframe->GetBytecodeOffset());
 }
 
 }  // namespace
@@ -467,7 +454,7 @@ RUNTIME_FUNCTION(Runtime_ResolvePossiblyDirectEval) {
   HandleScope scope(isolate);
   DCHECK(args.length() == 6);
 
-  Handle<Object> callee = args.at<Object>(0);
+  Handle<Object> callee = args.at(0);
 
   // If "eval" didn't refer to the original GlobalEval, it's not a
   // direct call to eval.

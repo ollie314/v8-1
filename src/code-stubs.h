@@ -7,7 +7,6 @@
 
 #include "src/allocation.h"
 #include "src/assembler.h"
-#include "src/code-stub-assembler.h"
 #include "src/codegen.h"
 #include "src/globals.h"
 #include "src/ic/ic-state.h"
@@ -19,7 +18,13 @@
 namespace v8 {
 namespace internal {
 
-class ObjectLiteral;
+// Forward declarations.
+class CodeStubAssembler;
+namespace compiler {
+class CodeAssemblerLabel;
+class CodeAssemblerState;
+class Node;
+}
 
 // List of code stubs used on all platforms.
 #define CODE_STUB_LIST_ALL_PLATFORMS(V)       \
@@ -59,11 +64,6 @@ class ObjectLiteral;
   /* used universally */                      \
   V(CallICTrampoline)                         \
   /* --- HydrogenCodeStubs --- */             \
-  /* These builtins w/ JS linkage are */      \
-  /* just fast-cases of C++ builtins. They */ \
-  /* require varg support from TF */          \
-  V(FastArrayPush)                            \
-  V(FastFunctionBind)                         \
   /* These will be ported/eliminated */       \
   /* as part of the new IC system, ask */     \
   /* ishell before doing anything  */         \
@@ -288,6 +288,8 @@ class CodeStub BASE_EMBEDDED {
   }
 
   Isolate* isolate() const { return isolate_; }
+
+  void DeleteStubFromCacheForTesting();
 
  protected:
   CodeStub(uint32_t key, Isolate* isolate)
@@ -809,26 +811,37 @@ class FastNewClosureStub : public TurboFanCodeStub {
 
 class FastNewFunctionContextStub final : public TurboFanCodeStub {
  public:
-  static const int kMaximumSlots = 0x8000;
+  static int MaximumSlots();
 
-  explicit FastNewFunctionContextStub(Isolate* isolate)
-      : TurboFanCodeStub(isolate) {}
+  explicit FastNewFunctionContextStub(Isolate* isolate, ScopeType scope_type)
+      : TurboFanCodeStub(isolate) {
+    minor_key_ = ScopeTypeBits::encode(scope_type);
+  }
 
   static compiler::Node* Generate(CodeStubAssembler* assembler,
                                   compiler::Node* function,
                                   compiler::Node* slots,
-                                  compiler::Node* context);
+                                  compiler::Node* context,
+                                  ScopeType scope_type);
+
+  ScopeType scope_type() const {
+    return static_cast<ScopeType>(ScopeTypeBits::decode(minor_key_));
+  }
 
  private:
+  static const int kMaximumSlots = 0x8000;
+  static const int kSmallMaximumSlots = 10;
+
   // FastNewFunctionContextStub can only allocate closures which fit in the
   // new space.
   STATIC_ASSERT(((kMaximumSlots + Context::MIN_CONTEXT_SLOTS) * kPointerSize +
                  FixedArray::kHeaderSize) < kMaxRegularHeapObjectSize);
 
+  class ScopeTypeBits : public BitField<bool, 0, 8> {};
+
   DEFINE_CALL_INTERFACE_DESCRIPTOR(FastNewFunctionContext);
   DEFINE_TURBOFAN_CODE_STUB(FastNewFunctionContext, TurboFanCodeStub);
 };
-
 
 class FastNewObjectStub final : public PlatformCodeStub {
  public:
@@ -920,6 +933,11 @@ class FastCloneRegExpStub final : public TurboFanCodeStub {
 
 class FastCloneShallowArrayStub : public TurboFanCodeStub {
  public:
+  // Maximum number of elements in copied array (chosen so that even an array
+  // backed by a double backing store will fit into new-space).
+  static const int kMaximumClonedElements =
+      JSArray::kInitialMaxFastElementArray * kPointerSize / kDoubleSize;
+
   FastCloneShallowArrayStub(Isolate* isolate,
                             AllocationSiteMode allocation_site_mode)
       : TurboFanCodeStub(isolate) {
@@ -930,7 +948,7 @@ class FastCloneShallowArrayStub : public TurboFanCodeStub {
                                   compiler::Node* closure,
                                   compiler::Node* literal_index,
                                   compiler::Node* context,
-                                  CodeStubAssembler::Label* call_runtime,
+                                  compiler::CodeAssemblerLabel* call_runtime,
                                   AllocationSiteMode allocation_site_mode);
 
   AllocationSiteMode allocation_site_mode() const {
@@ -957,11 +975,10 @@ class FastCloneShallowObjectStub : public TurboFanCodeStub {
   }
 
   static compiler::Node* GenerateFastPath(
-      CodeStubAssembler* assembler,
-      compiler::CodeAssembler::Label* call_runtime, compiler::Node* closure,
-      compiler::Node* literals_index, compiler::Node* properties_count);
+      CodeStubAssembler* assembler, compiler::CodeAssemblerLabel* call_runtime,
+      compiler::Node* closure, compiler::Node* literals_index,
+      compiler::Node* properties_count);
 
-  static bool IsSupported(ObjectLiteral* expr);
   static int PropertiesCount(int literal_length);
 
   int length() const { return LengthBits::decode(minor_key_); }
@@ -1009,24 +1026,6 @@ class GrowArrayElementsStub : public TurboFanCodeStub {
 
   DEFINE_CALL_INTERFACE_DESCRIPTOR(GrowArrayElements);
   DEFINE_TURBOFAN_CODE_STUB(GrowArrayElements, TurboFanCodeStub);
-};
-
-class FastArrayPushStub : public HydrogenCodeStub {
- public:
-  explicit FastArrayPushStub(Isolate* isolate) : HydrogenCodeStub(isolate) {}
-
- private:
-  DEFINE_CALL_INTERFACE_DESCRIPTOR(VarArgFunction);
-  DEFINE_HYDROGEN_CODE_STUB(FastArrayPush, HydrogenCodeStub);
-};
-
-class FastFunctionBindStub : public HydrogenCodeStub {
- public:
-  explicit FastFunctionBindStub(Isolate* isolate) : HydrogenCodeStub(isolate) {}
-
- private:
-  DEFINE_CALL_INTERFACE_DESCRIPTOR(VarArgFunction);
-  DEFINE_HYDROGEN_CODE_STUB(FastFunctionBind, HydrogenCodeStub);
 };
 
 enum AllocationSiteOverrideMode {

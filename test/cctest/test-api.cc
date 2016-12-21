@@ -3325,6 +3325,20 @@ THREADED_TEST(GlobalSymbols) {
   CHECK(!sym2->SameValue(glob_api));
 }
 
+THREADED_TEST(GlobalSymbolsNoContext) {
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope scope(isolate);
+
+  v8::Local<String> name = v8_str("my-symbol");
+  v8::Local<v8::Symbol> glob = v8::Symbol::For(isolate, name);
+  v8::Local<v8::Symbol> glob2 = v8::Symbol::For(isolate, name);
+  CHECK(glob2->SameValue(glob));
+
+  v8::Local<v8::Symbol> glob_api = v8::Symbol::ForApi(isolate, name);
+  v8::Local<v8::Symbol> glob_api2 = v8::Symbol::ForApi(isolate, name);
+  CHECK(glob_api2->SameValue(glob_api));
+  CHECK(!glob_api->SameValue(glob));
+}
 
 static void CheckWellKnownSymbol(v8::Local<v8::Symbol>(*getter)(v8::Isolate*),
                                  const char* name) {
@@ -7085,6 +7099,9 @@ THREADED_TEST(Regress892105) {
                        .FromJust());
 }
 
+static void ReturnThis(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  args.GetReturnValue().Set(args.This());
+}
 
 THREADED_TEST(UndetectableObject) {
   LocalContext env;
@@ -7093,6 +7110,7 @@ THREADED_TEST(UndetectableObject) {
   Local<v8::FunctionTemplate> desc =
       v8::FunctionTemplate::New(env->GetIsolate());
   desc->InstanceTemplate()->MarkAsUndetectable();  // undetectable
+  desc->InstanceTemplate()->SetCallAsFunctionHandler(ReturnThis);  // callable
 
   Local<v8::Object> obj = desc->GetFunction(env.local())
                               .ToLocalChecked()
@@ -7141,6 +7159,7 @@ THREADED_TEST(VoidLiteral) {
 
   Local<v8::FunctionTemplate> desc = v8::FunctionTemplate::New(isolate);
   desc->InstanceTemplate()->MarkAsUndetectable();  // undetectable
+  desc->InstanceTemplate()->SetCallAsFunctionHandler(ReturnThis);  // callable
 
   Local<v8::Object> obj = desc->GetFunction(env.local())
                               .ToLocalChecked()
@@ -7191,6 +7210,7 @@ THREADED_TEST(ExtensibleOnUndetectable) {
 
   Local<v8::FunctionTemplate> desc = v8::FunctionTemplate::New(isolate);
   desc->InstanceTemplate()->MarkAsUndetectable();  // undetectable
+  desc->InstanceTemplate()->SetCallAsFunctionHandler(ReturnThis);  // callable
 
   Local<v8::Object> obj = desc->GetFunction(env.local())
                               .ToLocalChecked()
@@ -11775,11 +11795,6 @@ static void call_as_function(const v8::FunctionCallbackInfo<v8::Value>& args) {
 }
 
 
-static void ReturnThis(const v8::FunctionCallbackInfo<v8::Value>& args) {
-  args.GetReturnValue().Set(args.This());
-}
-
-
 // Test that a call handler can be set for objects which will allow
 // non-function objects created through the API to be called as
 // functions.
@@ -14564,13 +14579,18 @@ void SetFunctionEntryHookTest::RunTest() {
       CHECK_EQ(2, CountInvocations(NULL, "bar"));
       CHECK_EQ(200, CountInvocations("bar", "foo"));
       CHECK_EQ(200, CountInvocations(NULL, "foo"));
-    } else {
+    } else if (i::FLAG_crankshaft || i::FLAG_turbo) {
       // For ignition we don't see the actual functions being called, instead
-      // we see the IterpreterEntryTrampoline at least 102 times
+      // we see the InterpreterEntryTrampoline at least 102 times
       // (100 unoptimized calls to foo, and 2 calls to bar).
       CHECK_LE(102, CountInvocations(NULL, "InterpreterEntryTrampoline"));
       // We should also see the calls to the optimized function foo.
       CHECK_EQ(100, CountInvocations(NULL, "foo"));
+    } else {
+      // For ignition without an optimizing compiler, we should only see the
+      // InterpreterEntryTrampoline.
+      // (200 unoptimized calls to foo, and 2 calls to bar).
+      CHECK_LE(202, CountInvocations(NULL, "InterpreterEntryTrampoline"));
     }
 
     // Verify that we have an entry hook on some specific stubs.
@@ -17334,6 +17354,79 @@ TEST(CaptureStackTraceForUncaughtExceptionAndSetters) {
   isolate->SetCaptureStackTraceForUncaughtExceptions(false);
 }
 
+static int asm_warning_triggered = 0;
+
+static void AsmJsWarningListener(v8::Local<v8::Message> message,
+                                 v8::Local<Value>) {
+  DCHECK_EQ(v8::Isolate::kMessageWarning, message->ErrorLevel());
+  asm_warning_triggered = 1;
+}
+
+TEST(AsmJsWarning) {
+  i::FLAG_validate_asm = true;
+
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+
+  asm_warning_triggered = 0;
+  isolate->AddMessageListenerWithErrorLevel(AsmJsWarningListener,
+                                            v8::Isolate::kMessageAll);
+  CompileRun(
+      "function module() {\n"
+      "  'use asm';\n"
+      "  var x = 'hi';\n"
+      "  return {};\n"
+      "}\n"
+      "module();");
+  DCHECK_EQ(1, asm_warning_triggered);
+  isolate->RemoveMessageListeners(AsmJsWarningListener);
+}
+
+static int error_level_message_count = 0;
+static int expected_error_level = 0;
+
+static void ErrorLevelListener(v8::Local<v8::Message> message,
+                               v8::Local<Value>) {
+  DCHECK_EQ(expected_error_level, message->ErrorLevel());
+  ++error_level_message_count;
+}
+
+TEST(ErrorLevelWarning) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  v8::HandleScope scope(isolate);
+
+  const char* source = "fake = 1;";
+  v8::Local<v8::Script> lscript = CompileWithOrigin(source, "test");
+  i::Handle<i::SharedFunctionInfo> obj = i::Handle<i::SharedFunctionInfo>::cast(
+      v8::Utils::OpenHandle(*lscript->GetUnboundScript()));
+  CHECK(obj->script()->IsScript());
+  i::Handle<i::Script> script(i::Script::cast(obj->script()));
+
+  int levels[] = {
+      v8::Isolate::kMessageLog, v8::Isolate::kMessageInfo,
+      v8::Isolate::kMessageDebug, v8::Isolate::kMessageWarning,
+  };
+  error_level_message_count = 0;
+  isolate->AddMessageListenerWithErrorLevel(ErrorLevelListener,
+                                            v8::Isolate::kMessageAll);
+  for (size_t i = 0; i < arraysize(levels); i++) {
+    i::MessageLocation location(script, 0, 0);
+    i::Handle<i::String> msg(i_isolate->factory()->InternalizeOneByteString(
+        STATIC_CHAR_VECTOR("test")));
+    i::Handle<i::JSMessageObject> message =
+        i::MessageHandler::MakeMessageObject(
+            i_isolate, i::MessageTemplate::kAsmJsInvalid, &location, msg,
+            i::Handle<i::JSArray>::null());
+    message->set_error_level(levels[i]);
+    expected_error_level = levels[i];
+    i::MessageHandler::ReportMessage(i_isolate, &location, message);
+  }
+  isolate->RemoveMessageListeners(ErrorLevelListener);
+  DCHECK_EQ(arraysize(levels), error_level_message_count);
+}
 
 static void StackTraceFunctionNameListener(v8::Local<v8::Message> message,
                                            v8::Local<Value>) {
@@ -18051,6 +18144,290 @@ TEST(InlineScriptWithSourceURLInStackTrace) {
   CHECK(CompileRunWithOrigin(code.start(), "url", 0, 1)->IsUndefined());
 }
 
+void SetPromise(const char* name, v8::Local<v8::Promise> promise) {
+  CcTest::global()
+      ->Set(CcTest::isolate()->GetCurrentContext(), v8_str(name), promise)
+      .FromJust();
+}
+
+class PromiseHookData {
+ public:
+  int before_hook_count = 0;
+  int after_hook_count = 0;
+  int promise_hook_count = 0;
+  int parent_promise_count = 0;
+  bool check_value = true;
+  std::string promise_hook_value;
+
+  void Reset() {
+    before_hook_count = 0;
+    after_hook_count = 0;
+    promise_hook_count = 0;
+    parent_promise_count = 0;
+    check_value = true;
+    promise_hook_value = "";
+  }
+};
+
+PromiseHookData* promise_hook_data;
+
+void CustomPromiseHook(v8::PromiseHookType type, v8::Local<v8::Promise> promise,
+                       v8::Local<v8::Value> parentPromise) {
+  promise_hook_data->promise_hook_count++;
+  switch (type) {
+    case v8::PromiseHookType::kInit:
+      SetPromise("init", promise);
+
+      if (!parentPromise->IsUndefined()) {
+        promise_hook_data->parent_promise_count++;
+        SetPromise("parent", v8::Local<v8::Promise>::Cast(parentPromise));
+      }
+
+      break;
+    case v8::PromiseHookType::kResolve:
+      SetPromise("resolve", promise);
+      break;
+    case v8::PromiseHookType::kBefore:
+      promise_hook_data->before_hook_count++;
+      CHECK(promise_hook_data->before_hook_count >
+            promise_hook_data->after_hook_count);
+      CHECK(CcTest::global()
+                ->Get(CcTest::isolate()->GetCurrentContext(), v8_str("value"))
+                .ToLocalChecked()
+                ->Equals(CcTest::isolate()->GetCurrentContext(), v8_str(""))
+                .FromJust());
+      SetPromise("before", promise);
+      break;
+    case v8::PromiseHookType::kAfter:
+      promise_hook_data->after_hook_count++;
+      CHECK(promise_hook_data->after_hook_count <=
+            promise_hook_data->before_hook_count);
+      if (promise_hook_data->check_value) {
+        CHECK(
+            CcTest::global()
+                ->Get(CcTest::isolate()->GetCurrentContext(), v8_str("value"))
+                .ToLocalChecked()
+                ->Equals(CcTest::isolate()->GetCurrentContext(),
+                         v8_str(promise_hook_data->promise_hook_value.c_str()))
+                .FromJust());
+      }
+      SetPromise("after", promise);
+      break;
+  }
+}
+
+TEST(PromiseHook) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+
+  v8::Local<v8::Object> global = CcTest::global();
+  v8::Local<v8::Context> context = CcTest::isolate()->GetCurrentContext();
+
+  promise_hook_data = new PromiseHookData();
+  promise_hook_data->promise_hook_value = "fulfilled";
+  const char* source =
+      "var resolve, value = ''; \n"
+      "var p = new Promise(r => resolve = r); \n";
+
+  isolate->SetPromiseHook(CustomPromiseHook);
+
+  CompileRun(source);
+  auto init_promise = global->Get(context, v8_str("init")).ToLocalChecked();
+  CHECK(GetPromise("p")->Equals(env.local(), init_promise).FromJust());
+  CHECK_EQ(1, promise_hook_data->promise_hook_count);
+  CHECK_EQ(0, promise_hook_data->parent_promise_count);
+
+  CompileRun("var p1 = p.then(() => { value = 'fulfilled'; }); \n");
+  init_promise = global->Get(context, v8_str("init")).ToLocalChecked();
+  auto parent_promise = global->Get(context, v8_str("parent")).ToLocalChecked();
+  CHECK(GetPromise("p1")->Equals(env.local(), init_promise).FromJust());
+  CHECK(GetPromise("p")->Equals(env.local(), parent_promise).FromJust());
+  CHECK_EQ(2, promise_hook_data->promise_hook_count);
+  CHECK_EQ(1, promise_hook_data->parent_promise_count);
+
+  CompileRun("resolve(); \n");
+  auto resolve_promise =
+      global->Get(context, v8_str("resolve")).ToLocalChecked();
+  auto before_promise = global->Get(context, v8_str("before")).ToLocalChecked();
+  auto after_promise = global->Get(context, v8_str("after")).ToLocalChecked();
+  CHECK(GetPromise("p")->Equals(env.local(), before_promise).FromJust());
+  CHECK(GetPromise("p")->Equals(env.local(), after_promise).FromJust());
+  CHECK(GetPromise("p1")->Equals(env.local(), resolve_promise).FromJust());
+  CHECK_EQ(6, promise_hook_data->promise_hook_count);
+
+  promise_hook_data->Reset();
+  promise_hook_data->promise_hook_value = "rejected";
+  source =
+      "var reject, value = ''; \n"
+      "var p = new Promise((_, r) => reject = r); \n";
+
+  CompileRun(source);
+  init_promise = global->Get(context, v8_str("init")).ToLocalChecked();
+  CHECK(GetPromise("p")->Equals(env.local(), init_promise).FromJust());
+  CHECK_EQ(1, promise_hook_data->promise_hook_count);
+  CHECK_EQ(0, promise_hook_data->parent_promise_count);
+
+  CompileRun("var p1 = p.catch(() => { value = 'rejected'; }); \n");
+  init_promise = global->Get(context, v8_str("init")).ToLocalChecked();
+  parent_promise = global->Get(context, v8_str("parent")).ToLocalChecked();
+  CHECK(GetPromise("p1")->Equals(env.local(), init_promise).FromJust());
+  CHECK(GetPromise("p")->Equals(env.local(), parent_promise).FromJust());
+  CHECK_EQ(2, promise_hook_data->promise_hook_count);
+  CHECK_EQ(1, promise_hook_data->parent_promise_count);
+
+  CompileRun("reject(); \n");
+  resolve_promise = global->Get(context, v8_str("resolve")).ToLocalChecked();
+  before_promise = global->Get(context, v8_str("before")).ToLocalChecked();
+  after_promise = global->Get(context, v8_str("after")).ToLocalChecked();
+  CHECK(GetPromise("p")->Equals(env.local(), before_promise).FromJust());
+  CHECK(GetPromise("p")->Equals(env.local(), after_promise).FromJust());
+  CHECK(GetPromise("p1")->Equals(env.local(), resolve_promise).FromJust());
+  CHECK_EQ(6, promise_hook_data->promise_hook_count);
+
+  promise_hook_data->Reset();
+  promise_hook_data->promise_hook_value = "Promise.resolve";
+  source =
+      "var value = ''; \n"
+      "var p = Promise.resolve('Promise.resolve'); \n";
+
+  CompileRun(source);
+  init_promise = global->Get(context, v8_str("init")).ToLocalChecked();
+  CHECK(GetPromise("p")->Equals(env.local(), init_promise).FromJust());
+  // init hook and resolve hook
+  CHECK_EQ(2, promise_hook_data->promise_hook_count);
+  CHECK_EQ(0, promise_hook_data->parent_promise_count);
+  resolve_promise = global->Get(context, v8_str("resolve")).ToLocalChecked();
+  CHECK(GetPromise("p")->Equals(env.local(), resolve_promise).FromJust());
+
+  CompileRun("var p1 = p.then((v) => { value = v; }); \n");
+  init_promise = global->Get(context, v8_str("init")).ToLocalChecked();
+  resolve_promise = global->Get(context, v8_str("resolve")).ToLocalChecked();
+  parent_promise = global->Get(context, v8_str("parent")).ToLocalChecked();
+  before_promise = global->Get(context, v8_str("before")).ToLocalChecked();
+  after_promise = global->Get(context, v8_str("after")).ToLocalChecked();
+  CHECK(GetPromise("p1")->Equals(env.local(), init_promise).FromJust());
+  CHECK(GetPromise("p1")->Equals(env.local(), resolve_promise).FromJust());
+  CHECK(GetPromise("p")->Equals(env.local(), parent_promise).FromJust());
+  CHECK(GetPromise("p")->Equals(env.local(), before_promise).FromJust());
+  CHECK(GetPromise("p")->Equals(env.local(), after_promise).FromJust());
+  CHECK_EQ(6, promise_hook_data->promise_hook_count);
+  CHECK_EQ(1, promise_hook_data->parent_promise_count);
+
+  promise_hook_data->Reset();
+  source =
+      "var resolve, value = ''; \n"
+      "var p = new Promise((_, r) => resolve = r); \n";
+
+  CompileRun(source);
+  init_promise = global->Get(context, v8_str("init")).ToLocalChecked();
+  CHECK(GetPromise("p")->Equals(env.local(), init_promise).FromJust());
+  CHECK_EQ(1, promise_hook_data->promise_hook_count);
+  CHECK_EQ(0, promise_hook_data->parent_promise_count);
+
+  CompileRun("resolve(); \n");
+  resolve_promise = global->Get(context, v8_str("resolve")).ToLocalChecked();
+  CHECK(GetPromise("p")->Equals(env.local(), resolve_promise).FromJust());
+  CHECK_EQ(2, promise_hook_data->promise_hook_count);
+
+  promise_hook_data->Reset();
+  source =
+      "var reject, value = ''; \n"
+      "var p = new Promise((_, r) => reject = r); \n";
+
+  CompileRun(source);
+  init_promise = global->Get(context, v8_str("init")).ToLocalChecked();
+  CHECK(GetPromise("p")->Equals(env.local(), init_promise).FromJust());
+  CHECK_EQ(1, promise_hook_data->promise_hook_count);
+  CHECK_EQ(0, promise_hook_data->parent_promise_count);
+
+  CompileRun("reject(); \n");
+  resolve_promise = global->Get(context, v8_str("resolve")).ToLocalChecked();
+  CHECK(GetPromise("p")->Equals(env.local(), resolve_promise).FromJust());
+  CHECK_EQ(2, promise_hook_data->promise_hook_count);
+
+  promise_hook_data->Reset();
+  // This test triggers after callbacks right after each other, so
+  // lets just check the value at the end.
+  promise_hook_data->check_value = false;
+  promise_hook_data->promise_hook_value = "Promise.all";
+  source =
+      "var resolve, value = ''; \n"
+      "var tempPromise = new Promise(r => resolve = r); \n"
+      "var p = Promise.all([tempPromise]);\n "
+      "var p1 = p.then(v => value = v[0]); \n";
+
+  CompileRun(source);
+  // 1) init hook (tempPromise)
+  // 2) init hook (p)
+  // 3) init hook (throwaway Promise in Promise.all, p)
+  // 4) init hook (p1, p)
+  CHECK_EQ(4, promise_hook_data->promise_hook_count);
+  CHECK_EQ(2, promise_hook_data->parent_promise_count);
+
+  promise_hook_data->promise_hook_value = "Promise.all";
+  CompileRun("resolve('Promise.all'); \n");
+  resolve_promise = global->Get(context, v8_str("resolve")).ToLocalChecked();
+  CHECK(GetPromise("p1")->Equals(env.local(), resolve_promise).FromJust());
+  // 5) resolve hook (tempPromise)
+  // 6) resolve hook (throwaway Promise in Promise.all)
+  // 6) before hook (throwaway Promise in Promise.all)
+  // 7) after hook (throwaway Promise in Promise.all)
+  // 8) before hook (p)
+  // 9) after hook (p)
+  // 10) resolve hook (p1)
+  // 11) before hook (p1)
+  // 12) after hook (p1)
+  CHECK_EQ(12, promise_hook_data->promise_hook_count);
+  CHECK(CcTest::global()
+            ->Get(CcTest::isolate()->GetCurrentContext(), v8_str("value"))
+            .ToLocalChecked()
+            ->Equals(CcTest::isolate()->GetCurrentContext(),
+                     v8_str(promise_hook_data->promise_hook_value.c_str()))
+            .FromJust());
+
+  promise_hook_data->Reset();
+  // This test triggers after callbacks right after each other, so
+  // lets just check the value at the end.
+  promise_hook_data->check_value = false;
+  promise_hook_data->promise_hook_value = "Promise.race";
+  source =
+      "var resolve, value = ''; \n"
+      "var tempPromise = new Promise(r => resolve = r); \n"
+      "var p = Promise.race([tempPromise]);\n "
+      "var p1 = p.then(v => value = v); \n";
+
+  CompileRun(source);
+  // 1) init hook (tempPromise)
+  // 2) init hook (p)
+  // 3) init hook (throwaway Promise in Promise.race, p)
+  // 4) init hook (p1, p)
+  CHECK_EQ(4, promise_hook_data->promise_hook_count);
+  CHECK_EQ(2, promise_hook_data->parent_promise_count);
+
+  promise_hook_data->promise_hook_value = "Promise.race";
+  CompileRun("resolve('Promise.race'); \n");
+  resolve_promise = global->Get(context, v8_str("resolve")).ToLocalChecked();
+  CHECK(GetPromise("p1")->Equals(env.local(), resolve_promise).FromJust());
+  // 5) resolve hook (tempPromise)
+  // 6) resolve hook (throwaway Promise in Promise.race)
+  // 6) before hook (throwaway Promise in Promise.race)
+  // 7) after hook (throwaway Promise in Promise.race)
+  // 8) before hook (p)
+  // 9) after hook (p)
+  // 10) resolve hook (p1)
+  // 11) before hook (p1)
+  // 12) after hook (p1)
+  CHECK_EQ(12, promise_hook_data->promise_hook_count);
+  CHECK(CcTest::global()
+            ->Get(CcTest::isolate()->GetCurrentContext(), v8_str("value"))
+            .ToLocalChecked()
+            ->Equals(CcTest::isolate()->GetCurrentContext(),
+                     v8_str(promise_hook_data->promise_hook_value.c_str()))
+            .FromJust());
+
+  delete promise_hook_data;
+}
 
 void AnalyzeStackOfDynamicScriptWithSourceURL(
     const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -21731,6 +22108,39 @@ int* LookupCounter(const char* name) {
   return NULL;
 }
 
+template <typename Stub, typename... Args>
+void Recompile(Args... args) {
+  Stub stub(args...);
+  stub.DeleteStubFromCacheForTesting();
+  stub.GetCode();
+}
+
+void RecompileICStubs(i::Isolate* isolate) {
+  using namespace i;
+  Recompile<LoadGlobalICStub>(isolate, LoadGlobalICState(NOT_INSIDE_TYPEOF));
+  Recompile<LoadGlobalICStub>(isolate, LoadGlobalICState(INSIDE_TYPEOF));
+  Recompile<LoadGlobalICTrampolineStub>(isolate,
+                                        LoadGlobalICState(NOT_INSIDE_TYPEOF));
+  Recompile<LoadGlobalICTrampolineStub>(isolate,
+                                        LoadGlobalICState(INSIDE_TYPEOF));
+
+  Recompile<LoadICStub>(isolate);
+  Recompile<LoadICTrampolineStub>(isolate);
+
+  Recompile<KeyedLoadICTFStub>(isolate);
+  Recompile<KeyedLoadICTrampolineTFStub>(isolate);
+
+  Recompile<StoreICStub>(isolate, StoreICState(SLOPPY));
+  Recompile<StoreICTrampolineStub>(isolate, StoreICState(SLOPPY));
+  Recompile<StoreICStub>(isolate, StoreICState(STRICT));
+  Recompile<StoreICTrampolineStub>(isolate, StoreICState(STRICT));
+
+  Recompile<KeyedStoreICTFStub>(isolate, StoreICState(SLOPPY));
+  Recompile<KeyedStoreICTrampolineTFStub>(isolate, StoreICState(SLOPPY));
+  Recompile<KeyedStoreICTFStub>(isolate, StoreICState(STRICT));
+  Recompile<KeyedStoreICTrampolineTFStub>(isolate, StoreICState(STRICT));
+}
+
 }  // namespace
 
 #ifdef ENABLE_DISASSEMBLER
@@ -21764,46 +22174,35 @@ const char* kMegamorphicTestProgram =
     "}\n";
 
 void TestStubCache(bool primary) {
+  using namespace i;
+
   // The test does not work with interpreter because bytecode handlers taken
   // from the snapshot already refer to ICs with disabled counters and there
   // is no way to trigger bytecode handlers recompilation.
-  if (i::FLAG_ignition || i::FLAG_turbo) return;
+  if (FLAG_ignition || FLAG_turbo) return;
 
-  i::FLAG_native_code_counters = true;
+  FLAG_native_code_counters = true;
   if (primary) {
-    i::FLAG_test_primary_stub_cache = true;
+    FLAG_test_primary_stub_cache = true;
   } else {
-    i::FLAG_test_secondary_stub_cache = true;
+    FLAG_test_secondary_stub_cache = true;
   }
-  i::FLAG_crankshaft = false;
-  i::FLAG_turbo = false;
+  FLAG_crankshaft = false;
+
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
   create_params.counter_lookup_callback = LookupCounter;
   v8::Isolate* isolate = v8::Isolate::New(create_params);
+  Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
 
   {
     v8::Isolate::Scope isolate_scope(isolate);
     LocalContext env(isolate);
     v8::HandleScope scope(isolate);
 
-    {
-      // Enforce recompilation of IC stubs that access megamorphic stub cache
-      // to respect enabled native code counters and stub cache test flags.
-      i::CodeStub::Major code_stub_keys[] = {
-          i::CodeStub::LoadIC,         i::CodeStub::LoadICTrampoline,
-          i::CodeStub::KeyedLoadICTF,  i::CodeStub::KeyedLoadICTrampolineTF,
-          i::CodeStub::StoreIC,        i::CodeStub::StoreICTrampoline,
-          i::CodeStub::KeyedStoreICTF, i::CodeStub::KeyedStoreICTrampolineTF,
-      };
-      i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
-      i::Heap* heap = i_isolate->heap();
-      i::Handle<i::UnseededNumberDictionary> dict(heap->code_stubs());
-      for (size_t i = 0; i < arraysize(code_stub_keys); i++) {
-        dict = i::UnseededNumberDictionary::DeleteKey(dict, code_stub_keys[i]);
-      }
-      heap->SetRootCodeStubs(*dict);
-    }
+    // Enforce recompilation of IC stubs that access megamorphic stub cache
+    // to respect enabled native code counters and stub cache test flags.
+    RecompileICStubs(i_isolate);
 
     int initial_probes = probes_counter;
     int initial_misses = misses_counter;
@@ -22696,41 +23095,30 @@ TEST(AccessCheckThrows) {
 }
 
 TEST(AccessCheckInIC) {
+  using namespace i;
+
   // The test does not work with interpreter because bytecode handlers taken
   // from the snapshot already refer to ICs with disabled counters and there
   // is no way to trigger bytecode handlers recompilation.
-  if (i::FLAG_ignition || i::FLAG_turbo) return;
+  if (FLAG_ignition || FLAG_turbo) return;
 
-  i::FLAG_native_code_counters = true;
-  i::FLAG_crankshaft = false;
-  i::FLAG_turbo = false;
+  FLAG_native_code_counters = true;
+  FLAG_crankshaft = false;
+
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
   create_params.counter_lookup_callback = LookupCounter;
   v8::Isolate* isolate = v8::Isolate::New(create_params);
+  Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
 
   {
     v8::Isolate::Scope isolate_scope(isolate);
     LocalContext env(isolate);
     v8::HandleScope scope(isolate);
 
-    {
-      // Enforce recompilation of IC stubs that access megamorphic stub cache
-      // to respect enabled native code counters and stub cache test flags.
-      i::CodeStub::Major code_stub_keys[] = {
-          i::CodeStub::LoadIC,         i::CodeStub::LoadICTrampoline,
-          i::CodeStub::KeyedLoadICTF,  i::CodeStub::KeyedLoadICTrampolineTF,
-          i::CodeStub::StoreIC,        i::CodeStub::StoreICTrampoline,
-          i::CodeStub::KeyedStoreICTF, i::CodeStub::KeyedStoreICTrampolineTF,
-      };
-      i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
-      i::Heap* heap = i_isolate->heap();
-      i::Handle<i::UnseededNumberDictionary> dict(heap->code_stubs());
-      for (size_t i = 0; i < arraysize(code_stub_keys); i++) {
-        dict = i::UnseededNumberDictionary::DeleteKey(dict, code_stub_keys[i]);
-      }
-      heap->SetRootCodeStubs(*dict);
-    }
+    // Enforce recompilation of IC stubs that access megamorphic stub cache
+    // to respect enabled native code counters and stub cache test flags.
+    RecompileICStubs(i_isolate);
 
     // Create an ObjectTemplate for global objects and install access
     // check callbacks that will block access.
@@ -23964,6 +24352,25 @@ TEST(PromiseThen) {
                   .FromJust());
 }
 
+TEST(PromiseStateAndValue) {
+  LocalContext context;
+  v8::Isolate* isolate = context->GetIsolate();
+  v8::HandleScope scope(isolate);
+  v8::Local<v8::Value> result = CompileRun(
+      "var resolver;"
+      "new Promise((res, rej) => { resolver = res; })");
+  v8::Local<v8::Promise> promise = v8::Local<v8::Promise>::Cast(result);
+  CHECK(promise->State() == v8::Promise::PromiseState::kPending);
+
+  CompileRun("resolver('fulfilled')");
+  CHECK(promise->State() == v8::Promise::PromiseState::kFulfilled);
+  CHECK(v8_str("fulfilled")->SameValue(promise->Result()));
+
+  result = CompileRun("Promise.reject('rejected')");
+  promise = v8::Local<v8::Promise>::Cast(result);
+  CHECK(promise->State() == v8::Promise::PromiseState::kRejected);
+  CHECK(v8_str("rejected")->SameValue(promise->Result()));
+}
 
 TEST(DisallowJavascriptExecutionScope) {
   LocalContext context;
@@ -26158,4 +26565,30 @@ TEST(InternalFieldsOnDataView) {
     CHECK_EQ(static_cast<void*>(nullptr),
              array->GetAlignedPointerFromInternalField(i));
   }
+}
+
+TEST(SetPrototypeTemplate) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+
+  Local<FunctionTemplate> HTMLElementTemplate = FunctionTemplate::New(isolate);
+  Local<FunctionTemplate> HTMLImageElementTemplate =
+      FunctionTemplate::New(isolate);
+  HTMLImageElementTemplate->Inherit(HTMLElementTemplate);
+
+  Local<FunctionTemplate> ImageTemplate = FunctionTemplate::New(isolate);
+  ImageTemplate->SetPrototypeProviderTemplate(HTMLImageElementTemplate);
+
+  Local<Function> HTMLImageElement =
+      HTMLImageElementTemplate->GetFunction(env.local()).ToLocalChecked();
+  Local<Function> Image =
+      ImageTemplate->GetFunction(env.local()).ToLocalChecked();
+
+  CHECK(env->Global()
+            ->Set(env.local(), v8_str("HTMLImageElement"), HTMLImageElement)
+            .FromJust());
+  CHECK(env->Global()->Set(env.local(), v8_str("Image"), Image).FromJust());
+
+  ExpectTrue("Image.prototype === HTMLImageElement.prototype");
 }

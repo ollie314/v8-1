@@ -122,6 +122,8 @@ class Typer::Visitor : public Reducer {
       DECLARE_CASE(Deoptimize)
       DECLARE_CASE(DeoptimizeIf)
       DECLARE_CASE(DeoptimizeUnless)
+      DECLARE_CASE(TrapIf)
+      DECLARE_CASE(TrapUnless)
       DECLARE_CASE(Return)
       DECLARE_CASE(TailCall)
       DECLARE_CASE(Terminate)
@@ -185,6 +187,8 @@ class Typer::Visitor : public Reducer {
       DECLARE_CASE(Deoptimize)
       DECLARE_CASE(DeoptimizeIf)
       DECLARE_CASE(DeoptimizeUnless)
+      DECLARE_CASE(TrapIf)
+      DECLARE_CASE(TrapUnless)
       DECLARE_CASE(Return)
       DECLARE_CASE(TailCall)
       DECLARE_CASE(Terminate)
@@ -1244,10 +1248,19 @@ Type* Typer::Visitor::TypeJSDeleteProperty(Node* node) {
 
 Type* Typer::Visitor::TypeJSHasProperty(Node* node) { return Type::Boolean(); }
 
-Type* Typer::Visitor::TypeJSInstanceOf(Node* node) { return Type::Boolean(); }
+// JS instanceof operator.
 
-Type* Typer::Visitor::TypeJSOrdinaryHasInstance(Node* node) {
+Type* Typer::Visitor::JSInstanceOfTyper(Type* lhs, Type* rhs, Typer* t) {
   return Type::Boolean();
+}
+
+Type* Typer::Visitor::JSOrdinaryHasInstanceTyper(Type* lhs, Type* rhs,
+                                                 Typer* t) {
+  return Type::Boolean();
+}
+
+Type* Typer::Visitor::TypeJSGetSuperConstructor(Node* node) {
+  return Type::Callable();
 }
 
 // JS context operators.
@@ -1297,6 +1310,10 @@ Type* Typer::Visitor::TypeJSCreateScriptContext(Node* node) {
 
 
 Type* Typer::Visitor::TypeJSCallConstruct(Node* node) {
+  return Type::Receiver();
+}
+
+Type* Typer::Visitor::TypeJSCallConstructWithSpread(Node* node) {
   return Type::Receiver();
 }
 
@@ -1369,6 +1386,7 @@ Type* Typer::Visitor::JSCallFunctionTyper(Type* fun, Typer* t) {
           return t->cache_.kJSDateSecondType;
         case kDateGetTime:
           return t->cache_.kJSDateValueType;
+
         // Number functions.
         case kNumberIsFinite:
         case kNumberIsInteger:
@@ -1381,16 +1399,41 @@ Type* Typer::Visitor::JSCallFunctionTyper(Type* fun, Typer* t) {
           return t->cache_.kIntegerOrMinusZeroOrNaN;
         case kNumberToString:
           return Type::String();
+
         // String functions.
         case kStringCharCodeAt:
           return Type::Union(Type::Range(0, kMaxUInt16, t->zone()), Type::NaN(),
                              t->zone());
         case kStringCharAt:
+          return Type::String();
+        case kStringCodePointAt:
+          return Type::Union(Type::Range(0.0, String::kMaxCodePoint, t->zone()),
+                             Type::Undefined(), t->zone());
         case kStringConcat:
         case kStringFromCharCode:
+        case kStringFromCodePoint:
+          return Type::String();
+        case kStringIndexOf:
+        case kStringLastIndexOf:
+          return Type::Range(-1.0, String::kMaxLength - 1.0, t->zone());
+        case kStringEndsWith:
+        case kStringIncludes:
+          return Type::Boolean();
+        case kStringRaw:
+        case kStringRepeat:
+        case kStringSlice:
+          return Type::String();
+        case kStringStartsWith:
+          return Type::Boolean();
         case kStringSubstr:
+        case kStringSubstring:
         case kStringToLowerCase:
+        case kStringToString:
         case kStringToUpperCase:
+        case kStringTrim:
+        case kStringTrimLeft:
+        case kStringTrimRight:
+        case kStringValueOf:
           return Type::String();
 
         case kStringIterator:
@@ -1407,10 +1450,37 @@ Type* Typer::Visitor::JSCallFunctionTyper(Type* fun, Typer* t) {
           return Type::OtherObject();
 
         // Array functions.
+        case kArrayConcat:
+          return Type::Receiver();
+        case kArrayEvery:
+          return Type::Boolean();
+        case kArrayFill:
+        case kArrayFilter:
+          return Type::Receiver();
+        case kArrayFindIndex:
+          return Type::Range(-1, kMaxSafeInteger, t->zone());
+        case kArrayForEach:
+          return Type::Undefined();
+        case kArrayIncludes:
+          return Type::Boolean();
         case kArrayIndexOf:
+          return Type::Range(-1, kMaxSafeInteger, t->zone());
+        case kArrayJoin:
+          return Type::String();
         case kArrayLastIndexOf:
           return Type::Range(-1, kMaxSafeInteger, t->zone());
+        case kArrayMap:
+          return Type::Receiver();
         case kArrayPush:
+          return t->cache_.kPositiveSafeInteger;
+        case kArrayReverse:
+        case kArraySlice:
+          return Type::Receiver();
+        case kArraySome:
+          return Type::Boolean();
+        case kArraySplice:
+          return Type::Receiver();
+        case kArrayUnshift:
           return t->cache_.kPositiveSafeInteger;
 
         // Object functions.
@@ -1766,6 +1836,14 @@ Type* Typer::Visitor::TypeObjectIsString(Node* node) {
 
 Type* Typer::Visitor::TypeObjectIsUndetectable(Node* node) {
   return TypeUnaryOp(node, ObjectIsUndetectable);
+}
+
+Type* Typer::Visitor::TypeNewUnmappedArgumentsElements(Node* node) {
+  return Type::OtherInternal();
+}
+
+Type* Typer::Visitor::TypeNewRestParameterElements(Node* node) {
+  return Type::OtherInternal();
 }
 
 Type* Typer::Visitor::TypeArrayBufferWasNeutered(Node* node) {

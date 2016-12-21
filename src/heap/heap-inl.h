@@ -21,6 +21,7 @@
 #include "src/log.h"
 #include "src/msan.h"
 #include "src/objects-inl.h"
+#include "src/objects/scope-info.h"
 #include "src/type-feedback-vector-inl.h"
 
 namespace v8 {
@@ -502,9 +503,7 @@ void Heap::RecordWrite(Object* object, int offset, Object* o) {
   if (!InNewSpace(o) || !object->IsHeapObject() || InNewSpace(object)) {
     return;
   }
-  RememberedSet<OLD_TO_NEW>::Insert(
-      Page::FromAddress(reinterpret_cast<Address>(object)),
-      HeapObject::cast(object)->address() + offset);
+  store_buffer()->InsertEntry(HeapObject::cast(object)->address() + offset);
 }
 
 void Heap::RecordWriteIntoCode(Code* host, RelocInfo* rinfo, Object* value) {
@@ -515,11 +514,9 @@ void Heap::RecordWriteIntoCode(Code* host, RelocInfo* rinfo, Object* value) {
 
 void Heap::RecordFixedArrayElements(FixedArray* array, int offset, int length) {
   if (InNewSpace(array)) return;
-  Page* page = Page::FromAddress(reinterpret_cast<Address>(array));
   for (int i = 0; i < length; i++) {
     if (!InNewSpace(array->get(offset + i))) continue;
-    RememberedSet<OLD_TO_NEW>::Insert(
-        page,
+    store_buffer()->InsertEntry(
         reinterpret_cast<Address>(array->RawFieldOfElementAt(offset + i)));
   }
 }
@@ -816,7 +813,14 @@ int Heap::GetNextTemplateSerialNumber() {
 
 void Heap::SetSerializedTemplates(FixedArray* templates) {
   DCHECK_EQ(empty_fixed_array(), serialized_templates());
+  DCHECK(isolate()->serializer_enabled());
   set_serialized_templates(templates);
+}
+
+void Heap::SetSerializedGlobalProxySizes(FixedArray* sizes) {
+  DCHECK_EQ(empty_fixed_array(), serialized_global_proxy_sizes());
+  DCHECK(isolate()->serializer_enabled());
+  set_serialized_global_proxy_sizes(sizes);
 }
 
 void Heap::CreateObjectStats() {

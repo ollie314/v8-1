@@ -11,20 +11,19 @@ function TestImported(type, val, expected) {
   print("TestImported " + type + "(" + val +")" + " = " + expected);
   var builder = new WasmModuleBuilder();
   var sig = makeSig([], [type]);
-  var g = builder.addImportedGlobal("foo", undefined, type);
+  var g = builder.addImportedGlobal("uuu", "foo", type);
   builder.addFunction("main", sig)
     .addBody([kExprGetGlobal, g.index])
     .exportAs("main");
   builder.addGlobal(kAstI32);  // pad
 
-  var instance = builder.instantiate({foo: val});
+  var instance = builder.instantiate({uuu: {foo: val}});
   assertEquals(expected, instance.exports.main());
 }
 
 TestImported(kAstI32, 300.1, 300);
 TestImported(kAstF32, 87234.87238, Math.fround(87234.87238));
 TestImported(kAstF64, 77777.88888, 77777.88888);
-TestImported(kAstF64, "89", 89);
 
 
 function TestExported(type, val, expected) {
@@ -50,14 +49,14 @@ function TestImportedExported(type, val, expected) {
   print("TestImportedExported " + type + "(" + val +")" + " = " + expected);
   var builder = new WasmModuleBuilder();
   var sig = makeSig([type], []);
-  var i = builder.addImportedGlobal("foo", undefined, type);
+  var i = builder.addImportedGlobal("ttt", "foo", type);
   builder.addGlobal(kAstI32);  // pad
   var o = builder.addGlobal(type, false)
       .exportAs("bar");
   o.init_index = i;
   builder.addGlobal(kAstI32);  // pad
 
-  var instance = builder.instantiate({foo: val});
+  var instance = builder.instantiate({ttt: {foo: val}});
   assertEquals(expected, instance.exports.bar);
 }
 
@@ -68,7 +67,7 @@ TestImportedExported(kAstF64, 81347.66666, 81347.66666);
 function TestGlobalIndexSpace(type, val) {
   print("TestGlobalIndexSpace(" + val + ") = " + val);
   var builder = new WasmModuleBuilder();
-  var im = builder.addImportedGlobal("foo", undefined, type);
+  var im = builder.addImportedGlobal("nnn", "foo", type);
   assertEquals(0, im);
   var def = builder.addGlobal(type, false);
   assertEquals(1, def.index);
@@ -79,7 +78,7 @@ function TestGlobalIndexSpace(type, val) {
     .addBody([kExprGetGlobal, def.index])
     .exportAs("main");
 
-  var instance = builder.instantiate({foo: val});
+  var instance = builder.instantiate({nnn: {foo: val}});
   assertEquals(val, instance.exports.main());
 }
 

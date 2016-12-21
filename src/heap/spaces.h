@@ -317,8 +317,11 @@ class MemoryChunk {
   static const intptr_t kAlignmentMask = kAlignment - 1;
 
   static const intptr_t kSizeOffset = 0;
-
-  static const intptr_t kFlagsOffset = kSizeOffset + kPointerSize;
+  static const intptr_t kFlagsOffset = kSizeOffset + kSizetSize;
+  static const intptr_t kAreaStartOffset = kFlagsOffset + kIntptrSize;
+  static const intptr_t kAreaEndOffset = kAreaStartOffset + kPointerSize;
+  static const intptr_t kReservationOffset = kAreaEndOffset + kPointerSize;
+  static const intptr_t kOwnerOffset = kReservationOffset + 2 * kPointerSize;
 
   static const size_t kMinHeaderSize =
       kSizeOffset + kSizetSize  // size_t size
@@ -552,10 +555,11 @@ class MemoryChunk {
   void set_prev_chunk(MemoryChunk* prev) { prev_chunk_.SetValue(prev); }
 
   Space* owner() const {
-    if ((reinterpret_cast<intptr_t>(owner_) & kPageHeaderTagMask) ==
-        kPageHeaderTag) {
-      return reinterpret_cast<Space*>(reinterpret_cast<intptr_t>(owner_) -
-                                      kPageHeaderTag);
+    intptr_t owner_value = base::NoBarrierAtomicValue<intptr_t>::FromAddress(
+                               const_cast<Address*>(&owner_))
+                               ->Value();
+    if ((owner_value & kPageHeaderTagMask) == kPageHeaderTag) {
+      return reinterpret_cast<Space*>(owner_value - kPageHeaderTag);
     } else {
       return nullptr;
     }
@@ -767,6 +771,8 @@ class Page : public MemoryChunk {
   }
 
   size_t ShrinkToHighWaterMark();
+
+  void CreateBlackArea(Address start, Address end);
 
 #ifdef DEBUG
   void Print();
@@ -1418,6 +1424,8 @@ class PageRange {
   typedef PageIterator iterator;
   PageRange(Page* begin, Page* end) : begin_(begin), end_(end) {}
   explicit PageRange(Page* page) : PageRange(page, page->next_page()) {}
+  inline PageRange(Address start, Address limit);
+
   iterator begin() { return iterator(begin_); }
   iterator end() { return iterator(end_); }
 
@@ -1877,17 +1885,6 @@ class LocalAllocationBuffer {
   AllocationInfo allocation_info_;
 };
 
-class NewSpacePageRange {
- public:
-  typedef PageRange::iterator iterator;
-  inline NewSpacePageRange(Address start, Address limit);
-  iterator begin() { return range_.begin(); }
-  iterator end() { return range_.end(); }
-
- private:
-  PageRange range_;
-};
-
 class PagedSpace : public Space {
  public:
   typedef PageIterator iterator;
@@ -1913,12 +1910,6 @@ class PagedSpace : public Space {
   inline bool Contains(Address a);
   inline bool Contains(Object* o);
   bool ContainsSlow(Address addr);
-
-  // Given an address occupied by a live object, return that object if it is
-  // in this space, or a Smi if it is not.  The implementation iterates over
-  // objects in the page containing the address, the cost is linear in the
-  // number of objects in the page.  It may be slow.
-  Object* FindObject(Address addr);
 
   // During boot the free_space_map is created, and afterwards we may need
   // to write it into the free list nodes that were already created.

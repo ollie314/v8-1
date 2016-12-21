@@ -54,6 +54,7 @@ class JSNativeContextSpecialization final : public AdvancedReducer {
 
  private:
   Reduction ReduceJSInstanceOf(Node* node);
+  Reduction ReduceJSOrdinaryHasInstance(Node* node);
   Reduction ReduceJSLoadContext(Node* node);
   Reduction ReduceJSLoadNamed(Node* node);
   Reduction ReduceJSStoreNamed(Node* node);
@@ -147,9 +148,10 @@ class JSNativeContextSpecialization final : public AdvancedReducer {
   // program location.
   MaybeHandle<Map> InferReceiverRootMap(Node* receiver);
 
+  bool CanInlineApiCall(PropertyAccessInfo const& access_info);
   ValueEffectControl InlineApiCall(
       Node* receiver, Node* context, Node* target, Node* frame_state,
-      ZoneVector<Node*>* stack_parameters, Node* effect, Node* control,
+      Node* parameter, Node* effect, Node* control,
       Handle<SharedFunctionInfo> shared_info,
       Handle<FunctionTemplateInfo> function_template_info);
 

@@ -22,6 +22,12 @@ Callable make_callable(Stub& stub) {
 }  // namespace
 
 // static
+Handle<Code> CodeFactory::RuntimeCEntry(Isolate* isolate, int result_size) {
+  CEntryStub stub(isolate, result_size);
+  return stub.GetCode();
+}
+
+// static
 Callable CodeFactory::LoadIC(Isolate* isolate) {
   LoadICTrampolineStub stub(isolate);
   return make_callable(stub);
@@ -242,6 +248,10 @@ TFS_BUILTIN(Typeof)
 TFS_BUILTIN(InstanceOf)
 TFS_BUILTIN(OrdinaryHasInstance)
 TFS_BUILTIN(ForInFilter)
+TFS_BUILTIN(NewUnmappedArgumentsElements)
+TFS_BUILTIN(NewRestParameterElements)
+TFS_BUILTIN(PromiseHandleReject)
+TFS_BUILTIN(GetSuperConstructor)
 
 #undef TFS_BUILTIN
 
@@ -357,8 +367,9 @@ Callable CodeFactory::FastCloneShallowObject(Isolate* isolate, int length) {
 
 
 // static
-Callable CodeFactory::FastNewFunctionContext(Isolate* isolate) {
-  FastNewFunctionContextStub stub(isolate);
+Callable CodeFactory::FastNewFunctionContext(Isolate* isolate,
+                                             ScopeType scope_type) {
+  FastNewFunctionContextStub stub(isolate, scope_type);
   return make_callable(stub);
 }
 
@@ -493,6 +504,17 @@ Callable CodeFactory::InterpreterCEntry(Isolate* isolate, int result_size) {
 Callable CodeFactory::InterpreterOnStackReplacement(Isolate* isolate) {
   return Callable(isolate->builtins()->InterpreterOnStackReplacement(),
                   ContextOnlyDescriptor(isolate));
+}
+
+// static
+Callable CodeFactory::ArrayPush(Isolate* isolate) {
+  return Callable(isolate->builtins()->ArrayPush(), BuiltinDescriptor(isolate));
+}
+
+// static
+Callable CodeFactory::FunctionPrototypeBind(Isolate* isolate) {
+  return Callable(isolate->builtins()->FunctionPrototypeBind(),
+                  BuiltinDescriptor(isolate));
 }
 
 }  // namespace internal

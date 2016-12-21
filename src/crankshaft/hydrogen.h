@@ -463,12 +463,6 @@ class HGraph final : public ZoneObject {
   void DecrementInNoSideEffectsScope() { no_side_effects_scope_count_--; }
   bool IsInsideNoSideEffectsScope() { return no_side_effects_scope_count_ > 0; }
 
-  // If we are tracking source positions then this function assigns a unique
-  // identifier to each inlining and dumps function source if it was inlined
-  // for the first time during the current optimization.
-  int TraceInlinedFunction(Handle<SharedFunctionInfo> shared,
-                           SourcePosition position);
-
  private:
   HConstant* ReinsertConstantIfNecessary(HConstant* constant);
   HConstant* GetConstant(SetOncePointer<HConstant>* pointer,
@@ -1807,9 +1801,11 @@ class HGraphBuilder {
                                     HValue* previous_object_size,
                                     HValue* payload);
 
-  HInstruction* BuildConstantMapCheck(Handle<JSObject> constant);
+  HInstruction* BuildConstantMapCheck(Handle<JSObject> constant,
+                                      bool ensure_no_elements = false);
   HInstruction* BuildCheckPrototypeMaps(Handle<JSObject> prototype,
-                                        Handle<JSObject> holder);
+                                        Handle<JSObject> holder,
+                                        bool ensure_no_elements = false);
 
   HInstruction* BuildGetNativeContext(HValue* closure);
   HInstruction* BuildGetNativeContext();
@@ -1852,9 +1848,6 @@ class HGraphBuilder {
   void set_source_position(SourcePosition position) { position_ = position; }
 
   bool is_tracking_positions() { return track_positions_; }
-
-  void TraceInlinedFunction(Handle<SharedFunctionInfo> shared,
-                            SourcePosition position, int inlining_id);
 
   HValue* BuildAllocateEmptyArrayBuffer(HValue* byte_length);
   template <typename ViewClass>
@@ -2386,6 +2379,7 @@ class HOptimizedGraphBuilder : public HGraphBuilder,
                         TailCallMode syntactic_tail_call_mode);
   static bool IsReadOnlyLengthDescriptor(Handle<Map> jsarray_map);
   static bool CanInlineArrayResizeOperation(Handle<Map> receiver_map);
+  static bool NoElementsInPrototypeChain(Handle<Map> receiver_map);
 
   // If --trace-inlining, print a line of the inlining trace.  Inlining
   // succeeded if the reason string is NULL and failed if there is a

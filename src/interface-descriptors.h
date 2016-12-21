@@ -87,12 +87,14 @@ class PlatformInterfaceDescriptor;
   V(MathPowTagged)                        \
   V(MathPowInteger)                       \
   V(GrowArrayElements)                    \
+  V(NewArgumentsElements)                 \
   V(InterpreterDispatch)                  \
   V(InterpreterPushArgsAndCall)           \
   V(InterpreterPushArgsAndConstruct)      \
   V(InterpreterPushArgsAndConstructArray) \
   V(InterpreterCEntry)                    \
-  V(ResumeGenerator)
+  V(ResumeGenerator)                      \
+  V(PromiseHandleReject)
 
 class V8_EXPORT_PRIVATE CallInterfaceDescriptorData {
  public:
@@ -415,6 +417,7 @@ class LoadGlobalWithVectorDescriptor : public LoadGlobalDescriptor {
 
 class FastNewClosureDescriptor : public CallInterfaceDescriptor {
  public:
+  DEFINE_PARAMETERS(kSharedFunctionInfo)
   DECLARE_DESCRIPTOR(FastNewClosureDescriptor, CallInterfaceDescriptor)
 };
 
@@ -613,11 +616,13 @@ SIMD128_TYPES(SIMD128_ALLOC_DESC)
 
 class BuiltinDescriptor : public CallInterfaceDescriptor {
  public:
+  // TODO(ishell): Where is kFunction??
   DEFINE_PARAMETERS(kNewTarget, kArgumentsCount)
   DECLARE_DESCRIPTOR_WITH_CUSTOM_FUNCTION_TYPE(BuiltinDescriptor,
                                                CallInterfaceDescriptor)
   static const Register ArgumentsCountRegister();
   static const Register NewTargetRegister();
+  static const Register TargetRegister();
 };
 
 class ArrayNoArgumentConstructorDescriptor : public CallInterfaceDescriptor {
@@ -778,6 +783,13 @@ class GrowArrayElementsDescriptor : public CallInterfaceDescriptor {
   static const Register KeyRegister();
 };
 
+class NewArgumentsElementsDescriptor final : public CallInterfaceDescriptor {
+ public:
+  DEFINE_PARAMETERS(kFormalParameterCount)
+  DECLARE_DESCRIPTOR_WITH_CUSTOM_FUNCTION_TYPE(NewArgumentsElementsDescriptor,
+                                               CallInterfaceDescriptor)
+};
+
 class V8_EXPORT_PRIVATE InterpreterDispatchDescriptor
     : public CallInterfaceDescriptor {
  public:
@@ -823,6 +835,13 @@ class InterpreterCEntryDescriptor : public CallInterfaceDescriptor {
 class ResumeGeneratorDescriptor final : public CallInterfaceDescriptor {
  public:
   DECLARE_DESCRIPTOR(ResumeGeneratorDescriptor, CallInterfaceDescriptor)
+};
+
+class PromiseHandleRejectDescriptor final : public CallInterfaceDescriptor {
+ public:
+  DEFINE_PARAMETERS(kPromise, kOnReject, kException)
+  DECLARE_DEFAULT_DESCRIPTOR(PromiseHandleRejectDescriptor,
+                             CallInterfaceDescriptor, kParameterCount)
 };
 
 #undef DECLARE_DESCRIPTOR_WITH_BASE

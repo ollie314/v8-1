@@ -6,6 +6,7 @@
 
 #include "src/accessors.h"
 #include "src/allocation-site-scopes.h"
+#include "src/ast/ast.h"
 #include "src/base/bits.h"
 #include "src/bootstrapper.h"
 #include "src/compiler.h"
@@ -102,6 +103,14 @@ Handle<PrototypeInfo> Factory::NewPrototypeInfo() {
   return result;
 }
 
+Handle<Tuple2> Factory::NewTuple2(Handle<Object> value1,
+                                  Handle<Object> value2) {
+  Handle<Tuple2> result = Handle<Tuple2>::cast(NewStruct(TUPLE2_TYPE));
+  result->set_value1(*value1);
+  result->set_value2(*value2);
+  return result;
+}
+
 Handle<Tuple3> Factory::NewTuple3(Handle<Object> value1, Handle<Object> value2,
                                   Handle<Object> value3) {
   Handle<Tuple3> result = Handle<Tuple3>::cast(NewStruct(TUPLE3_TYPE));
@@ -117,6 +126,15 @@ Handle<ContextExtension> Factory::NewContextExtension(
       Handle<ContextExtension>::cast(NewStruct(CONTEXT_EXTENSION_TYPE));
   result->set_scope_info(*scope_info);
   result->set_extension(*extension);
+  return result;
+}
+
+Handle<ConstantElementsPair> Factory::NewConstantElementsPair(
+    ElementsKind elements_kind, Handle<FixedArrayBase> constant_values) {
+  Handle<ConstantElementsPair> result = Handle<ConstantElementsPair>::cast(
+      NewStruct(CONSTANT_ELEMENTS_PAIR_TYPE));
+  result->set_elements_kind(elements_kind);
+  result->set_constant_values(*constant_values);
   return result;
 }
 
@@ -157,7 +175,6 @@ Handle<FixedArray> Factory::NewFixedArrayWithHoles(int size,
                                                       *the_hole_value()),
       FixedArray);
 }
-
 
 Handle<FixedArray> Factory::NewUninitializedFixedArray(int size) {
   CALL_HEAP_FUNCTION(
@@ -881,13 +898,24 @@ Handle<Context> Factory::NewModuleContext(Handle<Module> module,
   return context;
 }
 
-
 Handle<Context> Factory::NewFunctionContext(int length,
-                                            Handle<JSFunction> function) {
-  DCHECK(function->shared()->scope_info()->scope_type() == FUNCTION_SCOPE);
+                                            Handle<JSFunction> function,
+                                            ScopeType scope_type) {
+  DCHECK(function->shared()->scope_info()->scope_type() == scope_type);
   DCHECK(length >= Context::MIN_CONTEXT_SLOTS);
   Handle<FixedArray> array = NewFixedArray(length);
-  array->set_map_no_write_barrier(*function_context_map());
+  Handle<Map> map;
+  switch (scope_type) {
+    case EVAL_SCOPE:
+      map = eval_context_map();
+      break;
+    case FUNCTION_SCOPE:
+      map = function_context_map();
+      break;
+    default:
+      UNREACHABLE();
+  }
+  array->set_map_no_write_barrier(*map);
   Handle<Context> context = Handle<Context>::cast(array);
   context->set_closure(*function);
   context->set_previous(function->context());
@@ -1002,11 +1030,12 @@ Handle<PromiseResolveThenableJobInfo> Factory::NewPromiseResolveThenableJobInfo(
 }
 
 Handle<PromiseReactionJobInfo> Factory::NewPromiseReactionJobInfo(
-    Handle<Object> value, Handle<Object> tasks, Handle<Object> deferred,
-    Handle<Object> debug_id, Handle<Object> debug_name,
+    Handle<JSPromise> promise, Handle<Object> value, Handle<Object> tasks,
+    Handle<Object> deferred, Handle<Object> debug_id, Handle<Object> debug_name,
     Handle<Context> context) {
   Handle<PromiseReactionJobInfo> result = Handle<PromiseReactionJobInfo>::cast(
       NewStruct(PROMISE_REACTION_JOB_INFO_TYPE));
+  result->set_promise(*promise);
   result->set_value(*value);
   result->set_tasks(*tasks);
   result->set_deferred(*deferred);
@@ -1049,7 +1078,7 @@ Handle<Script> Factory::NewScript(Handle<String> source) {
   script->set_line_ends(heap->undefined_value());
   script->set_eval_from_shared(heap->undefined_value());
   script->set_eval_from_position(0);
-  script->set_shared_function_infos(Smi::kZero);
+  script->set_shared_function_infos(*empty_fixed_array(), SKIP_WRITE_BARRIER);
   script->set_flags(0);
 
   heap->set_script_list(*WeakFixedArray::Add(script_list(), script));
@@ -1352,6 +1381,7 @@ DEFINE_ERROR(ReferenceError, reference_error)
 DEFINE_ERROR(SyntaxError, syntax_error)
 DEFINE_ERROR(TypeError, type_error)
 DEFINE_ERROR(WasmCompileError, wasm_compile_error)
+DEFINE_ERROR(WasmLinkError, wasm_link_error)
 DEFINE_ERROR(WasmRuntimeError, wasm_runtime_error)
 #undef DEFINE_ERROR
 
@@ -2260,6 +2290,17 @@ Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
   return shared;
 }
 
+Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfoForLiteral(
+    FunctionLiteral* literal, Handle<Script> script) {
+  Handle<Code> code = isolate()->builtins()->CompileLazy();
+  Handle<ScopeInfo> scope_info(ScopeInfo::Empty(isolate()));
+  Handle<SharedFunctionInfo> result = NewSharedFunctionInfo(
+      literal->name(), literal->materialized_literal_count(), literal->kind(),
+      code, scope_info);
+  SharedFunctionInfo::InitFromFunctionLiteral(result, literal);
+  SharedFunctionInfo::SetScript(result, script);
+  return result;
+}
 
 Handle<JSMessageObject> Factory::NewJSMessageObject(
     MessageTemplate::Template message, Handle<Object> argument,
@@ -2276,6 +2317,7 @@ Handle<JSMessageObject> Factory::NewJSMessageObject(
   message_obj->set_end_position(end_position);
   message_obj->set_script(*script);
   message_obj->set_stack_frames(*stack_frames);
+  message_obj->set_error_level(v8::Isolate::kMessageError);
   return message_obj;
 }
 
@@ -2291,6 +2333,7 @@ Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
 
   // Set pointer fields.
   share->set_name(*name);
+  share->set_function_data(*undefined_value(), SKIP_WRITE_BARRIER);
   Handle<Code> code;
   if (!maybe_code.ToHandle(&code)) {
     code = isolate()->builtins()->Illegal();
@@ -2304,7 +2347,6 @@ Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
                      : isolate()->builtins()->ConstructedNonConstructable();
   share->SetConstructStub(*construct_stub);
   share->set_instance_class_name(*Object_string());
-  share->set_function_data(*undefined_value(), SKIP_WRITE_BARRIER);
   share->set_script(*undefined_value(), SKIP_WRITE_BARRIER);
   share->set_debug_info(DebugInfo::uninitialized(), SKIP_WRITE_BARRIER);
   share->set_function_identifier(*undefined_value(), SKIP_WRITE_BARRIER);
@@ -2312,6 +2354,7 @@ Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
   Handle<TypeFeedbackMetadata> feedback_metadata =
       TypeFeedbackMetadata::New(isolate(), &empty_spec);
   share->set_feedback_metadata(*feedback_metadata, SKIP_WRITE_BARRIER);
+  share->set_function_literal_id(FunctionLiteral::kIdTypeInvalid);
 #if TRACE_MAPS
   share->set_unique_id(isolate()->GetNextUniqueSharedFunctionInfoId());
 #endif
@@ -2706,25 +2749,40 @@ void Factory::SetStrictFunctionInstanceDescriptor(Handle<Map> map,
   }
 }
 
-Handle<JSFixedArrayIterator> Factory::NewJSFixedArrayIterator(
-    Handle<FixedArray> array) {
-  // Create the "next" function (must be unique per iterator object).
-  Handle<Code> code(
-      isolate()->builtins()->builtin(Builtins::kFixedArrayIteratorNext));
-  // TODO(neis): Don't create a new SharedFunctionInfo each time.
-  Handle<JSFunction> next = isolate()->factory()->NewFunctionWithoutPrototype(
-      isolate()->factory()->next_string(), code, false);
-  next->shared()->set_native(true);
+Handle<Map> Factory::CreateClassFunctionMap(Handle<JSFunction> empty_function) {
+  Handle<Map> map = NewMap(JS_FUNCTION_TYPE, JSFunction::kSize);
+  SetClassFunctionInstanceDescriptor(map);
+  map->set_is_constructor(true);
+  map->set_is_callable();
+  Map::SetPrototype(map, empty_function);
+  return map;
+}
 
-  // Create the iterator.
-  Handle<Map> map(isolate()->native_context()->fixed_array_iterator_map());
-  Handle<JSFixedArrayIterator> iterator =
-      Handle<JSFixedArrayIterator>::cast(NewJSObjectFromMap(map));
-  iterator->set_initial_next(*next);
-  iterator->set_array(*array);
-  iterator->set_index(0);
-  iterator->InObjectPropertyAtPut(JSFixedArrayIterator::kNextIndex, *next);
-  return iterator;
+void Factory::SetClassFunctionInstanceDescriptor(Handle<Map> map) {
+  Map::EnsureDescriptorSlack(map, 2);
+
+  PropertyAttributes rw_attribs =
+      static_cast<PropertyAttributes>(DONT_ENUM | DONT_DELETE);
+  PropertyAttributes roc_attribs =
+      static_cast<PropertyAttributes>(DONT_ENUM | READ_ONLY);
+
+  STATIC_ASSERT(JSFunction::kLengthDescriptorIndex == 0);
+  {  // Add length.
+    Handle<AccessorInfo> length =
+        Accessors::FunctionLengthInfo(isolate(), roc_attribs);
+    AccessorConstantDescriptor d(handle(Name::cast(length->name())), length,
+                                 roc_attribs);
+    map->AppendDescriptor(&d);
+  }
+
+  {
+    // Add prototype.
+    Handle<AccessorInfo> prototype =
+        Accessors::FunctionPrototypeInfo(isolate(), rw_attribs);
+    AccessorConstantDescriptor d(Handle<Name>(Name::cast(prototype->name())),
+                                 prototype, rw_attribs);
+    map->AppendDescriptor(&d);
+  }
 }
 
 }  // namespace internal

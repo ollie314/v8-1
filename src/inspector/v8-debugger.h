@@ -31,10 +31,6 @@ class V8Debugger {
   V8Debugger(v8::Isolate*, V8InspectorImpl*);
   ~V8Debugger();
 
-  static int contextId(v8::Local<v8::Context>);
-  static int getGroupId(v8::Local<v8::Context>);
-  int markContext(const V8ContextInfo&);
-
   bool enabled() const;
 
   String16 setBreakpoint(const ScriptBreakpoint&, int* actualLineNumber,
@@ -43,8 +39,8 @@ class V8Debugger {
   void setBreakpointsActivated(bool);
   bool breakpointsActivated() const { return m_breakpointsActivated; }
 
-  v8::DebugInterface::ExceptionBreakState getPauseOnExceptionsState();
-  void setPauseOnExceptionsState(v8::DebugInterface::ExceptionBreakState);
+  v8::debug::ExceptionBreakState getPauseOnExceptionsState();
+  void setPauseOnExceptionsState(v8::debug::ExceptionBreakState);
   void setPauseOnNextStatement(bool);
   bool canBreakProgram();
   void breakProgram();
@@ -97,6 +93,8 @@ class V8Debugger {
 
   WasmTranslation* wasmTranslation() { return &m_wasmTranslation; }
 
+  void setMaxAsyncTaskStacksForTest(int limit) { m_maxAsyncCallStacks = limit; }
+
  private:
   void compileDebuggerScript();
   v8::MaybeLocal<v8::Value> callDebuggerMethod(const char* functionName,
@@ -112,10 +110,10 @@ class V8Debugger {
                           v8::Local<v8::Array> hitBreakpoints,
                           bool isPromiseRejection = false,
                           bool isUncaught = false);
-  static void v8DebugEventCallback(const v8::DebugInterface::EventDetails&);
+  static void v8DebugEventCallback(const v8::debug::EventDetails&);
   v8::Local<v8::Value> callInternalGetterFunction(v8::Local<v8::Object>,
                                                   const char* functionName);
-  void handleV8DebugEvent(const v8::DebugInterface::EventDetails&);
+  void handleV8DebugEvent(const v8::debug::EventDetails&);
   void handleV8AsyncTaskEvent(v8::Local<v8::Context>,
                               v8::Local<v8::Object> executionState,
                               v8::Local<v8::Object> eventData);
@@ -142,7 +140,6 @@ class V8Debugger {
 
   v8::Isolate* m_isolate;
   V8InspectorImpl* m_inspector;
-  int m_lastContextId;
   int m_enableCount;
   bool m_breakpointsActivated;
   v8::Global<v8::Object> m_debuggerScript;
@@ -155,13 +152,17 @@ class V8Debugger {
   using AsyncTaskToStackTrace =
       protocol::HashMap<void*, std::unique_ptr<V8StackTraceImpl>>;
   AsyncTaskToStackTrace m_asyncTaskStacks;
+  int m_maxAsyncCallStacks;
+  std::map<int, void*> m_idToTask;
+  std::unordered_map<void*, int> m_taskToId;
+  int m_lastTaskId;
   protocol::HashSet<void*> m_recurringTasks;
   int m_maxAsyncCallStackDepth;
   std::vector<void*> m_currentTasks;
   std::vector<std::unique_ptr<V8StackTraceImpl>> m_currentStacks;
   protocol::HashMap<V8DebuggerAgentImpl*, int> m_maxAsyncCallStackDepthMap;
 
-  v8::DebugInterface::ExceptionBreakState m_pauseOnExceptionsState;
+  v8::debug::ExceptionBreakState m_pauseOnExceptionsState;
 
   WasmTranslation m_wasmTranslation;
 

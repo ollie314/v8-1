@@ -16,13 +16,32 @@ assertEquals("σς", "\u03A3\u03A3".toLowerCase());
 // Expand sharp s in latin1 fastpath
 assertEquals("ASSB", "A\u00DFB".toUpperCase());
 assertEquals("AB", "Ab".toUpperCase());
-// Find first upper case in fastpath
+// Find first uppercase in fastpath
+// Input length < a machine word size
+assertEquals("ab", "ab".toLowerCase());
 assertEquals("ab", "aB".toLowerCase());
 assertEquals("AÜ", "aü".toUpperCase());
 assertEquals("AÜ", "AÜ".toUpperCase());
 assertEquals("aü", "aü".toLowerCase());
+assertEquals("aü", "aÜ".toLowerCase());
 assertEquals("aü", "AÜ".toLowerCase());
 assertEquals("aü", "AÜ".toLowerCase());
+
+// Input length >= a machine word size
+assertEquals("abcdefghij", "abcdefghij".toLowerCase());
+assertEquals("abcdefghij", "abcdefghiJ".toLowerCase());
+assertEquals("abçdefghij", "abçdefghiJ".toLowerCase());
+assertEquals("abçdefghij", "abÇdefghiJ".toLowerCase());
+assertEquals("abcdefghiá", "abcdeFghiá".toLowerCase());
+assertEquals("abcdefghiá", "abcdeFghiÁ".toLowerCase());
+
+assertEquals("ABCDEFGHIJ", "ABCDEFGHIJ".toUpperCase());
+assertEquals("ABCDEFGHIJ", "ABCDEFGHIj".toUpperCase());
+assertEquals("ABÇDEFGHIJ", "ABÇDEFGHIj".toUpperCase());
+assertEquals("ABÇDEFGHIJ", "ABçDEFGHIj".toUpperCase());
+assertEquals("ABCDEFGHIÁ", "ABCDEfGHIÁ".toUpperCase());
+assertEquals("ABCDEFGHIÁ", "ABCDEfGHIá".toUpperCase());
+
 
 // Starts with fastpath, but switches to full Unicode path
 // U+00FF is uppercased to U+0178.
@@ -33,6 +52,10 @@ assertEquals("AΜ", "aµ".toUpperCase());
 // Buffer size increase
 assertEquals("CSSBẶ", "cßbặ".toUpperCase());
 assertEquals("FIFLFFIFFL", "\uFB01\uFB02\uFB03\uFB04".toUpperCase());
+assertEquals("ABCÀCSSA", "abcàcßa".toUpperCase());
+assertEquals("ABCDEFGHIÀCSSA", "ABCDEFGHIàcßa".toUpperCase());
+assertEquals("ABCDEFGHIÀCSSA", "abcdeFghiàcßa".toUpperCase());
+
 // OneByte input with buffer size increase: non-fast path
 assertEquals("ABCSS", "abCß".toLocaleUpperCase("tr"));
 
@@ -138,3 +161,29 @@ assertEquals("\u{10CC0}", "\u{10C80}".toLocaleLowerCase());
 assertEquals("\u{10C80}", "\u{10CC0}".toLocaleUpperCase(["tr"]));
 assertEquals("\u{10C80}", "\u{10CC0}".toLocaleUpperCase(["tr"]));
 assertEquals("\u{10CC0}", "\u{10C80}".toLocaleLowerCase());
+
+// check fast path for Latin-1 supplement (U+00A0 ~ U+00FF)
+var latin1Suppl = "\u00A0¡¢£¤¥¦§¨©ª«¬\u00AD®°±²³´µ¶·¸¹º»¼½¾¿" +
+    "ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ";
+var latin1SupplLowercased = "\u00A0¡¢£¤¥¦§¨©ª«¬\u00AD®°±²³´µ¶·¸¹º»¼½¾¿" +
+    "àáâãäåæçèéêëìíîïðñòóôõö×øùúûüýþßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ";
+var latin1SupplUppercased = "\u00A0¡¢£¤¥¦§¨©ª«¬\u00AD®°±²³´\u039C¶·¸¹º»¼½¾¿" +
+    "ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞSSÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ÷ØÙÚÛÜÝÞ\u0178";
+
+assertEquals(latin1SupplLowercased, latin1Suppl.toLowerCase());
+assertEquals(latin1SupplUppercased, latin1Suppl.toUpperCase());
+assertEquals(latin1SupplLowercased, latin1Suppl.toLocaleLowerCase("de"));
+assertEquals(latin1SupplUppercased, latin1Suppl.toLocaleUpperCase("de"));
+assertEquals(latin1SupplLowercased, latin1Suppl.toLocaleLowerCase("el"));
+assertEquals(latin1SupplUppercased, latin1Suppl.toLocaleUpperCase("el"));
+assertEquals(latin1SupplUppercased, latin1Suppl.toLocaleUpperCase("tr"));
+assertEquals(latin1SupplLowercased, latin1Suppl.toLocaleLowerCase("tr"));
+assertEquals(latin1SupplUppercased, latin1Suppl.toLocaleUpperCase("az"));
+assertEquals(latin1SupplLowercased, latin1Suppl.toLocaleLowerCase("az"));
+assertEquals(latin1SupplUppercased, latin1Suppl.toLocaleUpperCase("lt"));
+// Lithuanian need to have a dot-above for U+00CC(Ì) and U+00CD(Í) when
+// lowercasing.
+assertEquals("\u00A0¡¢£¤¥¦§¨©ª«¬\u00AD®°±²³´µ¶·¸¹º»¼½¾¿" +
+    "àáâãäåæçèéêëi\u0307\u0300i\u0307\u0301îïðñòóôõö×øùúûüýþß" +
+    "àáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ",
+    latin1Suppl.toLocaleLowerCase("lt"));

@@ -37,12 +37,6 @@
 
   ###################### MISSING ES6 FEATURES #######################
 
-  # The order of adding the name property is wrong
-  # https://code.google.com/p/v8/issues/detail?id=4199
-  'language/computed-property-names/class/static/method-number': [FAIL, FAIL_SLOPPY],
-  'language/computed-property-names/class/static/method-symbol': [FAIL, FAIL_SLOPPY],
-  'language/computed-property-names/class/static/method-string': [FAIL, FAIL_SLOPPY],
-
   # https://code.google.com/p/v8/issues/detail?id=4248
   'language/expressions/compound-assignment/S11.13.2_A5.*': [FAIL],
   'language/expressions/compound-assignment/S11.13.2_A6.*': [FAIL],
@@ -79,7 +73,6 @@
   'built-ins/Proxy/revocable/revocation-function-name': [FAIL],
   'language/expressions/assignment/fn-name-lhs-cover': [FAIL],
   'language/expressions/assignment/fn-name-lhs-member': [FAIL],
-  'language/expressions/class/name': [FAIL],
   'language/expressions/function/name': [FAIL],
   'language/expressions/generators/name': [FAIL],
   'intl402/NumberFormat/prototype/format/format-function-name': [FAIL],
@@ -325,9 +318,6 @@
   'annexB/built-ins/Object/prototype/__lookupGetter__/this-non-obj': [FAIL],
   'annexB/built-ins/Object/prototype/__lookupSetter__/this-non-obj': [FAIL],
 
-  # https://bugs.chromium.org/p/v8/issues/detail?id=4973
-  'language/literals/numeric/non-octal-decimal-integer-strict': [FAIL],
-
   # https://bugs.chromium.org/p/v8/issues/detail?id=5130
   'annexB/built-ins/Object/prototype/__lookupGetter__/lookup-own-data': [FAIL],
   'annexB/built-ins/Object/prototype/__lookupGetter__/lookup-own-get-err': [FAIL],
@@ -369,12 +359,6 @@
   'annexB/language/eval-code/direct/func-if-stmt-else-decl-eval-func-block-scoping': [FAIL],
   'annexB/language/eval-code/direct/func-switch-case-eval-func-block-scoping': [FAIL],
   'annexB/language/eval-code/direct/func-switch-dflt-eval-func-block-scoping': [FAIL],
-
-  # https://bugs.chromium.org/p/v8/issues/detail?id=5137
-  'annexB/built-ins/RegExp/prototype/compile/flags-undefined': [FAIL],
-  'annexB/built-ins/RegExp/prototype/compile/pattern-regexp-distinct': [FAIL],
-  'annexB/built-ins/RegExp/prototype/compile/pattern-regexp-same': [FAIL],
-  'annexB/built-ins/RegExp/prototype/compile/pattern-undefined': [FAIL],
 
   # https://bugs.chromium.org/p/v8/issues/detail?id=5139
   'annexB/built-ins/Date/prototype/setYear/time-clip': [FAIL],
@@ -418,13 +402,6 @@
   'built-ins/TypedArrays/internals/Set/key-is-out-of-bounds': [FAIL],
   'built-ins/TypedArrays/internals/Set/tonumber-value-throws': [FAIL],
 
-  # https://bugs.chromium.org/p/v8/issues/detail?id=5328
-  'built-ins/TypedArrays/internals/DefineOwnProperty/key-is-numericindex-desc-not-writable': [FAIL],
-  'built-ins/TypedArrays/internals/DefineOwnProperty/key-is-not-integer': [FAIL],
-  'built-ins/TypedArrays/internals/DefineOwnProperty/key-is-minus-zero': [FAIL],
-  'built-ins/TypedArrays/internals/DefineOwnProperty/key-is-lower-than-zero': [FAIL],
-  'built-ins/TypedArrays/internals/DefineOwnProperty/key-is-greater-than-last-index': [FAIL],
-
   # https://bugs.chromium.org/p/v8/issues/detail?id=5329
   'built-ins/RegExp/prototype/source/value-line-terminator': [FAIL],
 
@@ -437,9 +414,6 @@
   'annexB/language/eval-code/direct/func-if-stmt-else-decl-eval-func-no-skip-try': [FAIL],
   'annexB/language/eval-code/direct/func-switch-case-eval-func-no-skip-try': [FAIL],
   'annexB/language/eval-code/direct/func-switch-dflt-eval-func-no-skip-try': [FAIL],
-
-  # https://bugs.chromium.org/p/v8/issues/detail?id=5336
-  'language/expressions/super/call-proto-not-ctor': [FAIL],
 
   # https://bugs.chromium.org/p/v8/issues/detail?id=5546
   'language/expressions/tagged-template/invalid-escape-sequences': [FAIL],
@@ -472,6 +446,14 @@
   # v8:5401
   'language/module-code/namespace/internals/set': [FAIL],
   'language/module-code/namespace/internals/define-own-property': [FAIL],
+
+  # Symbol.iterator on namespace objects was removed, tests need to be updated.
+  'language/module-code/namespace/Symbol.iterator/*': [SKIP],
+  'language/module-code/namespace/internals/get-own-property-sym': [SKIP],
+  'language/module-code/namespace/internals/get-sym-found': [SKIP],
+  'language/module-code/namespace/internals/has-property-sym-found': [SKIP],
+  'language/module-code/namespace/internals/own-property-keys-binding-types': [SKIP],
+  'language/module-code/namespace/internals/own-property-keys-sort': [SKIP],
 
 ######################## NEEDS INVESTIGATION ###########################
 

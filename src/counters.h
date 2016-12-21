@@ -557,6 +557,7 @@ class RuntimeCallTimer final {
   V(FunctionTemplate_GetFunction)                          \
   V(FunctionTemplate_New)                                  \
   V(FunctionTemplate_NewRemoteInstance)                    \
+  V(FunctionTemplate_NewWithCache)                         \
   V(FunctionTemplate_NewWithFastHandler)                   \
   V(Int16Array_New)                                        \
   V(Int32Array_New)                                        \
@@ -627,6 +628,8 @@ class RuntimeCallTimer final {
   V(Promise_HasRejectHandler)                              \
   V(Promise_Resolver_New)                                  \
   V(Promise_Resolver_Resolve)                              \
+  V(Promise_Result)                                        \
+  V(Promise_Status)                                        \
   V(Promise_Then)                                          \
   V(Proxy_New)                                             \
   V(RangeError_New)                                        \
@@ -702,6 +705,7 @@ class RuntimeCallTimer final {
   V(GenericNamedPropertyDescriptorCallback)         \
   V(GenericNamedPropertyQueryCallback)              \
   V(GenericNamedPropertySetterCallback)             \
+  V(GetMoreDataCallback)                            \
   V(IndexedPropertyDefinerCallback)                 \
   V(IndexedPropertyDeleterCallback)                 \
   V(IndexedPropertyDescriptorCallback)              \
@@ -783,6 +787,7 @@ class RuntimeCallTimer final {
   V(LoadIC_LoadNormal)                           \
   V(LoadIC_LoadScriptContextFieldStub)           \
   V(LoadIC_LoadViaGetter)                        \
+  V(LoadIC_NonReceiver)                          \
   V(LoadIC_Premonomorphic)                       \
   V(LoadIC_SlowStub)                             \
   V(LoadIC_StringLengthStub)                     \
@@ -794,6 +799,7 @@ class RuntimeCallTimer final {
   V(StoreIC_HandlerCacheHit_Accessor)            \
   V(StoreIC_HandlerCacheHit_Data)                \
   V(StoreIC_HandlerCacheHit_Transition)          \
+  V(StoreIC_NonReceiver)                         \
   V(StoreIC_Premonomorphic)                      \
   V(StoreIC_SlowStub)                            \
   V(StoreIC_StoreCallback)                       \
@@ -809,7 +815,7 @@ class RuntimeCallTimer final {
   V(StoreIC_StoreTransitionDH)                   \
   V(StoreIC_StoreViaSetter)
 
-class V8_EXPORT_PRIVATE RuntimeCallStats final : public ZoneObject {
+class RuntimeCallStats final : public ZoneObject {
  public:
   typedef RuntimeCallCounter RuntimeCallStats::*CounterId;
 
@@ -835,26 +841,29 @@ class V8_EXPORT_PRIVATE RuntimeCallStats final : public ZoneObject {
 #undef CALL_BUILTIN_COUNTER
 
   static const CounterId counters[];
+  static const int counters_count;
 
   // Starting measuring the time for a function. This will establish the
   // connection to the parent counter for properly calculating the own times.
-  static void Enter(RuntimeCallStats* stats, RuntimeCallTimer* timer,
-                    CounterId counter_id);
+  V8_EXPORT_PRIVATE static void Enter(RuntimeCallStats* stats,
+                                      RuntimeCallTimer* timer,
+                                      CounterId counter_id);
 
   // Leave a scope for a measured runtime function. This will properly add
   // the time delta to the current_counter and subtract the delta from its
   // parent.
-  static void Leave(RuntimeCallStats* stats, RuntimeCallTimer* timer);
+  V8_EXPORT_PRIVATE static void Leave(RuntimeCallStats* stats,
+                                      RuntimeCallTimer* timer);
 
   // Set counter id for the innermost measurement. It can be used to refine
   // event kind when a runtime entry counter is too generic.
-  static void CorrectCurrentCounterId(RuntimeCallStats* stats,
-                                      CounterId counter_id);
+  V8_EXPORT_PRIVATE static void CorrectCurrentCounterId(RuntimeCallStats* stats,
+                                                        CounterId counter_id);
 
-  void Reset();
+  V8_EXPORT_PRIVATE void Reset();
   // Add all entries from another stats object.
   void Add(RuntimeCallStats* other);
-  void Print(std::ostream& os);
+  V8_EXPORT_PRIVATE void Print(std::ostream& os);
   V8_NOINLINE void Dump(v8::tracing::TracedValue* value);
 
   RuntimeCallStats() {

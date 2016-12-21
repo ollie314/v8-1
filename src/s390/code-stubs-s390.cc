@@ -32,17 +32,6 @@ void ArrayNArgumentsConstructorStub::Generate(MacroAssembler* masm) {
   __ TailCallRuntime(Runtime::kNewArray);
 }
 
-void FastArrayPushStub::InitializeDescriptor(CodeStubDescriptor* descriptor) {
-  Address deopt_handler = Runtime::FunctionForId(Runtime::kArrayPush)->entry;
-  descriptor->Initialize(r2, deopt_handler, -1, JS_FUNCTION_STUB_MODE);
-}
-
-void FastFunctionBindStub::InitializeDescriptor(
-    CodeStubDescriptor* descriptor) {
-  Address deopt_handler = Runtime::FunctionForId(Runtime::kFunctionBind)->entry;
-  descriptor->Initialize(r2, deopt_handler, -1, JS_FUNCTION_STUB_MODE);
-}
-
 static void EmitIdenticalObjectComparison(MacroAssembler* masm, Label* slow,
                                           Condition cond);
 static void EmitSmiNonsmiComparison(MacroAssembler* masm, Register lhs,
@@ -3842,7 +3831,8 @@ void FastNewSloppyArgumentsStub::Generate(MacroAssembler* masm) {
   Label adaptor_frame, try_allocate, runtime;
   __ LoadP(r6, MemOperand(r9, StandardFrameConstants::kCallerFPOffset));
   __ LoadP(r2, MemOperand(r6, CommonFrameConstants::kContextOrFrameTypeOffset));
-  __ CmpSmiLiteral(r2, Smi::FromInt(StackFrame::ARGUMENTS_ADAPTOR), r0);
+  __ LoadSmiLiteral(r0, Smi::FromInt(StackFrame::ARGUMENTS_ADAPTOR));
+  __ CmpP(r2, r0);
   __ beq(&adaptor_frame);
 
   // No adaptor, parameter count = argument count.

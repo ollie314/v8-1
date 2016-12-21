@@ -4,6 +4,8 @@
 
 #include <stdlib.h>
 
+#include "src/objects/scope-info.h"
+
 #include "src/ast/context-slot-cache.h"
 #include "src/ast/scopes.h"
 #include "src/ast/variables.h"
@@ -143,13 +145,15 @@ Handle<ScopeInfo> ScopeInfo::Create(Isolate* isolate, Zone* zone, Scope* scope,
   bool has_simple_parameters = false;
   bool asm_module = false;
   bool asm_function = false;
-  FunctionKind function_kind = kNormalFunction;
   if (scope->is_function_scope()) {
     DeclarationScope* function_scope = scope->AsDeclarationScope();
     has_simple_parameters = function_scope->has_simple_parameters();
     asm_module = function_scope->asm_module();
     asm_function = function_scope->asm_function();
-    function_kind = function_scope->function_kind();
+  }
+  FunctionKind function_kind = kNormalFunction;
+  if (scope->is_declaration_scope()) {
+    function_kind = scope->AsDeclarationScope()->function_kind();
   }
 
   // Encode the flags.
@@ -443,6 +447,7 @@ int ScopeInfo::ContextLength() {
                        (scope_type() == BLOCK_SCOPE && CallsSloppyEval() &&
                         is_declaration_scope()) ||
                        (scope_type() == FUNCTION_SCOPE && CallsSloppyEval()) ||
+                       (scope_type() == FUNCTION_SCOPE && IsAsmModule()) ||
                        scope_type() == MODULE_SCOPE;
 
     if (has_context) {

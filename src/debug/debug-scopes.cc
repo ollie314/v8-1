@@ -6,13 +6,14 @@
 
 #include <memory>
 
+#include "src/ast/ast.h"
 #include "src/ast/scopes.h"
 #include "src/debug/debug.h"
 #include "src/frames-inl.h"
 #include "src/globals.h"
 #include "src/isolate-inl.h"
 #include "src/parsing/parse-info.h"
-#include "src/parsing/parser.h"
+#include "src/parsing/parsing.h"
 #include "src/parsing/rewriter.h"
 
 namespace v8 {
@@ -109,7 +110,7 @@ ScopeIterator::ScopeIterator(Isolate* isolate, FrameInspector* frame_inspector,
     // Inner function.
     info.reset(new ParseInfo(&zone, shared_info));
   }
-  if (Parser::ParseStatic(info.get()) && Rewriter::Rewrite(info.get())) {
+  if (parsing::ParseAny(info.get()) && Rewriter::Rewrite(info.get())) {
     DeclarationScope* scope = info->literal()->scope();
     if (!ignore_nested_scopes || collect_non_locals) {
       CollectNonLocals(info.get(), scope);
@@ -270,7 +271,7 @@ ScopeIterator::ScopeType ScopeIterator::Type() {
         DCHECK(!scope_info->HasContext() || context_->IsBlockContext());
         return ScopeTypeBlock;
       case EVAL_SCOPE:
-        DCHECK(!scope_info->HasContext() || context_->IsFunctionContext());
+        DCHECK(!scope_info->HasContext() || context_->IsEvalContext());
         return ScopeTypeEval;
     }
     UNREACHABLE();
@@ -281,7 +282,7 @@ ScopeIterator::ScopeType ScopeIterator::Type() {
     // fake it.
     return seen_script_scope_ ? ScopeTypeGlobal : ScopeTypeScript;
   }
-  if (context_->IsFunctionContext()) {
+  if (context_->IsFunctionContext() || context_->IsEvalContext()) {
     return ScopeTypeClosure;
   }
   if (context_->IsCatchContext()) {
@@ -373,10 +374,9 @@ Handle<ScopeInfo> ScopeIterator::CurrentScopeInfo() {
   DCHECK(!Done());
   if (!nested_scope_chain_.is_empty()) {
     return nested_scope_chain_.last().scope_info;
-  } else if (context_->IsBlockContext()) {
+  } else if (context_->IsBlockContext() || context_->IsFunctionContext() ||
+             context_->IsEvalContext()) {
     return Handle<ScopeInfo>(context_->scope_info());
-  } else if (context_->IsFunctionContext()) {
-    return Handle<ScopeInfo>(context_->closure()->shared()->scope_info());
   }
   return Handle<ScopeInfo>::null();
 }
@@ -528,7 +528,7 @@ MaybeHandle<JSObject> ScopeIterator::MaterializeLocalScope() {
 // context.
 Handle<JSObject> ScopeIterator::MaterializeClosure() {
   Handle<Context> context = CurrentContext();
-  DCHECK(context->IsFunctionContext());
+  DCHECK(context->IsFunctionContext() || context->IsEvalContext());
 
   Handle<SharedFunctionInfo> shared(context->closure()->shared());
   Handle<ScopeInfo> scope_info(shared->scope_info());
@@ -726,7 +726,8 @@ bool ScopeIterator::SetInnerScopeVariableValue(Handle<String> variable_name,
 // This method copies structure of MaterializeClosure method above.
 bool ScopeIterator::SetClosureVariableValue(Handle<String> variable_name,
                                             Handle<Object> new_value) {
-  DCHECK(CurrentContext()->IsFunctionContext());
+  DCHECK(CurrentContext()->IsFunctionContext() ||
+         CurrentContext()->IsEvalContext());
   return SetContextVariableValue(CurrentScopeInfo(), CurrentContext(),
                                  variable_name, new_value);
 }

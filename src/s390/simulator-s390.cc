@@ -743,6 +743,17 @@ void Simulator::EvalTableInit() {
     EvalTable[i] = &Simulator::Evaluate_Unknown;
   }
 
+#define S390_SUPPORTED_VECTOR_OPCODE_LIST(V)                 \
+  V(vfs, VFS, 0xE7E2) /* type = VRR_C VECTOR FP SUBTRACT  */ \
+  V(vfa, VFA, 0xE7E3) /* type = VRR_C VECTOR FP ADD  */      \
+  V(vfd, VFD, 0xE7E5) /* type = VRR_C VECTOR FP DIVIDE  */   \
+  V(vfm, VFM, 0xE7E7) /* type = VRR_C VECTOR FP MULTIPLY  */
+
+#define CREATE_EVALUATE_TABLE(name, op_name, op_value) \
+  EvalTable[op_name] = &Simulator::Evaluate_##op_name;
+  S390_SUPPORTED_VECTOR_OPCODE_LIST(CREATE_EVALUATE_TABLE);
+#undef CREATE_EVALUATE_TABLE
+
   EvalTable[DUMY] = &Simulator::Evaluate_DUMY;
   EvalTable[BKPT] = &Simulator::Evaluate_BKPT;
   EvalTable[SPM] = &Simulator::Evaluate_SPM;
@@ -954,6 +965,7 @@ void Simulator::EvalTableInit() {
   EvalTable[ALSIH] = &Simulator::Evaluate_ALSIH;
   EvalTable[ALSIHN] = &Simulator::Evaluate_ALSIHN;
   EvalTable[CIH] = &Simulator::Evaluate_CIH;
+  EvalTable[CLIH] = &Simulator::Evaluate_CLIH;
   EvalTable[STCK] = &Simulator::Evaluate_STCK;
   EvalTable[CFC] = &Simulator::Evaluate_CFC;
   EvalTable[IPM] = &Simulator::Evaluate_IPM;
@@ -6050,6 +6062,15 @@ uintptr_t Simulator::PopAddress() {
   int d2 = AS(RXEInstruction)->D2Value();      \
   int length = 6;
 
+#define DECODE_VRR_C_INSTRUCTION(r1, r2, r3, m6, m5, m4) \
+  int r1 = AS(VRR_C_Instruction)->R1Value();             \
+  int r2 = AS(VRR_C_Instruction)->R2Value();             \
+  int r3 = AS(VRR_C_Instruction)->R3Value();             \
+  int m6 = AS(VRR_C_Instruction)->M6Value();             \
+  int m5 = AS(VRR_C_Instruction)->M5Value();             \
+  int m4 = AS(VRR_C_Instruction)->M4Value();             \
+  int length = 6;
+
 #define GET_ADDRESS(index_reg, base_reg, offset)       \
   (((index_reg) == 0) ? 0 : get_register(index_reg)) + \
       (((base_reg) == 0) ? 0 : get_register(base_reg)) + offset
@@ -6059,10 +6080,75 @@ int Simulator::Evaluate_Unknown(Instruction* instr) {
   return 0;
 }
 
+EVALUATE(VFA) {
+  DCHECK_OPCODE(VFA);
+  DECODE_VRR_C_INSTRUCTION(r1, r2, r3, m6, m5, m4);
+  USE(m6);
+  USE(m5);
+  USE(m4);
+  DCHECK(m5 == 8);
+  DCHECK(m4 == 3);
+  double r2_val = get_double_from_d_register(r2);
+  double r3_val = get_double_from_d_register(r3);
+  double r1_val = r2_val + r3_val;
+  set_d_register_from_double(r1, r1_val);
+  return length;
+}
+
+EVALUATE(VFS) {
+  DCHECK_OPCODE(VFS);
+  DECODE_VRR_C_INSTRUCTION(r1, r2, r3, m6, m5, m4);
+  USE(m6);
+  USE(m5);
+  USE(m4);
+  DCHECK(m5 == 8);
+  DCHECK(m4 == 3);
+  double r2_val = get_double_from_d_register(r2);
+  double r3_val = get_double_from_d_register(r3);
+  double r1_val = r2_val - r3_val;
+  set_d_register_from_double(r1, r1_val);
+  return length;
+}
+
+EVALUATE(VFM) {
+  DCHECK_OPCODE(VFM);
+  DECODE_VRR_C_INSTRUCTION(r1, r2, r3, m6, m5, m4);
+  USE(m6);
+  USE(m5);
+  USE(m4);
+  DCHECK(m5 == 8);
+  DCHECK(m4 == 3);
+  double r2_val = get_double_from_d_register(r2);
+  double r3_val = get_double_from_d_register(r3);
+  double r1_val = r2_val * r3_val;
+  set_d_register_from_double(r1, r1_val);
+  return length;
+}
+
+EVALUATE(VFD) {
+  DCHECK_OPCODE(VFD);
+  DECODE_VRR_C_INSTRUCTION(r1, r2, r3, m6, m5, m4);
+  USE(m6);
+  USE(m5);
+  USE(m4);
+  DCHECK(m5 == 8);
+  DCHECK(m4 == 3);
+  double r2_val = get_double_from_d_register(r2);
+  double r3_val = get_double_from_d_register(r3);
+  double r1_val = r2_val / r3_val;
+  set_d_register_from_double(r1, r1_val);
+  return length;
+}
+
 EVALUATE(DUMY) {
   DCHECK_OPCODE(DUMY);
+  DECODE_RXY_A_INSTRUCTION(r1, x2, b2, d2);
+  USE(r1);
+  USE(x2);
+  USE(b2);
+  USE(d2);
   // dummy instruction does nothing.
-  return 6;
+  return length;
 }
 
 EVALUATE(CLR) {
@@ -8227,9 +8313,15 @@ EVALUATE(BRCTH) {
 }
 
 EVALUATE(AIH) {
-  UNIMPLEMENTED();
-  USE(instr);
-  return 0;
+  DCHECK_OPCODE(AIH);
+  DECODE_RIL_A_INSTRUCTION(r1, i2);
+  int32_t r1_val = get_high_register<int32_t>(r1);
+  bool isOF = CheckOverflowForIntAdd(r1_val, static_cast<int32_t>(i2), int32_t);
+  r1_val += static_cast<int32_t>(i2);
+  set_high_register(r1, r1_val);
+  SetS390ConditionCode<int32_t>(r1_val, 0);
+  SetS390OverflowCode(isOF);
+  return length;
 }
 
 EVALUATE(ALSIH) {
@@ -8245,9 +8337,19 @@ EVALUATE(ALSIHN) {
 }
 
 EVALUATE(CIH) {
-  UNIMPLEMENTED();
-  USE(instr);
-  return 0;
+  DCHECK_OPCODE(CIH);
+  DECODE_RIL_A_INSTRUCTION(r1, imm);
+  int32_t r1_val = get_high_register<int32_t>(r1);
+  SetS390ConditionCode<int32_t>(r1_val, static_cast<int32_t>(imm));
+  return length;
+}
+
+EVALUATE(CLIH) {
+  DCHECK_OPCODE(CLIH);
+  // Compare Logical with Immediate (32)
+  DECODE_RIL_A_INSTRUCTION(r1, imm);
+  SetS390ConditionCode<uint32_t>(get_high_register<uint32_t>(r1), imm);
+  return length;
 }
 
 EVALUATE(STCK) {

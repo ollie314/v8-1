@@ -43,6 +43,7 @@ DebuggerScript._scopeTypeNames.set(ScopeType.Catch, "catch");
 DebuggerScript._scopeTypeNames.set(ScopeType.Block, "block");
 DebuggerScript._scopeTypeNames.set(ScopeType.Script, "script");
 DebuggerScript._scopeTypeNames.set(ScopeType.Eval, "eval");
+DebuggerScript._scopeTypeNames.set(ScopeType.Module, "module");
 
 /**
  * @param {function()} fun
@@ -141,20 +142,6 @@ DebuggerScript.getCollectionEntries = function(object)
             result.push({ value: values[i] });
         return result;
     }
-}
-
-/**
- * @param {string|undefined} contextData
- * @return {number}
- */
-DebuggerScript._executionContextId = function(contextData)
-{
-    if (!contextData)
-        return 0;
-    var match = contextData.match(/^[^,]*,([^,]*),.*$/);
-    if (!match)
-        return 0;
-    return parseInt(match[1], 10) || 0;
 }
 
 /**
@@ -485,12 +472,9 @@ DebuggerScript._frameMirrorToJSCallFrame = function(frameMirror)
     function contextId()
     {
         var mirror = ensureFuncMirror();
-        // Old V8 do not have context() function on these objects
-        if (!mirror.context)
-            return DebuggerScript._executionContextId(mirror.script().value().context_data);
         var context = mirror.context();
-        if (context)
-            return DebuggerScript._executionContextId(context.data());
+        if (context && context.data())
+            return Number(context.data());
         return 0;
     }
 
@@ -509,7 +493,7 @@ DebuggerScript._frameMirrorToJSCallFrame = function(frameMirror)
      */
     function evaluate(expression)
     {
-        return frameMirror.evaluate(expression, false).value();
+        return frameMirror.evaluate(expression).value();
     }
 
     /** @return {undefined} */
@@ -560,6 +544,7 @@ DebuggerScript._buildScopeObject = function(scopeType, scopeObject)
     case ScopeType.Block:
     case ScopeType.Script:
     case ScopeType.Eval:
+    case ScopeType.Module:
         // For transient objects we create a "persistent" copy that contains
         // the same properties.
         // Reset scope object prototype to null so that the proto properties
@@ -569,7 +554,8 @@ DebuggerScript._buildScopeObject = function(scopeType, scopeObject)
         // Also drop empty Block, Eval and Script scopes, should we get any.
         if (!properties.length && (scopeType === ScopeType.Script ||
                                    scopeType === ScopeType.Block ||
-                                   scopeType === ScopeType.Eval)) {
+                                   scopeType === ScopeType.Eval ||
+                                   scopeType === ScopeType.Module)) {
             break;
         }
         result = { __proto__: null };

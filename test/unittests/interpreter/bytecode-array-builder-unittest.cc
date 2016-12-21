@@ -121,11 +121,14 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
   builder.CreateBlockContext(factory->NewScopeInfo(1));
   builder.CreateCatchContext(reg, name, factory->NewScopeInfo(1));
   builder.CreateFunctionContext(1);
+  builder.CreateEvalContext(1);
   builder.CreateWithContext(reg, factory->NewScopeInfo(1));
 
   // Emit literal creation operations.
   builder.CreateRegExpLiteral(factory->NewStringFromStaticChars("a"), 0, 0)
-      .CreateArrayLiteral(factory->NewFixedArray(1), 0, 0)
+      .CreateArrayLiteral(factory->NewConstantElementsPair(
+                              FAST_ELEMENTS, factory->empty_fixed_array()),
+                          0, 0)
       .CreateObjectLiteral(factory->NewFixedArray(1), 0, 0, reg);
 
   // Call operations.
@@ -135,7 +138,8 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .Call(reg, reg_list, 1, Call::GLOBAL_CALL, TailCallMode::kAllow)
       .CallRuntime(Runtime::kIsArray, reg)
       .CallRuntimeForPair(Runtime::kLoadLookupSlotForCall, reg_list, pair)
-      .CallJSRuntime(Context::SPREAD_ITERABLE_INDEX, reg_list);
+      .CallJSRuntime(Context::SPREAD_ITERABLE_INDEX, reg_list)
+      .NewWithSpread(reg_list);
 
   // Emit binary operator invocations.
   builder.BinaryOperation(Token::Value::ADD, reg, 1)
@@ -195,14 +199,28 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .CompareOperation(Token::Value::INSTANCEOF, reg, 8)
       .CompareOperation(Token::Value::IN, reg, 9);
 
+  // Emit peephole optimizations of equality with Null or Undefined.
+  builder.LoadUndefined()
+      .CompareOperation(Token::Value::EQ, reg, 1)
+      .LoadNull()
+      .CompareOperation(Token::Value::EQ, reg, 1)
+      .LoadUndefined()
+      .CompareOperation(Token::Value::EQ_STRICT, reg, 1)
+      .LoadNull()
+      .CompareOperation(Token::Value::EQ_STRICT, reg, 1);
+
   // Emit conversion operator invocations.
   builder.ConvertAccumulatorToNumber(reg)
       .ConvertAccumulatorToObject(reg)
       .ConvertAccumulatorToName(reg);
 
+  // Emit GetSuperConstructor.
+  builder.GetSuperConstructor(reg);
+
   // Short jumps with Imm8 operands
   {
-    BytecodeLabel start, after_jump1, after_jump2, after_jump3, after_jump4;
+    BytecodeLabel start, after_jump1, after_jump2, after_jump3, after_jump4,
+        after_jump5;
     builder.Bind(&start)
         .Jump(&after_jump1)
         .Bind(&after_jump1)
@@ -212,11 +230,13 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
         .Bind(&after_jump3)
         .JumpIfNotHole(&after_jump4)
         .Bind(&after_jump4)
+        .JumpIfJSReceiver(&after_jump5)
+        .Bind(&after_jump5)
         .JumpLoop(&start, 0);
   }
 
   // Longer jumps with constant operands
-  BytecodeLabel end[8];
+  BytecodeLabel end[9];
   {
     BytecodeLabel after_jump;
     builder.Jump(&end[0])
@@ -231,7 +251,9 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
         .JumpIfFalse(&end[4])
         .JumpIfNull(&end[5])
         .JumpIfUndefined(&end[6])
-        .JumpIfNotHole(&end[7]);
+        .JumpIfNotHole(&end[7])
+        .LoadLiteral(factory->prototype_string())
+        .JumpIfJSReceiver(&end[8]);
   }
 
   // Perform an operation that returns boolean value to
@@ -302,7 +324,8 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .StoreNamedProperty(reg, wide_name, 0, LanguageMode::STRICT)
       .StoreKeyedProperty(reg, reg, 2056, LanguageMode::STRICT);
 
-  builder.StoreDataPropertyInLiteral(reg, reg, reg, reg);
+  builder.StoreDataPropertyInLiteral(reg, reg, reg,
+                                     DataPropertyInLiteralFlag::kNoFlags);
 
   // Emit wide context operations.
   builder.LoadContextSlot(reg, 1024, 0).StoreContextSlot(reg, 1024, 0);
@@ -317,9 +340,12 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
   builder.CreateClosure(1000, NOT_TENURED);
 
   // Emit wide variant of literal creation operations.
-  builder.CreateRegExpLiteral(factory->NewStringFromStaticChars("wide_literal"),
-                              0, 0)
-      .CreateArrayLiteral(factory->NewFixedArray(2), 0, 0)
+  builder
+      .CreateRegExpLiteral(factory->NewStringFromStaticChars("wide_literal"), 0,
+                           0)
+      .CreateArrayLiteral(factory->NewConstantElementsPair(
+                              FAST_ELEMENTS, factory->empty_fixed_array()),
+                          0, 0)
       .CreateObjectLiteral(factory->NewFixedArray(2), 0, 0, reg);
 
   // Emit load and store operations for module variables.
@@ -398,6 +424,9 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
     scorecard[Bytecodes::ToByte(Bytecode::kBitwiseOrSmi)] = 1;
     scorecard[Bytecodes::ToByte(Bytecode::kShiftLeftSmi)] = 1;
     scorecard[Bytecodes::ToByte(Bytecode::kShiftRightSmi)] = 1;
+    scorecard[Bytecodes::ToByte(Bytecode::kTestUndetectable)] = 1;
+    scorecard[Bytecodes::ToByte(Bytecode::kTestUndefined)] = 1;
+    scorecard[Bytecodes::ToByte(Bytecode::kTestNull)] = 1;
   }
 
   // Check return occurs at the end and only once in the BytecodeArray.

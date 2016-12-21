@@ -197,3 +197,13 @@ define kArrayInstanceConstructorModified = 28;
 define kLegacyFunctionDeclaration = 29;
 define kRegExpPrototypeSourceGetter = 30;
 define kRegExpPrototypeOldFlagGetter = 31;
+
+# [[PromiseState]] values:
+# These values must be kept in sync with v8::Promise::PromiseState in
+# include/v8.h
+define kPending = 0;
+define kFulfilled = 1;
+define kRejected = 2;
+
+define kResolveCallback = 0;
+define kRejectCallback = 1;

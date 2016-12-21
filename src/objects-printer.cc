@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <memory>
 
+#include "src/bootstrapper.h"
 #include "src/disasm.h"
 #include "src/disassembler.h"
 #include "src/interpreter/bytecodes.h"
@@ -149,10 +150,12 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {  // NOLINT
     case JS_SPECIAL_API_OBJECT_TYPE:
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
     case JS_GENERATOR_OBJECT_TYPE:
-    case JS_PROMISE_TYPE:
     case JS_ARGUMENTS_TYPE:
     case JS_ERROR_TYPE:
       JSObject::cast(this)->JSObjectPrint(os);
+      break;
+    case JS_PROMISE_TYPE:
+      JSPromise::cast(this)->JSPromisePrint(os);
       break;
     case JS_ARRAY_TYPE:
       JSArray::cast(this)->JSArrayPrint(os);
@@ -231,9 +234,6 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {  // NOLINT
       break;
     case JS_TYPED_ARRAY_TYPE:
       JSTypedArray::cast(this)->JSTypedArrayPrint(os);
-      break;
-    case JS_FIXED_ARRAY_ITERATOR_TYPE:
-      JSFixedArrayIterator::cast(this)->JSFixedArrayIteratorPrint(os);
       break;
     case JS_DATA_VIEW_TYPE:
       JSDataView::cast(this)->JSDataViewPrint(os);
@@ -511,7 +511,7 @@ static void JSObjectPrintHeader(std::ostream& os, JSObject* obj,
 
 static void JSObjectPrintBody(std::ostream& os, JSObject* obj,  // NOLINT
                               bool print_elements = true) {
-  os << "\n - properties = {";
+  os << "\n - properties = " << Brief(obj->properties()) << " {";
   obj->PrintProperties(os);
   os << "\n }\n";
   if (print_elements && obj->elements()->length() > 0) {
@@ -541,6 +541,15 @@ void JSArray::JSArrayPrint(std::ostream& os) {  // NOLINT
   JSObjectPrintBody(os, this);
 }
 
+void JSPromise::JSPromisePrint(std::ostream& os) {  // NOLINT
+  JSObjectPrintHeader(os, this, "JSPromise");
+  os << "\n - status = " << JSPromise::Status(status());
+  os << "\n - result = " << Brief(result());
+  os << "\n - deferreds = " << Brief(deferred());
+  os << "\n - fulfill_reactions = " << Brief(fulfill_reactions());
+  os << "\n - reject_reactions = " << Brief(reject_reactions());
+  os << "\n - has_handler = " << has_handler();
+}
 
 void JSRegExp::JSRegExpPrint(std::ostream& os) {  // NOLINT
   JSObjectPrintHeader(os, this, "JSRegExp");
@@ -597,7 +606,8 @@ void Map::MapPrint(std::ostream& os) {  // NOLINT
      << "#" << NumberOfOwnDescriptors() << ": "
      << Brief(instance_descriptors());
   if (FLAG_unbox_double_fields) {
-    os << "\n - layout descriptor: " << Brief(layout_descriptor());
+    os << "\n - layout descriptor: ";
+    layout_descriptor()->ShortPrint(os);
   }
   int nof_transitions = TransitionArray::NumberOfTransitions(raw_transitions());
   if (nof_transitions > 0) {
@@ -1000,15 +1010,6 @@ void JSArrayIterator::JSArrayIteratorPrint(std::ostream& os) {  // NOLING
   JSObjectPrintBody(os, this);
 }
 
-void JSFixedArrayIterator::JSFixedArrayIteratorPrint(
-    std::ostream& os) {  // NOLINT
-  JSObjectPrintHeader(os, this, "JSFixedArrayIterator");
-  os << "\n - array = " << Brief(array());
-  os << "\n - index = " << index();
-  os << "\n - initial_next = " << Brief(initial_next());
-  JSObjectPrintBody(os, this);
-}
-
 void JSDataView::JSDataViewPrint(std::ostream& os) {  // NOLINT
   JSObjectPrintHeader(os, this, "JSDataView");
   os << "\n - buffer =" << Brief(buffer());
@@ -1094,7 +1095,9 @@ void SharedFunctionInfo::SharedFunctionInfoPrint(std::ostream& os) {  // NOLINT
 
 void JSGlobalProxy::JSGlobalProxyPrint(std::ostream& os) {  // NOLINT
   JSObjectPrintHeader(os, this, "JSGlobalProxy");
-  os << "\n - native context = " << Brief(native_context());
+  if (!GetIsolate()->bootstrapper()->IsActive()) {
+    os << "\n - native context = " << Brief(native_context());
+  }
   os << "\n - hash = " << Brief(hash());
   JSObjectPrintBody(os, this);
 }
@@ -1102,7 +1105,9 @@ void JSGlobalProxy::JSGlobalProxyPrint(std::ostream& os) {  // NOLINT
 
 void JSGlobalObject::JSGlobalObjectPrint(std::ostream& os) {  // NOLINT
   JSObjectPrintHeader(os, this, "JSGlobalObject");
-  os << "\n - native context = " << Brief(native_context());
+  if (!GetIsolate()->bootstrapper()->IsActive()) {
+    os << "\n - native context = " << Brief(native_context());
+  }
   os << "\n - global proxy = " << Brief(global_proxy());
   JSObjectPrintBody(os, this);
 }
@@ -1225,6 +1230,7 @@ void PromiseResolveThenableJobInfo::PromiseResolveThenableJobInfoPrint(
 void PromiseReactionJobInfo::PromiseReactionJobInfoPrint(
     std::ostream& os) {  // NOLINT
   HeapObject::PrintHeader(os, "PromiseReactionJobInfo");
+  os << "\n - promise: " << Brief(promise());
   os << "\n - value: " << Brief(value());
   os << "\n - tasks: " << Brief(tasks());
   os << "\n - deferred: " << Brief(deferred());
@@ -1271,6 +1277,13 @@ void PrototypeInfo::PrototypeInfoPrint(std::ostream& os) {  // NOLINT
   os << "\n";
 }
 
+void Tuple2::Tuple2Print(std::ostream& os) {  // NOLINT
+  HeapObject::PrintHeader(os, "Tuple2");
+  os << "\n - value1: " << Brief(value1());
+  os << "\n - value2: " << Brief(value2());
+  os << "\n";
+}
+
 void Tuple3::Tuple3Print(std::ostream& os) {  // NOLINT
   HeapObject::PrintHeader(os, "Tuple3");
   os << "\n - value1: " << Brief(value1());
@@ -1286,6 +1299,13 @@ void ContextExtension::ContextExtensionPrint(std::ostream& os) {  // NOLINT
   os << "\n";
 }
 
+void ConstantElementsPair::ConstantElementsPairPrint(
+    std::ostream& os) {  // NOLINT
+  HeapObject::PrintHeader(os, "ConstantElementsPair");
+  os << "\n - elements_kind: " << static_cast<ElementsKind>(elements_kind());
+  os << "\n - constant_values: " << Brief(constant_values());
+  os << "\n";
+}
 
 void AccessorPair::AccessorPairPrint(std::ostream& os) {  // NOLINT
   HeapObject::PrintHeader(os, "AccessorPair");
@@ -1449,16 +1469,24 @@ void LayoutDescriptor::Print() {
   os << std::flush;
 }
 
+void LayoutDescriptor::ShortPrint(std::ostream& os) {
+  if (IsSmi()) {
+    os << this;  // Print tagged value for easy use with "jld" gdb macro.
+  } else {
+    os << Brief(this);
+  }
+}
 
 void LayoutDescriptor::Print(std::ostream& os) {  // NOLINT
   os << "Layout descriptor: ";
-  if (IsOddball() && IsUninitialized(HeapObject::cast(this)->GetIsolate())) {
-    os << "<uninitialized>";
-  } else if (IsFastPointerLayout()) {
+  if (IsFastPointerLayout()) {
     os << "<all tagged>";
   } else if (IsSmi()) {
     os << "fast";
     PrintBitMask(os, static_cast<uint32_t>(Smi::cast(this)->value()));
+  } else if (IsOddball() &&
+             IsUninitialized(HeapObject::cast(this)->GetIsolate())) {
+    os << "<uninitialized>";
   } else {
     os << "slow";
     int len = length();
@@ -1635,6 +1663,15 @@ extern void _v8_internal_Print_DescriptorArray(void* object) {
     printf("Not a descriptor array\n");
   } else {
     reinterpret_cast<i::DescriptorArray*>(object)->Print();
+  }
+}
+
+extern void _v8_internal_Print_LayoutDescriptor(void* object) {
+  i::Object* o = reinterpret_cast<i::Object*>(object);
+  if (!o->IsLayoutDescriptor()) {
+    printf("Not a layout descriptor\n");
+  } else {
+    reinterpret_cast<i::LayoutDescriptor*>(object)->Print();
   }
 }
 

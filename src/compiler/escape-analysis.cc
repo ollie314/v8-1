@@ -441,6 +441,15 @@ bool VirtualObject::MergeFields(size_t i, Node* at, MergeCache* cache,
   Node* rep = GetField(i);
   if (!rep || !IsCreatedPhi(i)) {
     Node* control = NodeProperties::GetControlInput(at);
+
+    // Check to debug canary.
+    CHECK_NOT_NULL(control);
+    CHECK(!control->IsDead());
+    for (Node* input : cache->fields()) {
+      CHECK_NOT_NULL(input);
+      CHECK(!input->IsDead());
+    }
+
     cache->fields().push_back(control);
     Node* phi = graph->NewNode(
         common->Phi(MachineRepresentation::kTagged, value_input_count),
@@ -796,6 +805,7 @@ bool EscapeStatusAnalysis::CheckUsesForEscape(Node* uses, Node* rep,
       case IrOpcode::kSelect:
       // TODO(mstarzinger): The following list of operators will eventually be
       // handled by the EscapeAnalysisReducer (similar to ObjectIsSmi).
+      case IrOpcode::kConvertTaggedHoleToUndefined:
       case IrOpcode::kStringEqual:
       case IrOpcode::kStringLessThan:
       case IrOpcode::kStringLessThanOrEqual:
@@ -1082,6 +1092,9 @@ bool EscapeAnalysis::Process(Node* node) {
       ProcessAllocationUsers(node);
       break;
   }
+  if (OperatorProperties::HasFrameStateInput(node->op())) {
+    virtual_states_[node->id()]->SetCopyRequired();
+  }
   return true;
 }
 
@@ -1175,8 +1188,7 @@ void EscapeAnalysis::ForwardVirtualState(Node* node) {
           static_cast<void*>(virtual_states_[effect->id()]),
           effect->op()->mnemonic(), effect->id(), node->op()->mnemonic(),
           node->id());
-    if (status_analysis_->IsEffectBranchPoint(effect) ||
-        OperatorProperties::HasFrameStateInput(node->op())) {
+    if (status_analysis_->IsEffectBranchPoint(effect)) {
       virtual_states_[node->id()]->SetCopyRequired();
       TRACE(", effect input %s#%d is branch point", effect->op()->mnemonic(),
             effect->id());
@@ -1585,7 +1597,7 @@ Node* EscapeAnalysis::GetOrCreateObjectState(Node* effect, Node* node) {
         cache_->fields().clear();
         for (size_t i = 0; i < vobj->field_count(); ++i) {
           if (Node* field = vobj->GetField(i)) {
-            cache_->fields().push_back(field);
+            cache_->fields().push_back(ResolveReplacement(field));
           }
         }
         int input_count = static_cast<int>(cache_->fields().size());

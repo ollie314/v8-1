@@ -783,7 +783,7 @@ Maybe<bool> ValueSerializer::WriteWasmModule(Handle<JSObject> object) {
   WriteTag(SerializationTag::kWasmModule);
   WriteRawBytes(&encoding_tag, sizeof(encoding_tag));
 
-  Handle<String> wire_bytes = compiled_part->module_bytes();
+  Handle<String> wire_bytes(compiled_part->module_bytes(), isolate_);
   int wire_bytes_length = wire_bytes->length();
   WriteVarint<uint32_t>(wire_bytes_length);
   uint8_t* destination = ReserveRawBytes(wire_bytes_length);
@@ -1006,10 +1006,10 @@ void ValueDeserializer::TransferArrayBuffer(
   }
   Handle<SeededNumberDictionary> dictionary =
       array_buffer_transfer_map_.ToHandleChecked();
-  const bool used_as_prototype = false;
+  Handle<JSObject> not_a_prototype_holder;
   Handle<SeededNumberDictionary> new_dictionary =
       SeededNumberDictionary::AtNumberPut(dictionary, transfer_id, array_buffer,
-                                          used_as_prototype);
+                                          not_a_prototype_holder);
   if (!new_dictionary.is_identical_to(dictionary)) {
     GlobalHandles::Destroy(Handle<Object>::cast(dictionary).location());
     array_buffer_transfer_map_ = Handle<SeededNumberDictionary>::cast(
@@ -1554,8 +1554,8 @@ MaybeHandle<JSObject> ValueDeserializer::ReadWasmModule() {
   wasm::ErrorThrower thrower(isolate_, "ValueDeserializer::ReadWasmModule");
   return wasm::CreateModuleObjectFromBytes(
       isolate_, wire_bytes.begin(), wire_bytes.end(), &thrower,
-      wasm::ModuleOrigin::kWasmOrigin, Handle<Script>::null(), nullptr,
-      nullptr);
+      wasm::ModuleOrigin::kWasmOrigin, Handle<Script>::null(),
+      Vector<const byte>::empty());
 }
 
 MaybeHandle<JSObject> ValueDeserializer::ReadHostObject() {

@@ -12,8 +12,7 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
-const RegisterConfiguration* (*GetRegConfig)() =
-    RegisterConfiguration::Turbofan;
+const auto GetRegConfig = RegisterConfiguration::Turbofan;
 
 FlagsCondition CommuteFlagsCondition(FlagsCondition condition) {
   switch (condition) {
@@ -433,6 +432,8 @@ std::ostream& operator<<(std::ostream& os, const FlagsMode& fm) {
       return os << "deoptimize";
     case kFlags_set:
       return os << "set";
+    case kFlags_trap:
+      return os << "trap";
   }
   UNREACHABLE();
   return os;
@@ -982,11 +983,6 @@ void InstructionSequence::PrintBlock(const RegisterConfiguration* config,
 
 void InstructionSequence::PrintBlock(int block_id) const {
   PrintBlock(GetRegConfig(), block_id);
-}
-
-const RegisterConfiguration*
-InstructionSequence::GetRegisterConfigurationForTesting() {
-  return GetRegConfig();
 }
 
 FrameStateDescriptor::FrameStateDescriptor(

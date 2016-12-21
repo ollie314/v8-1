@@ -32,6 +32,7 @@ var JavaScriptCallFrameDetails;
         sourceID: function():(number),
         line: function():number,
         column: function():number,
+        contextId: function():number,
         thisObject: !Object,
         evaluate: function(string):*,
         restart: function():undefined,
@@ -170,10 +171,8 @@ function ExecutionState() {}
 
 /**
  * @param {string} source
- * @param {boolean} disableBreak
- * @param {*=} additionalContext
  */
-ExecutionState.prototype.evaluateGlobal = function(source, disableBreak, additionalContext) {}
+ExecutionState.prototype.evaluateGlobal = function(source) {}
 
 /** @return {number} */
 ExecutionState.prototype.frameCount = function() {}
@@ -199,7 +198,8 @@ var ScopeType = { Global: 0,
                   Catch: 4,
                   Block: 5,
                   Script: 6,
-                  Eval: 7 };
+                  Eval: 7,
+                  Module: 8};
 
 
 /** @typedef {{
@@ -437,9 +437,8 @@ FrameMirror.prototype.script = function() {}
 
 /**
  * @param {string} source
- * @param {boolean} disableBreak
  */
-FrameMirror.prototype.evaluate = function(source, disableBreak) {}
+FrameMirror.prototype.evaluate = function(source) {}
 
 FrameMirror.prototype.restart = function() {}
 

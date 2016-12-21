@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/builtins/builtins.h"
 #include "src/builtins/builtins-utils.h"
-
+#include "src/builtins/builtins.h"
 #include "src/code-factory.h"
+#include "src/code-stub-assembler.h"
 
 namespace v8 {
 namespace internal {
@@ -81,8 +81,7 @@ void Builtins::Generate_MathAbs(compiler::CodeAssemblerState* state) {
       // Check if {x} is a HeapNumber.
       Label if_xisheapnumber(&assembler),
           if_xisnotheapnumber(&assembler, Label::kDeferred);
-      assembler.Branch(assembler.WordEqual(assembler.LoadMap(x),
-                                           assembler.HeapNumberMapConstant()),
+      assembler.Branch(assembler.IsHeapNumberMap(assembler.LoadMap(x)),
                        &if_xisheapnumber, &if_xisnotheapnumber);
 
       assembler.Bind(&if_xisheapnumber);
@@ -140,10 +139,8 @@ void Generate_MathRoundingOperation(
       // Check if {x} is a HeapNumber.
       Label if_xisheapnumber(assembler),
           if_xisnotheapnumber(assembler, Label::kDeferred);
-      assembler->Branch(
-          assembler->WordEqual(assembler->LoadMap(x),
-                               assembler->HeapNumberMapConstant()),
-          &if_xisheapnumber, &if_xisnotheapnumber);
+      assembler->Branch(assembler->IsHeapNumberMap(assembler->LoadMap(x)),
+                        &if_xisheapnumber, &if_xisnotheapnumber);
 
       assembler->Bind(&if_xisheapnumber);
       {
@@ -281,8 +278,7 @@ void Builtins::Generate_MathClz32(compiler::CodeAssemblerState* state) {
       // Check if {x} is a HeapNumber.
       Label if_xisheapnumber(&assembler),
           if_xisnotheapnumber(&assembler, Label::kDeferred);
-      assembler.Branch(assembler.WordEqual(assembler.LoadMap(x),
-                                           assembler.HeapNumberMapConstant()),
+      assembler.Branch(assembler.IsHeapNumberMap(assembler.LoadMap(x)),
                        &if_xisheapnumber, &if_xisnotheapnumber);
 
       assembler.Bind(&if_xisheapnumber);
@@ -364,7 +360,7 @@ BUILTIN(MathHypot) {
   bool one_arg_is_nan = false;
   List<double> abs_values(length);
   for (int i = 0; i < length; i++) {
-    Handle<Object> x = args.at<Object>(i + 1);
+    Handle<Object> x = args.at(i + 1);
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, x, Object::ToNumber(x));
     double abs_value = std::abs(x->Number());
 

@@ -179,8 +179,7 @@ class X64OperandGenerator final : public OperandGenerator {
 };
 
 namespace {
-
-ArchOpcode GetLoadOpcode(LoadRepresentation load_rep) {
+ArchOpcode GetLoadOpcode(LoadRepresentation load_rep, bool protect) {
   ArchOpcode opcode = kArchNop;
   switch (load_rep.representation()) {
     case MachineRepresentation::kFloat32:
@@ -213,13 +212,47 @@ ArchOpcode GetLoadOpcode(LoadRepresentation load_rep) {
   return opcode;
 }
 
+ArchOpcode GetStoreOpcode(StoreRepresentation store_rep) {
+  switch (store_rep.representation()) {
+    case MachineRepresentation::kFloat32:
+      return kX64Movss;
+      break;
+    case MachineRepresentation::kFloat64:
+      return kX64Movsd;
+      break;
+    case MachineRepresentation::kBit:  // Fall through.
+    case MachineRepresentation::kWord8:
+      return kX64Movb;
+      break;
+    case MachineRepresentation::kWord16:
+      return kX64Movw;
+      break;
+    case MachineRepresentation::kWord32:
+      return kX64Movl;
+      break;
+    case MachineRepresentation::kTaggedSigned:   // Fall through.
+    case MachineRepresentation::kTaggedPointer:  // Fall through.
+    case MachineRepresentation::kTagged:         // Fall through.
+    case MachineRepresentation::kWord64:
+      return kX64Movq;
+      break;
+    case MachineRepresentation::kSimd128:  // Fall through.
+    case MachineRepresentation::kNone:
+      UNREACHABLE();
+      return kArchNop;
+  }
+  UNREACHABLE();
+  return kArchNop;
+}
+
 }  // namespace
 
 void InstructionSelector::VisitLoad(Node* node) {
   LoadRepresentation load_rep = LoadRepresentationOf(node->op());
   X64OperandGenerator g(this);
 
-  ArchOpcode opcode = GetLoadOpcode(load_rep);
+  const bool protect = false;
+  ArchOpcode opcode = GetLoadOpcode(load_rep, protect);
   InstructionOperand outputs[1];
   outputs[0] = g.DefineAsRegister(node);
   InstructionOperand inputs[3];
@@ -234,7 +267,8 @@ void InstructionSelector::VisitProtectedLoad(Node* node) {
   LoadRepresentation load_rep = LoadRepresentationOf(node->op());
   X64OperandGenerator g(this);
 
-  ArchOpcode opcode = GetLoadOpcode(load_rep);
+  const bool protect = true;
+  ArchOpcode opcode = GetLoadOpcode(load_rep, protect);
   InstructionOperand outputs[1];
   outputs[0] = g.DefineAsRegister(node);
   InstructionOperand inputs[4];
@@ -245,7 +279,8 @@ void InstructionSelector::VisitProtectedLoad(Node* node) {
   inputs[input_count++] = g.UseUniqueRegister(node->InputAt(2));
   // Add the source position as an input
   inputs[input_count++] = g.UseImmediate(node->InputAt(3));
-  InstructionCode code = opcode | AddressingModeField::encode(mode);
+  InstructionCode code = opcode | AddressingModeField::encode(mode) |
+                         MiscField::encode(X64MemoryProtection::kProtected);
   Emit(code, 1, outputs, input_count, inputs);
 }
 
@@ -257,10 +292,9 @@ void InstructionSelector::VisitStore(Node* node) {
 
   StoreRepresentation store_rep = StoreRepresentationOf(node->op());
   WriteBarrierKind write_barrier_kind = store_rep.write_barrier_kind();
-  MachineRepresentation rep = store_rep.representation();
 
   if (write_barrier_kind != kNoWriteBarrier) {
-    DCHECK(CanBeTaggedPointer(rep));
+    DCHECK(CanBeTaggedPointer(store_rep.representation()));
     AddressingMode addressing_mode;
     InstructionOperand inputs[3];
     size_t input_count = 0;
@@ -295,35 +329,7 @@ void InstructionSelector::VisitStore(Node* node) {
     code |= MiscField::encode(static_cast<int>(record_write_mode));
     Emit(code, 0, nullptr, input_count, inputs, temp_count, temps);
   } else {
-    ArchOpcode opcode = kArchNop;
-    switch (rep) {
-      case MachineRepresentation::kFloat32:
-        opcode = kX64Movss;
-        break;
-      case MachineRepresentation::kFloat64:
-        opcode = kX64Movsd;
-        break;
-      case MachineRepresentation::kBit:  // Fall through.
-      case MachineRepresentation::kWord8:
-        opcode = kX64Movb;
-        break;
-      case MachineRepresentation::kWord16:
-        opcode = kX64Movw;
-        break;
-      case MachineRepresentation::kWord32:
-        opcode = kX64Movl;
-        break;
-      case MachineRepresentation::kTaggedSigned:   // Fall through.
-      case MachineRepresentation::kTaggedPointer:  // Fall through.
-      case MachineRepresentation::kTagged:  // Fall through.
-      case MachineRepresentation::kWord64:
-        opcode = kX64Movq;
-        break;
-      case MachineRepresentation::kSimd128:  // Fall through.
-      case MachineRepresentation::kNone:
-        UNREACHABLE();
-        return;
-    }
+    ArchOpcode opcode = GetStoreOpcode(store_rep);
     InstructionOperand inputs[4];
     size_t input_count = 0;
     AddressingMode addressing_mode =
@@ -336,6 +342,29 @@ void InstructionSelector::VisitStore(Node* node) {
     Emit(code, 0, static_cast<InstructionOperand*>(nullptr), input_count,
          inputs);
   }
+}
+
+void InstructionSelector::VisitProtectedStore(Node* node) {
+  X64OperandGenerator g(this);
+  Node* value = node->InputAt(2);
+  Node* context = node->InputAt(3);
+  Node* position = node->InputAt(4);
+
+  StoreRepresentation store_rep = StoreRepresentationOf(node->op());
+
+  ArchOpcode opcode = GetStoreOpcode(store_rep);
+  InstructionOperand inputs[6];
+  size_t input_count = 0;
+  AddressingMode addressing_mode =
+      g.GetEffectiveAddressMemoryOperand(node, inputs, &input_count);
+  InstructionCode code = opcode | AddressingModeField::encode(addressing_mode) |
+                         MiscField::encode(X64MemoryProtection::kProtected);
+  InstructionOperand value_operand =
+      g.CanBeImmediate(value) ? g.UseImmediate(value) : g.UseRegister(value);
+  inputs[input_count++] = value_operand;
+  inputs[input_count++] = g.UseRegister(context);
+  inputs[input_count++] = g.UseImmediate(position);
+  Emit(code, 0, static_cast<InstructionOperand*>(nullptr), input_count, inputs);
 }
 
 // Architecture supports unaligned access, therefore VisitLoad is used instead
@@ -1658,10 +1687,13 @@ void VisitCompareWithMemoryOperand(InstructionSelector* selector,
   } else if (cont->IsDeoptimize()) {
     selector->EmitDeoptimize(opcode, 0, nullptr, input_count, inputs,
                              cont->reason(), cont->frame_state());
-  } else {
-    DCHECK(cont->IsSet());
+  } else if (cont->IsSet()) {
     InstructionOperand output = g.DefineAsRegister(cont->result());
     selector->Emit(opcode, 1, &output, input_count, inputs);
+  } else {
+    DCHECK(cont->IsTrap());
+    inputs[input_count++] = g.UseImmediate(cont->trap_id());
+    selector->Emit(opcode, 0, nullptr, input_count, inputs);
   }
 }
 
@@ -1677,9 +1709,12 @@ void VisitCompare(InstructionSelector* selector, InstructionCode opcode,
   } else if (cont->IsDeoptimize()) {
     selector->EmitDeoptimize(opcode, g.NoOutput(), left, right, cont->reason(),
                              cont->frame_state());
-  } else {
-    DCHECK(cont->IsSet());
+  } else if (cont->IsSet()) {
     selector->Emit(opcode, g.DefineAsRegister(cont->result()), left, right);
+  } else {
+    DCHECK(cont->IsTrap());
+    selector->Emit(opcode, g.NoOutput(), left, right,
+                   g.UseImmediate(cont->trap_id()));
   }
 }
 
@@ -1783,11 +1818,6 @@ void VisitWordCompare(InstructionSelector* selector, Node* node,
                                          g.UseRegister(right), cont);
   }
 
-  if (g.CanBeBetterLeftOperand(right)) {
-    if (!node->op()->HasProperty(Operator::kCommutative)) cont->Commute();
-    std::swap(left, right);
-  }
-
   return VisitCompare(selector, opcode, left, right, cont,
                       node->op()->HasProperty(Operator::kCommutative));
 }
@@ -1834,9 +1864,11 @@ void VisitWord64Compare(InstructionSelector* selector, Node* node,
       } else if (cont->IsDeoptimize()) {
         selector->EmitDeoptimize(opcode, 0, nullptr, 0, nullptr, cont->reason(),
                                  cont->frame_state());
-      } else {
-        DCHECK(cont->IsSet());
+      } else if (cont->IsSet()) {
         selector->Emit(opcode, g.DefineAsRegister(cont->result()));
+      } else {
+        DCHECK(cont->IsTrap());
+        selector->Emit(opcode, g.NoOutput(), g.UseImmediate(cont->trap_id()));
       }
       return;
     }
@@ -2041,6 +2073,19 @@ void InstructionSelector::VisitDeoptimizeIf(Node* node) {
 void InstructionSelector::VisitDeoptimizeUnless(Node* node) {
   FlagsContinuation cont = FlagsContinuation::ForDeoptimize(
       kEqual, DeoptimizeReasonOf(node->op()), node->InputAt(1));
+  VisitWordCompareZero(this, node, node->InputAt(0), &cont);
+}
+
+void InstructionSelector::VisitTrapIf(Node* node, Runtime::FunctionId func_id) {
+  FlagsContinuation cont =
+      FlagsContinuation::ForTrap(kNotEqual, func_id, node->InputAt(1));
+  VisitWordCompareZero(this, node, node->InputAt(0), &cont);
+}
+
+void InstructionSelector::VisitTrapUnless(Node* node,
+                                          Runtime::FunctionId func_id) {
+  FlagsContinuation cont =
+      FlagsContinuation::ForTrap(kEqual, func_id, node->InputAt(1));
   VisitWordCompareZero(this, node, node->InputAt(0), &cont);
 }
 
@@ -2355,8 +2400,29 @@ void InstructionSelector::VisitCreateInt32x4(Node* node) {
 
 void InstructionSelector::VisitInt32x4ExtractLane(Node* node) {
   X64OperandGenerator g(this);
+  int32_t lane = OpParameter<int32_t>(node);
   Emit(kX64Int32x4ExtractLane, g.DefineAsRegister(node),
-       g.UseRegister(node->InputAt(0)), g.UseImmediate(node->InputAt(1)));
+       g.UseRegister(node->InputAt(0)), g.UseImmediate(lane));
+}
+
+void InstructionSelector::VisitInt32x4ReplaceLane(Node* node) {
+  X64OperandGenerator g(this);
+  int32_t lane = OpParameter<int32_t>(node);
+  Emit(kX64Int32x4ReplaceLane, g.DefineSameAsFirst(node),
+       g.UseRegister(node->InputAt(0)), g.UseImmediate(lane),
+       g.Use(node->InputAt(1)));
+}
+
+void InstructionSelector::VisitInt32x4Add(Node* node) {
+  X64OperandGenerator g(this);
+  Emit(kX64Int32x4Add, g.DefineSameAsFirst(node),
+       g.UseRegister(node->InputAt(0)), g.UseRegister(node->InputAt(1)));
+}
+
+void InstructionSelector::VisitInt32x4Sub(Node* node) {
+  X64OperandGenerator g(this);
+  Emit(kX64Int32x4Sub, g.DefineSameAsFirst(node),
+       g.UseRegister(node->InputAt(0)), g.UseRegister(node->InputAt(1)));
 }
 
 // static

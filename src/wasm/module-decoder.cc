@@ -12,6 +12,7 @@
 #include "src/v8.h"
 
 #include "src/wasm/decoder.h"
+#include "src/wasm/wasm-limits.h"
 
 namespace v8 {
 namespace internal {
@@ -189,7 +190,7 @@ class ModuleDecoder : public Decoder {
     pc_ = limit_;  // On error, terminate section decoding loop.
   }
 
-  static void DumpModule(WasmModule* module, const ModuleResult& result) {
+  void DumpModule(const ModuleResult& result) {
     std::string path;
     if (FLAG_dump_wasm_module_path) {
       path = FLAG_dump_wasm_module_path;
@@ -199,7 +200,7 @@ class ModuleDecoder : public Decoder {
       }
     }
     // File are named `HASH.{ok,failed}.wasm`.
-    size_t hash = base::hash_range(module->module_start, module->module_end);
+    size_t hash = base::hash_range(start_, limit_);
     char buf[32] = {'\0'};
 #if V8_OS_WIN && _MSC_VER < 1900
 #define snprintf sprintf_s
@@ -208,17 +209,15 @@ class ModuleDecoder : public Decoder {
              result.ok() ? "ok" : "failed");
     std::string name(buf);
     if (FILE* wasm_file = base::OS::FOpen((path + name).c_str(), "wb")) {
-      fwrite(module->module_start, module->module_end - module->module_start, 1,
-             wasm_file);
+      fwrite(start_, limit_ - start_, 1, wasm_file);
       fclose(wasm_file);
     }
   }
 
   // Decodes an entire module.
-  ModuleResult DecodeModule(WasmModule* module, bool verify_functions = true) {
+  ModuleResult DecodeModule(bool verify_functions = true) {
     pc_ = start_;
-    module->module_start = start_;
-    module->module_end = limit_;
+    WasmModule* module = new WasmModule(module_zone);
     module->min_mem_pages = 0;
     module->max_mem_pages = 0;
     module->mem_export = false;
@@ -249,8 +248,8 @@ class ModuleDecoder : public Decoder {
 
     // ===== Type section ====================================================
     if (section_iter.section_code() == kTypeSectionCode) {
-      uint32_t signatures_count = consume_u32v("signatures count");
-      module->signatures.reserve(SafeReserve(signatures_count));
+      uint32_t signatures_count = consume_count("types count", kV8MaxWasmTypes);
+      module->signatures.reserve(signatures_count);
       for (uint32_t i = 0; ok() && i < signatures_count; ++i) {
         TRACE("DecodeSignature[%d] module+%d\n", i,
               static_cast<int>(pc_ - start_));
@@ -262,8 +261,9 @@ class ModuleDecoder : public Decoder {
 
     // ===== Import section ==================================================
     if (section_iter.section_code() == kImportSectionCode) {
-      uint32_t import_table_count = consume_u32v("import table count");
-      module->import_table.reserve(SafeReserve(import_table_count));
+      uint32_t import_table_count =
+          consume_count("imports count", kV8MaxWasmImports);
+      module->import_table.reserve(import_table_count);
       for (uint32_t i = 0; ok() && i < import_table_count; ++i) {
         TRACE("DecodeImportTable[%d] module+%d\n", i,
               static_cast<int>(pc_ - start_));
@@ -280,9 +280,6 @@ class ModuleDecoder : public Decoder {
         const byte* pos = pc_;
         import->module_name_offset =
             consume_string(&import->module_name_length, true);
-        if (import->module_name_length == 0) {
-          error(pos, "import module name cannot be NULL");
-        }
         import->field_name_offset =
             consume_string(&import->field_name_length, true);
 
@@ -314,18 +311,18 @@ class ModuleDecoder : public Decoder {
                                                false, SignatureMap()});
             expect_u8("element type", kWasmAnyFunctionTypeForm);
             WasmIndirectFunctionTable* table = &module->function_tables.back();
-            consume_resizable_limits(
-                "element count", "elements", WasmModule::kV8MaxTableSize,
-                &table->min_size, &table->has_max, WasmModule::kV8MaxTableSize,
-                &table->max_size);
+            consume_resizable_limits("element count", "elements",
+                                     kV8MaxWasmTableSize, &table->min_size,
+                                     &table->has_max, kV8MaxWasmTableSize,
+                                     &table->max_size);
             break;
           }
           case kExternalMemory: {
             // ===== Imported memory =========================================
             bool has_max = false;
-            consume_resizable_limits("memory", "pages", WasmModule::kV8MaxPages,
+            consume_resizable_limits("memory", "pages", kV8MaxWasmMemoryPages,
                                      &module->min_mem_pages, &has_max,
-                                     WasmModule::kSpecMaxPages,
+                                     kSpecMaxWasmMemoryPages,
                                      &module->max_mem_pages);
             module->has_memory = true;
             break;
@@ -353,8 +350,9 @@ class ModuleDecoder : public Decoder {
 
     // ===== Function section ================================================
     if (section_iter.section_code() == kFunctionSectionCode) {
-      uint32_t functions_count = consume_u32v("functions count");
-      module->functions.reserve(SafeReserve(functions_count));
+      uint32_t functions_count =
+          consume_count("functions count", kV8MaxWasmFunctions);
+      module->functions.reserve(functions_count);
       module->num_declared_functions = functions_count;
       for (uint32_t i = 0; ok() && i < functions_count; ++i) {
         uint32_t func_index = static_cast<uint32_t>(module->functions.size());
@@ -375,12 +373,7 @@ class ModuleDecoder : public Decoder {
 
     // ===== Table section ===================================================
     if (section_iter.section_code() == kTableSectionCode) {
-      const byte* pos = pc_;
-      uint32_t table_count = consume_u32v("table count");
-      // Require at most one table for now.
-      if (table_count > 1) {
-        error(pos, pos, "invalid table count %d, maximum 1", table_count);
-      }
+      uint32_t table_count = consume_count("table count", kV8MaxWasmTables);
       if (module->function_tables.size() < 1) {
         module->function_tables.push_back({0, 0, false, std::vector<int32_t>(),
                                            false, false, SignatureMap()});
@@ -389,28 +382,22 @@ class ModuleDecoder : public Decoder {
       for (uint32_t i = 0; ok() && i < table_count; i++) {
         WasmIndirectFunctionTable* table = &module->function_tables.back();
         expect_u8("table type", kWasmAnyFunctionTypeForm);
-        consume_resizable_limits("table elements", "elements",
-                                 WasmModule::kV8MaxTableSize, &table->min_size,
-                                 &table->has_max, WasmModule::kV8MaxTableSize,
-                                 &table->max_size);
+        consume_resizable_limits(
+            "table elements", "elements", kV8MaxWasmTableSize, &table->min_size,
+            &table->has_max, kV8MaxWasmTableSize, &table->max_size);
       }
       section_iter.advance();
     }
 
     // ===== Memory section ==================================================
     if (section_iter.section_code() == kMemorySectionCode) {
-      const byte* pos = pc_;
-      uint32_t memory_count = consume_u32v("memory count");
-      // Require at most one memory for now.
-      if (memory_count > 1) {
-        error(pos, pos, "invalid memory count %d, maximum 1", memory_count);
-      }
+      uint32_t memory_count = consume_count("memory count", kV8MaxWasmMemories);
 
       for (uint32_t i = 0; ok() && i < memory_count; i++) {
         bool has_max = false;
         consume_resizable_limits(
-            "memory", "pages", WasmModule::kV8MaxPages, &module->min_mem_pages,
-            &has_max, WasmModule::kSpecMaxPages, &module->max_mem_pages);
+            "memory", "pages", kV8MaxWasmMemoryPages, &module->min_mem_pages,
+            &has_max, kSpecMaxWasmMemoryPages, &module->max_mem_pages);
       }
       module->has_memory = true;
       section_iter.advance();
@@ -418,14 +405,10 @@ class ModuleDecoder : public Decoder {
 
     // ===== Global section ==================================================
     if (section_iter.section_code() == kGlobalSectionCode) {
-      uint32_t globals_count = consume_u32v("globals count");
+      uint32_t globals_count =
+          consume_count("globals count", kV8MaxWasmGlobals);
       uint32_t imported_globals = static_cast<uint32_t>(module->globals.size());
-      if (!IsWithinLimit(std::numeric_limits<int32_t>::max(), globals_count,
-                         imported_globals)) {
-        error(pos, pos, "too many imported+defined globals: %u + %u",
-              imported_globals, globals_count);
-      }
-      module->globals.reserve(SafeReserve(imported_globals + globals_count));
+      module->globals.reserve(imported_globals + globals_count);
       for (uint32_t i = 0; ok() && i < globals_count; ++i) {
         TRACE("DecodeGlobal[%d] module+%d\n", i,
               static_cast<int>(pc_ - start_));
@@ -440,8 +423,9 @@ class ModuleDecoder : public Decoder {
 
     // ===== Export section ==================================================
     if (section_iter.section_code() == kExportSectionCode) {
-      uint32_t export_table_count = consume_u32v("export table count");
-      module->export_table.reserve(SafeReserve(export_table_count));
+      uint32_t export_table_count =
+          consume_count("exports count", kV8MaxWasmImports);
+      module->export_table.reserve(export_table_count);
       for (uint32_t i = 0; ok() && i < export_table_count; ++i) {
         TRACE("DecodeExportTable[%d] module+%d\n", i,
               static_cast<int>(pc_ - start_));
@@ -493,8 +477,8 @@ class ModuleDecoder : public Decoder {
             break;
         }
       }
-      // Check for duplicate exports.
-      if (ok() && module->export_table.size() > 1) {
+      // Check for duplicate exports (except for asm.js).
+      if (ok() && origin_ != kAsmJsOrigin && module->export_table.size() > 1) {
         std::vector<WasmExport> sorted_exports(module->export_table);
         const byte* base = start_;
         auto cmp_less = [base](const WasmExport& a, const WasmExport& b) {
@@ -538,7 +522,8 @@ class ModuleDecoder : public Decoder {
 
     // ===== Elements section ================================================
     if (section_iter.section_code() == kElementSectionCode) {
-      uint32_t element_count = consume_u32v("element count");
+      uint32_t element_count =
+          consume_count("element count", kV8MaxWasmTableSize);
       for (uint32_t i = 0; ok() && i < element_count; ++i) {
         const byte* pos = pc();
         uint32_t table_index = consume_u32v("table index");
@@ -552,18 +537,17 @@ class ModuleDecoder : public Decoder {
           table = &module->function_tables[table_index];
         }
         WasmInitExpr offset = consume_init_expr(module, kAstI32);
-        uint32_t num_elem = consume_u32v("number of elements");
+        uint32_t num_elem =
+            consume_count("number of elements", kV8MaxWasmTableEntries);
         std::vector<uint32_t> vector;
         module->table_inits.push_back({table_index, offset, vector});
         WasmTableInit* init = &module->table_inits.back();
-        init->entries.reserve(SafeReserve(num_elem));
         for (uint32_t j = 0; ok() && j < num_elem; j++) {
           WasmFunction* func = nullptr;
           uint32_t index = consume_func_index(module, &func);
           init->entries.push_back(index);
           if (table && index < module->functions.size()) {
             // Canonicalize signature indices during decoding.
-            // TODO(titzer): suboptimal, redundant when verifying only.
             table->map.FindOrInsert(module->functions[index].sig);
           }
         }
@@ -587,10 +571,8 @@ class ModuleDecoder : public Decoder {
         function->code_start_offset = pc_offset();
         function->code_end_offset = pc_offset() + size;
         if (verify_functions) {
-          ModuleEnv module_env;
-          module_env.module = module;
-          module_env.origin = module->origin;
-
+          ModuleBytesEnv module_env(module, nullptr,
+                                    ModuleWireBytes(start_, limit_));
           VerifyFunctionBody(i + module->num_imported_functions, &module_env,
                              function);
         }
@@ -601,8 +583,9 @@ class ModuleDecoder : public Decoder {
 
     // ===== Data section ====================================================
     if (section_iter.section_code() == kDataSectionCode) {
-      uint32_t data_segments_count = consume_u32v("data segments count");
-      module->data_segments.reserve(SafeReserve(data_segments_count));
+      uint32_t data_segments_count =
+          consume_count("data segments count", kV8MaxWasmDataSegments);
+      module->data_segments.reserve(data_segments_count);
       for (uint32_t i = 0; ok() && i < data_segments_count; ++i) {
         if (!module->has_memory) {
           error("cannot load data without memory");
@@ -656,18 +639,12 @@ class ModuleDecoder : public Decoder {
     if (verify_functions && result.ok()) {
       result.MoveFrom(result_);  // Copy error code and location.
     }
-    if (FLAG_dump_wasm_module) DumpModule(module, result);
+    if (FLAG_dump_wasm_module) DumpModule(result);
     return result;
   }
 
-  uint32_t SafeReserve(uint32_t count) {
-    // Avoid OOM by only reserving up to a certain size.
-    const uint32_t kMaxReserve = 20000;
-    return count < kMaxReserve ? count : kMaxReserve;
-  }
-
   // Decodes a single anonymous function starting at {start_}.
-  FunctionResult DecodeSingleFunction(ModuleEnv* module_env,
+  FunctionResult DecodeSingleFunction(ModuleBytesEnv* module_env,
                                       WasmFunction* function) {
     pc_ = start_;
     function->sig = consume_sig();            // read signature
@@ -779,7 +756,7 @@ class ModuleDecoder : public Decoder {
   }
 
   // Verifies the body (code) of a given function.
-  void VerifyFunctionBody(uint32_t func_num, ModuleEnv* menv,
+  void VerifyFunctionBody(uint32_t func_num, ModuleBytesEnv* menv,
                           WasmFunction* function) {
     if (FLAG_trace_wasm_decoder || FLAG_trace_wasm_decode_time) {
       OFStream os(stdout);
@@ -840,6 +817,17 @@ class ModuleDecoder : public Decoder {
     }
     *sig = module->signatures[sig_index];
     return sig_index;
+  }
+
+  uint32_t consume_count(const char* name, size_t maximum) {
+    const byte* p = pc_;
+    uint32_t count = consume_u32v(name);
+    if (count > maximum) {
+      error(p, p, "%s of %u exceeds internal limit of %zu", name, count,
+            maximum);
+      return static_cast<uint32_t>(maximum);
+    }
+    return count;
   }
 
   uint32_t consume_func_index(WasmModule* module, WasmFunction** func) {
@@ -1016,7 +1004,9 @@ class ModuleDecoder : public Decoder {
   FunctionSig* consume_sig() {
     if (!expect_u8("type form", kWasmFunctionTypeForm)) return nullptr;
     // parse parameter types
-    uint32_t param_count = consume_u32v("param count");
+    uint32_t param_count =
+        consume_count("param count", kV8MaxWasmFunctionParams);
+    if (failed()) return nullptr;
     std::vector<LocalType> params;
     for (uint32_t i = 0; ok() && i < param_count; ++i) {
       LocalType param = consume_value_type();
@@ -1024,23 +1014,18 @@ class ModuleDecoder : public Decoder {
     }
 
     // parse return types
-    const byte* pt = pc_;
-    uint32_t return_count = consume_u32v("return count");
-    if (return_count > kMaxReturnCount) {
-      error(pt, pt, "return count of %u exceeds maximum of %u", return_count,
-            kMaxReturnCount);
-      return nullptr;
-    }
+    const size_t max_return_count = FLAG_wasm_mv_prototype
+                                        ? kV8MaxWasmFunctionMultiReturns
+                                        : kV8MaxWasmFunctionReturns;
+    uint32_t return_count = consume_count("return count", max_return_count);
+    if (failed()) return nullptr;
     std::vector<LocalType> returns;
     for (uint32_t i = 0; ok() && i < return_count; ++i) {
       LocalType ret = consume_value_type();
       returns.push_back(ret);
     }
 
-    if (failed()) {
-      // Decoding failed, return void -> void
-      return new (module_zone) FunctionSig(0, 0, nullptr);
-    }
+    if (failed()) return nullptr;
 
     // FunctionSig stores the return types first.
     LocalType* buffer =
@@ -1113,16 +1098,16 @@ ModuleResult DecodeWasmModule(Isolate* isolate, const byte* module_start,
       isolate->counters()->wasm_decode_module_time());
   size_t size = module_end - module_start;
   if (module_start > module_end) return ModuleError("start > end");
-  if (size >= kMaxModuleSize) return ModuleError("size > maximum module size");
+  if (size >= kV8MaxWasmModuleSize)
+    return ModuleError("size > maximum module size");
   // TODO(bradnelson): Improve histogram handling of size_t.
   isolate->counters()->wasm_module_size_bytes()->AddSample(
       static_cast<int>(size));
   // Signatures are stored in zone memory, which have the same lifetime
   // as the {module}.
   Zone* zone = new Zone(isolate->allocator(), ZONE_NAME);
-  WasmModule* module = new WasmModule(zone, module_start);
   ModuleDecoder decoder(zone, module_start, module_end, origin);
-  ModuleResult result = decoder.DecodeModule(module, verify_functions);
+  ModuleResult result = decoder.DecodeModule(verify_functions);
   // TODO(bradnelson): Improve histogram handling of size_t.
   // TODO(titzer): this isn't accurate, since it doesn't count the data
   // allocated on the C++ heap.
@@ -1146,14 +1131,14 @@ WasmInitExpr DecodeWasmInitExprForTesting(const byte* start, const byte* end) {
 }
 
 FunctionResult DecodeWasmFunction(Isolate* isolate, Zone* zone,
-                                  ModuleEnv* module_env,
+                                  ModuleBytesEnv* module_env,
                                   const byte* function_start,
                                   const byte* function_end) {
   HistogramTimerScope wasm_decode_function_time_scope(
       isolate->counters()->wasm_decode_function_time());
   size_t size = function_end - function_start;
   if (function_start > function_end) return FunctionError("start > end");
-  if (size > kMaxFunctionSize)
+  if (size > kV8MaxWasmFunctionSize)
     return FunctionError("size > maximum function size");
   isolate->counters()->wasm_function_size_bytes()->AddSample(
       static_cast<int>(size));
@@ -1208,7 +1193,7 @@ AsmJsOffsetsResult DecodeAsmJsOffsets(const byte* tables_start,
   for (uint32_t i = 0; i < functions_count && decoder.ok(); ++i) {
     uint32_t size = decoder.consume_u32v("table size");
     if (size == 0) {
-      table.push_back(std::vector<std::pair<int, int>>());
+      table.push_back(std::vector<AsmJsOffsetEntry>());
       continue;
     }
     if (!decoder.checkAvailable(size)) {
@@ -1218,12 +1203,17 @@ AsmJsOffsetsResult DecodeAsmJsOffsets(const byte* tables_start,
     uint32_t locals_size = decoder.consume_u32("locals size");
     int last_byte_offset = locals_size;
     int last_asm_position = 0;
-    std::vector<std::pair<int, int>> func_asm_offsets;
+    std::vector<AsmJsOffsetEntry> func_asm_offsets;
     func_asm_offsets.reserve(size / 4);  // conservative estimation
     while (decoder.ok() && decoder.pc() < table_end) {
       last_byte_offset += decoder.consume_u32v("byte offset delta");
-      last_asm_position += decoder.consume_i32v("asm position delta");
-      func_asm_offsets.push_back({last_byte_offset, last_asm_position});
+      int call_position =
+          last_asm_position + decoder.consume_i32v("call position delta");
+      int to_number_position =
+          call_position + decoder.consume_i32v("to_number position delta");
+      last_asm_position = to_number_position;
+      func_asm_offsets.push_back(
+          {last_byte_offset, call_position, to_number_position});
     }
     if (decoder.pc() != table_end) {
       decoder.error("broken asm offset table");

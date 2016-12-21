@@ -9,7 +9,6 @@
                 "id": "Domain",
                 "type": "object",
                 "description": "Description of the protocol domain.",
-                "exported": true,
                 "properties": [
                     { "name": "name", "type": "string", "description": "Domain name." },
                     { "name": "version", "type": "string", "description": "Domain version." }
@@ -51,7 +50,6 @@
                 "id": "RemoteObject",
                 "type": "object",
                 "description": "Mirror object referencing original JavaScript object.",
-                "exported": true,
                 "properties": [
                     { "name": "type", "type": "string", "enum": ["object", "function", "undefined", "string", "number", "boolean", "symbol"], "description": "Object type." },
                     { "name": "subtype", "type": "string", "optional": true, "enum": ["array", "null", "node", "regexp", "date", "map", "set", "iterator", "generator", "error", "proxy", "promise", "typedarray"], "description": "Object subtype hint. Specified for <code>object</code> type values only." },
@@ -200,7 +198,6 @@
                 "id": "StackTrace",
                 "type": "object",
                 "description": "Call frames for assertions or error messages.",
-                "exported": true,
                 "properties": [
                     { "name": "description", "type": "string", "optional": true, "description": "String label of this stack trace. For async traces this may be a name of the function that initiated the async call." },
                     { "name": "callFrames", "type": "array", "items": { "$ref": "CallFrame" }, "description": "JavaScript function name." },
@@ -456,7 +453,7 @@
                 "id": "Scope",
                 "type": "object",
                 "properties": [
-                    { "name": "type", "type": "string", "enum": ["global", "local", "with", "closure", "catch", "block", "script", "eval"], "description": "Scope type." },
+                    { "name": "type", "type": "string", "enum": ["global", "local", "with", "closure", "catch", "block", "script", "eval", "module"], "description": "Scope type." },
                     { "name": "object", "$ref": "Runtime.RemoteObject", "description": "Object representing the scope. For <code>global</code> and <code>with</code> scopes it represents the actual object; for the rest of the scopes, it is artificial transient object enumerating scope variables as its properties." },
                     { "name": "name", "type": "string", "optional": true },
                     { "name": "startLocation", "$ref": "Location", "optional": true, "description": "Location in the source code where scope starts" },
@@ -468,7 +465,6 @@
                 "id": "SearchMatch",
                 "type": "object",
                 "description": "Search match for resource.",
-                "exported": true,
                 "properties": [
                     { "name": "lineNumber", "type": "number", "description": "Line number in resource content." },
                     { "name": "lineContent", "type": "string", "description": "Line with match content." }
@@ -729,7 +725,7 @@
                 "name": "paused",
                 "parameters": [
                     { "name": "callFrames", "type": "array", "items": { "$ref": "CallFrame" }, "description": "Call stack the virtual machine stopped on." },
-                    { "name": "reason", "type": "string", "enum": [ "XHR", "DOM", "EventListener", "exception", "assert", "debugCommand", "promiseRejection", "other" ], "description": "Pause reason.", "exported": true },
+                    { "name": "reason", "type": "string", "enum": [ "XHR", "DOM", "EventListener", "exception", "assert", "debugCommand", "promiseRejection", "other" ], "description": "Pause reason." },
                     { "name": "data", "type": "object", "optional": true, "description": "Object containing break-specific auxiliary properties." },
                     { "name": "hitBreakpoints", "type": "array", "optional": true, "items": { "type": "string" }, "description": "Hit breakpoints IDs" },
                     { "name": "asyncStackTrace", "$ref": "Runtime.StackTrace", "optional": true, "description": "Async stack trace, if any." }

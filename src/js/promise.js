@@ -126,7 +126,7 @@ function NewPromiseCapability(C, debugEvent) {
 // Promise.reject ( x )
 function PromiseReject(r) {
   if (!IS_RECEIVER(this)) {
-    throw %make_type_error(kCalledOnNonObject, PromiseResolve);
+    throw %make_type_error(kCalledOnNonObject, PromiseReject);
   }
   if (this === GlobalPromise) {
     // Optimized case, avoid extra closure.
@@ -140,12 +140,6 @@ function PromiseReject(r) {
     %_Call(promiseCapability.reject, UNDEFINED, r);
     return promiseCapability.promise;
   }
-}
-
-// ES#sec-promise.prototype.catch
-// Promise.prototype.catch ( onRejected )
-function PromiseCatch(onReject) {
-  return this.then(UNDEFINED, onReject);
 }
 
 // Combinators.
@@ -345,10 +339,7 @@ utils.InstallFunctions(GlobalPromise, DONT_ENUM, [
   "resolve", PromiseResolve
 ]);
 
-%SetCode(GlobalPromise.prototype.catch, PromiseCatch);
-
 %InstallToContext([
-  "promise_catch", GlobalPromise.prototype.catch,
   "promise_create", PromiseCreate,
   "promise_has_user_defined_reject_handler", PromiseHasUserDefinedRejectHandler,
   "promise_reject", DoRejectPromise,

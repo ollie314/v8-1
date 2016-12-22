@@ -1626,6 +1626,7 @@ Handle<Code> Factory::NewCode(const CodeDesc& desc,
   code->set_prologue_offset(prologue_offset);
   code->set_constant_pool_offset(desc.instr_size - desc.constant_pool_size);
   code->set_builtin_index(-1);
+  code->set_protected_instructions(*empty_fixed_array());
 
   if (code->kind() == Code::OPTIMIZED_FUNCTION) {
     code->set_marked_for_deoptimization(false);
@@ -2655,8 +2656,8 @@ void Factory::SetFunctionInstanceDescriptor(Handle<Map> map,
   Handle<AccessorInfo> length =
       Accessors::FunctionLengthInfo(isolate(), roc_attribs);
   {  // Add length.
-    AccessorConstantDescriptor d(Handle<Name>(Name::cast(length->name())),
-                                 length, roc_attribs);
+    Descriptor d = Descriptor::AccessorConstant(
+        Handle<Name>(Name::cast(length->name())), length, roc_attribs);
     map->AppendDescriptor(&d);
   }
 
@@ -2664,22 +2665,22 @@ void Factory::SetFunctionInstanceDescriptor(Handle<Map> map,
   Handle<AccessorInfo> name =
       Accessors::FunctionNameInfo(isolate(), ro_attribs);
   {  // Add name.
-    AccessorConstantDescriptor d(Handle<Name>(Name::cast(name->name())), name,
-                                 roc_attribs);
+    Descriptor d = Descriptor::AccessorConstant(
+        Handle<Name>(Name::cast(name->name())), name, roc_attribs);
     map->AppendDescriptor(&d);
   }
   Handle<AccessorInfo> args =
       Accessors::FunctionArgumentsInfo(isolate(), ro_attribs);
   {  // Add arguments.
-    AccessorConstantDescriptor d(Handle<Name>(Name::cast(args->name())), args,
-                                 ro_attribs);
+    Descriptor d = Descriptor::AccessorConstant(
+        Handle<Name>(Name::cast(args->name())), args, ro_attribs);
     map->AppendDescriptor(&d);
   }
   Handle<AccessorInfo> caller =
       Accessors::FunctionCallerInfo(isolate(), ro_attribs);
   {  // Add caller.
-    AccessorConstantDescriptor d(Handle<Name>(Name::cast(caller->name())),
-                                 caller, ro_attribs);
+    Descriptor d = Descriptor::AccessorConstant(
+        Handle<Name>(Name::cast(caller->name())), caller, ro_attribs);
     map->AppendDescriptor(&d);
   }
   if (IsFunctionModeWithPrototype(function_mode)) {
@@ -2688,8 +2689,8 @@ void Factory::SetFunctionInstanceDescriptor(Handle<Map> map,
     }
     Handle<AccessorInfo> prototype =
         Accessors::FunctionPrototypeInfo(isolate(), ro_attribs);
-    AccessorConstantDescriptor d(Handle<Name>(Name::cast(prototype->name())),
-                                 prototype, ro_attribs);
+    Descriptor d = Descriptor::AccessorConstant(
+        Handle<Name>(Name::cast(prototype->name())), prototype, ro_attribs);
     map->AppendDescriptor(&d);
   }
 }
@@ -2723,8 +2724,8 @@ void Factory::SetStrictFunctionInstanceDescriptor(Handle<Map> map,
   {  // Add length.
     Handle<AccessorInfo> length =
         Accessors::FunctionLengthInfo(isolate(), roc_attribs);
-    AccessorConstantDescriptor d(handle(Name::cast(length->name())), length,
-                                 roc_attribs);
+    Descriptor d = Descriptor::AccessorConstant(
+        handle(Name::cast(length->name())), length, roc_attribs);
     map->AppendDescriptor(&d);
   }
 
@@ -2732,8 +2733,8 @@ void Factory::SetStrictFunctionInstanceDescriptor(Handle<Map> map,
   {  // Add name.
     Handle<AccessorInfo> name =
         Accessors::FunctionNameInfo(isolate(), roc_attribs);
-    AccessorConstantDescriptor d(handle(Name::cast(name->name())), name,
-                                 roc_attribs);
+    Descriptor d = Descriptor::AccessorConstant(
+        handle(Name::cast(name->name())), name, roc_attribs);
     map->AppendDescriptor(&d);
   }
   if (IsFunctionModeWithPrototype(function_mode)) {
@@ -2743,8 +2744,8 @@ void Factory::SetStrictFunctionInstanceDescriptor(Handle<Map> map,
                                                            : ro_attribs;
     Handle<AccessorInfo> prototype =
         Accessors::FunctionPrototypeInfo(isolate(), attribs);
-    AccessorConstantDescriptor d(Handle<Name>(Name::cast(prototype->name())),
-                                 prototype, attribs);
+    Descriptor d = Descriptor::AccessorConstant(
+        Handle<Name>(Name::cast(prototype->name())), prototype, attribs);
     map->AppendDescriptor(&d);
   }
 }
@@ -2770,8 +2771,8 @@ void Factory::SetClassFunctionInstanceDescriptor(Handle<Map> map) {
   {  // Add length.
     Handle<AccessorInfo> length =
         Accessors::FunctionLengthInfo(isolate(), roc_attribs);
-    AccessorConstantDescriptor d(handle(Name::cast(length->name())), length,
-                                 roc_attribs);
+    Descriptor d = Descriptor::AccessorConstant(
+        handle(Name::cast(length->name())), length, roc_attribs);
     map->AppendDescriptor(&d);
   }
 
@@ -2779,8 +2780,8 @@ void Factory::SetClassFunctionInstanceDescriptor(Handle<Map> map) {
     // Add prototype.
     Handle<AccessorInfo> prototype =
         Accessors::FunctionPrototypeInfo(isolate(), rw_attribs);
-    AccessorConstantDescriptor d(Handle<Name>(Name::cast(prototype->name())),
-                                 prototype, rw_attribs);
+    Descriptor d = Descriptor::AccessorConstant(
+        Handle<Name>(Name::cast(prototype->name())), prototype, rw_attribs);
     map->AppendDescriptor(&d);
   }
 }

@@ -573,12 +573,9 @@ Reduction JSNativeContextSpecialization::ReduceElementAccess(
     index = effect = graph()->NewNode(simplified()->CheckBounds(), index,
                                       length, effect, control);
 
-    // Load the character from the {receiver}.
-    value = graph()->NewNode(simplified()->StringCharCodeAt(), receiver, index,
+    // Return the character from the {receiver} as single character string.
+    value = graph()->NewNode(simplified()->StringCharAt(), receiver, index,
                              control);
-
-    // Return it as a single character string.
-    value = graph()->NewNode(simplified()->StringFromCharCode(), value);
   } else {
     // Retrieve the native context from the given {node}.
     // Compute element access infos for the receiver maps.
@@ -831,12 +828,9 @@ Reduction JSNativeContextSpecialization::ReduceKeyedAccess(
         index = effect = graph()->NewNode(simplified()->CheckBounds(), index,
                                           length, effect, control);
 
-        // Load the character from the {receiver}.
-        value = graph()->NewNode(simplified()->StringCharCodeAt(), receiver,
-                                 index, control);
-
-        // Return it as a single character string.
-        value = graph()->NewNode(simplified()->StringFromCharCode(), value);
+        // Return the character from the {receiver} as single character string.
+        value = graph()->NewNode(simplified()->StringCharAt(), receiver, index,
+                                 control);
         ReplaceWithValue(node, value, effect, control);
         return Replace(value);
       }
@@ -1599,14 +1593,16 @@ JSNativeContextSpecialization::InlineApiCall(
   // Add CallApiCallbackStub's register argument as well.
   Node* inputs[11] = {
       code, target, data, receiver /* holder */, function_reference, receiver};
-  if (value != nullptr) {
-    inputs[6] = value;
-  }
   int index = 6 + argc;
   inputs[index++] = context;
   inputs[index++] = frame_state;
   inputs[index++] = effect;
   inputs[index++] = control;
+  // This needs to stay here because of the edge case described in
+  // http://crbug.com/675648.
+  if (value != nullptr) {
+    inputs[6] = value;
+  }
 
   Node* effect0;
   Node* value0 = effect0 =

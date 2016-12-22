@@ -3011,10 +3011,11 @@ Node* CodeStubAssembler::IsJSFunction(Node* object) {
   return HasInstanceType(object, JS_FUNCTION_TYPE);
 }
 
-Node* CodeStubAssembler::StringCharCodeAt(Node* string, Node* index) {
+Node* CodeStubAssembler::StringCharCodeAt(Node* string, Node* index,
+                                          ParameterMode parameter_mode) {
   CSA_ASSERT(this, IsString(string));
   // Translate the {index} into a Word.
-  index = SmiToWord(index);
+  index = ParameterToWord(index, parameter_mode);
 
   // We may need to loop in case of cons or sliced strings.
   Variable var_index(this, MachineType::PointerRepresentation());
@@ -3820,7 +3821,7 @@ Node* CodeStubAssembler::NumberToString(Node* context, Node* argument) {
   GotoUnless(Word32Equal(low, low_compare), &runtime);
   GotoUnless(Word32Equal(high, high_compare), &runtime);
 
-  // Heap number match, return value fro cache entry.
+  // Heap number match, return value from cache entry.
   IncrementCounter(isolate()->counters()->number_to_string_native(), 1);
   result.Bind(LoadFixedArrayElement(number_string_cache, index, kPointerSize));
   Goto(&done);

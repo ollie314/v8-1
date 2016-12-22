@@ -73,6 +73,8 @@ class PlatformInterfaceDescriptor;
   V(BinaryOpWithVector)                   \
   V(CountOp)                              \
   V(StringAdd)                            \
+  V(StringCharAt)                         \
+  V(StringCharCodeAt)                     \
   V(StringCompare)                        \
   V(SubString)                            \
   V(Keyed)                                \
@@ -689,6 +691,19 @@ class StringAddDescriptor : public CallInterfaceDescriptor {
   DECLARE_DESCRIPTOR(StringAddDescriptor, CallInterfaceDescriptor)
 };
 
+class StringCharAtDescriptor final : public CallInterfaceDescriptor {
+ public:
+  DEFINE_PARAMETERS(kReceiver, kPosition)
+  DECLARE_DESCRIPTOR_WITH_CUSTOM_FUNCTION_TYPE(StringCharAtDescriptor,
+                                               CallInterfaceDescriptor)
+};
+
+class StringCharCodeAtDescriptor final : public CallInterfaceDescriptor {
+ public:
+  DEFINE_PARAMETERS(kReceiver, kPosition)
+  DECLARE_DESCRIPTOR_WITH_CUSTOM_FUNCTION_TYPE(StringCharCodeAtDescriptor,
+                                               CallInterfaceDescriptor)
+};
 
 class StringCompareDescriptor : public CallInterfaceDescriptor {
  public:

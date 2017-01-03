@@ -978,6 +978,12 @@ HandleScope::~HandleScope() {
   i::HandleScope::CloseScope(isolate_, prev_next_, prev_limit_);
 }
 
+V8_NORETURN void* HandleScope::operator new(size_t) {
+  base::OS::Abort();
+  abort();
+}
+
+void HandleScope::operator delete(void*, size_t) { base::OS::Abort(); }
 
 int HandleScope::NumberOfHandles(Isolate* isolate) {
   return i::HandleScope::NumberOfHandles(
@@ -1016,6 +1022,13 @@ i::Object** EscapableHandleScope::Escape(i::Object** escape_value) {
   return escape_slot_;
 }
 
+V8_NORETURN void* EscapableHandleScope::operator new(size_t) {
+  base::OS::Abort();
+  abort();
+}
+
+void EscapableHandleScope::operator delete(void*, size_t) { base::OS::Abort(); }
+
 SealHandleScope::SealHandleScope(Isolate* isolate)
     : isolate_(reinterpret_cast<i::Isolate*>(isolate)) {
   i::HandleScopeData* current = isolate_->handle_scope_data();
@@ -1034,6 +1047,12 @@ SealHandleScope::~SealHandleScope() {
   current->sealed_level = prev_sealed_level_;
 }
 
+V8_NORETURN void* SealHandleScope::operator new(size_t) {
+  base::OS::Abort();
+  abort();
+}
+
+void SealHandleScope::operator delete(void*, size_t) { base::OS::Abort(); }
 
 void Context::Enter() {
   i::Handle<i::Context> env = Utils::OpenHandle(this);
@@ -2514,6 +2533,12 @@ v8::TryCatch::~TryCatch() {
   }
 }
 
+V8_NORETURN void* v8::TryCatch::operator new(size_t) {
+  base::OS::Abort();
+  abort();
+}
+
+void v8::TryCatch::operator delete(void*, size_t) { base::OS::Abort(); }
 
 bool v8::TryCatch::HasCaught() const {
   return !reinterpret_cast<i::Object*>(exception_)->IsTheHole(isolate_);
@@ -4475,12 +4500,14 @@ MaybeLocal<Array> v8::Object::GetOwnPropertyNames(Local<Context> context,
 
 MaybeLocal<String> v8::Object::ObjectProtoToString(Local<Context> context) {
   PREPARE_FOR_EXECUTION(context, Object, ObjectProtoToString, String);
-  auto obj = Utils::OpenHandle(this);
-  Local<String> result;
+  auto self = Utils::OpenHandle(this);
+  Local<Value> result;
   has_pending_exception =
-      !ToLocal<String>(i::JSObject::ObjectProtoToString(isolate, obj), &result);
+      !ToLocal<Value>(i::Execution::Call(isolate, isolate->object_to_string(),
+                                         self, 0, nullptr),
+                      &result);
   RETURN_ON_FAILED_EXECUTION(String);
-  RETURN_ESCAPED(result);
+  RETURN_ESCAPED(Local<String>::Cast(result));
 }
 
 
@@ -8440,6 +8467,16 @@ void Isolate::SetRAILMode(RAILMode rail_mode) {
   return isolate->SetRAILMode(rail_mode);
 }
 
+void Isolate::IncreaseHeapLimitForDebugging() {
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
+  isolate->heap()->IncreaseHeapLimitForDebugging();
+}
+
+void Isolate::RestoreOriginalHeapLimit() {
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
+  isolate->heap()->RestoreOriginalHeapLimit();
+}
+
 void Isolate::SetJitCodeEventHandler(JitCodeEventOptions options,
                                      JitCodeEventHandler event_handler) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
@@ -8454,7 +8491,6 @@ void Isolate::SetStackLimit(uintptr_t stack_limit) {
   CHECK(stack_limit);
   isolate->stack_guard()->SetStackLimit(stack_limit);
 }
-
 
 void Isolate::GetCodeRange(void** start, size_t* length_in_bytes) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
@@ -8845,7 +8881,9 @@ void Debug::ProcessDebugMessages(Isolate* isolate) {
 
 
 Local<Context> Debug::GetDebugContext(Isolate* isolate) {
-  return debug::GetDebugContext(isolate);
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  ENTER_V8(i_isolate);
+  return Utils::ToLocal(i_isolate->debug()->GetDebugContext());
 }
 
 
@@ -8898,9 +8936,7 @@ bool debug::SetDebugEventListener(Isolate* isolate, debug::EventCallback that,
 }
 
 Local<Context> debug::GetDebugContext(Isolate* isolate) {
-  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
-  ENTER_V8(i_isolate);
-  return Utils::ToLocal(i_isolate->debug()->GetDebugContext());
+  return Debug::GetDebugContext(isolate);
 }
 
 MaybeLocal<Value> debug::Call(Local<Context> context,
@@ -9513,13 +9549,12 @@ size_t HeapGraphNode::GetShallowSize() const {
 
 
 int HeapGraphNode::GetChildrenCount() const {
-  return ToInternal(this)->children().length();
+  return ToInternal(this)->children_count();
 }
 
 
 const HeapGraphEdge* HeapGraphNode::GetChild(int index) const {
-  return reinterpret_cast<const HeapGraphEdge*>(
-      ToInternal(this)->children()[index]);
+  return reinterpret_cast<const HeapGraphEdge*>(ToInternal(this)->child(index));
 }
 
 

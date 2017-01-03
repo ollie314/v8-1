@@ -1843,6 +1843,24 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     to_primitive->shared()->set_length(1);
   }
 
+  {
+    Handle<Code> code = isolate->builtins()->PromiseGetCapabilitiesExecutor();
+    Handle<SharedFunctionInfo> info =
+        factory->NewSharedFunctionInfo(factory->empty_string(), code, true);
+    info->SetConstructStub(*isolate->builtins()->JSBuiltinsConstructStub());
+    info->set_instance_class_name(isolate->heap()->Object_string());
+    info->set_internal_formal_parameter_count(2);
+    info->set_length(2);
+    native_context()->set_promise_get_capabilities_executor_shared_fun(*info);
+
+    // %new_promise_capability(C, debugEvent)
+    Handle<JSFunction> new_promise_capability =
+        SimpleCreateFunction(isolate, factory->empty_string(),
+                             Builtins::kNewPromiseCapability, 2, false);
+    InstallWithIntrinsicDefaultProto(isolate, new_promise_capability,
+                                     Context::NEW_PROMISE_CAPABILITY_INDEX);
+  }
+
   {  // -- P r o m i s e
     // Set catch prediction
     Handle<Code> promise_code = isolate->builtins()->PromiseConstructor();
@@ -1934,7 +1952,7 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
 
     {  // Internal: PromiseHandle
       Handle<JSFunction> function = SimpleCreateFunction(
-          isolate, factory->empty_string(), Builtins::kPromiseHandle, 4, true);
+          isolate, factory->empty_string(), Builtins::kPromiseHandle, 6, true);
       InstallWithIntrinsicDefaultProto(isolate, function,
                                        Context::PROMISE_HANDLE_INDEX);
       // Set up catch prediction
@@ -1972,12 +1990,6 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
       info->set_length(1);
       native_context()->set_promise_reject_shared_fun(*info);
     }
-
-    Handle<JSFunction> create_resolving_functions =
-        SimpleCreateFunction(isolate, factory->empty_string(),
-                             Builtins::kCreateResolvingFunctions, 2, false);
-    native_context()->set_create_resolving_functions(
-        *create_resolving_functions);
   }
 
   {  // -- R e g E x p
@@ -2325,6 +2337,74 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
         factory->NewStringFromAsciiChecked("Math"),
         static_cast<PropertyAttributes>(DONT_ENUM | READ_ONLY));
   }
+
+#ifdef V8_I18N_SUPPORT
+  {  // -- I n t l
+    Handle<String> name = factory->InternalizeUtf8String("Intl");
+    Handle<JSFunction> cons = factory->NewFunction(name);
+    JSFunction::SetInstancePrototype(
+        cons,
+        Handle<Object>(native_context()->initial_object_prototype(), isolate));
+    Handle<JSObject> intl = factory->NewJSObject(cons, TENURED);
+    DCHECK(intl->IsJSObject());
+    JSObject::AddProperty(global, name, intl, DONT_ENUM);
+
+    Handle<JSObject> date_time_format_prototype =
+        factory->NewJSObject(isolate->object_function(), TENURED);
+    // Install the @@toStringTag property on the {prototype}.
+    JSObject::AddProperty(
+        date_time_format_prototype, factory->to_string_tag_symbol(),
+        factory->Object_string(),
+        static_cast<PropertyAttributes>(DONT_ENUM | READ_ONLY));
+    Handle<JSFunction> date_time_format_constructor = InstallFunction(
+        intl, "DateTimeFormat", JS_OBJECT_TYPE, JSObject::kHeaderSize,
+        date_time_format_prototype, Builtins::kIllegal);
+    JSObject::AddProperty(date_time_format_prototype,
+                          factory->constructor_string(),
+                          date_time_format_constructor, DONT_ENUM);
+
+    Handle<JSObject> number_format_prototype =
+        factory->NewJSObject(isolate->object_function(), TENURED);
+    // Install the @@toStringTag property on the {prototype}.
+    JSObject::AddProperty(
+        number_format_prototype, factory->to_string_tag_symbol(),
+        factory->Object_string(),
+        static_cast<PropertyAttributes>(DONT_ENUM | READ_ONLY));
+    Handle<JSFunction> number_format_constructor = InstallFunction(
+        intl, "NumberFormat", JS_OBJECT_TYPE, JSObject::kHeaderSize,
+        number_format_prototype, Builtins::kIllegal);
+    JSObject::AddProperty(number_format_prototype,
+                          factory->constructor_string(),
+                          number_format_constructor, DONT_ENUM);
+
+    Handle<JSObject> collator_prototype =
+        factory->NewJSObject(isolate->object_function(), TENURED);
+    // Install the @@toStringTag property on the {prototype}.
+    JSObject::AddProperty(
+        collator_prototype, factory->to_string_tag_symbol(),
+        factory->Object_string(),
+        static_cast<PropertyAttributes>(DONT_ENUM | READ_ONLY));
+    Handle<JSFunction> collator_constructor =
+        InstallFunction(intl, "Collator", JS_OBJECT_TYPE, JSObject::kHeaderSize,
+                        collator_prototype, Builtins::kIllegal);
+    JSObject::AddProperty(collator_prototype, factory->constructor_string(),
+                          collator_constructor, DONT_ENUM);
+
+    Handle<JSObject> v8_break_iterator_prototype =
+        factory->NewJSObject(isolate->object_function(), TENURED);
+    // Install the @@toStringTag property on the {prototype}.
+    JSObject::AddProperty(
+        v8_break_iterator_prototype, factory->to_string_tag_symbol(),
+        factory->Object_string(),
+        static_cast<PropertyAttributes>(DONT_ENUM | READ_ONLY));
+    Handle<JSFunction> v8_break_iterator_constructor = InstallFunction(
+        intl, "v8BreakIterator", JS_OBJECT_TYPE, JSObject::kHeaderSize,
+        v8_break_iterator_prototype, Builtins::kIllegal);
+    JSObject::AddProperty(v8_break_iterator_prototype,
+                          factory->constructor_string(),
+                          v8_break_iterator_constructor, DONT_ENUM);
+  }
+#endif  // V8_I18N_SUPPORT
 
   {  // -- A r r a y B u f f e r
     Handle<JSFunction> array_buffer_fun = InstallArrayBuffer(

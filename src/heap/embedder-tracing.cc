@@ -13,6 +13,7 @@ void LocalEmbedderHeapTracer::TracePrologue() {
   if (!InUse()) return;
 
   CHECK(cached_wrappers_to_trace_.empty());
+  num_v8_marking_deque_was_empty_ = 0;
   remote_tracer_->TracePrologue();
 }
 
@@ -40,7 +41,7 @@ bool LocalEmbedderHeapTracer::Trace(
     double deadline, EmbedderHeapTracer::AdvanceTracingActions actions) {
   if (!InUse()) return false;
 
-  RegisterWrappersWithRemoteTracer();
+  DCHECK_EQ(0, NumberOfCachedWrappersToTrace());
   return remote_tracer_->AdvanceTracing(deadline, actions);
 }
 

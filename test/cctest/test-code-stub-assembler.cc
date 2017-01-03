@@ -1760,40 +1760,6 @@ void Recompile(Args... args) {
 
 }  // namespace
 
-TEST(CodeStubAssemblerGraphsCorrectness) {
-  // The test does not work with interpreter because bytecode handlers taken
-  // from the snapshot already refer to precompiled stubs from the snapshot
-  // and there is no way to trigger bytecode handlers recompilation.
-  if (FLAG_ignition || FLAG_turbo) return;
-
-  v8::Isolate::CreateParams create_params;
-  create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
-  v8::Isolate* v8_isolate = v8::Isolate::New(create_params);
-  Isolate* isolate = reinterpret_cast<Isolate*>(v8_isolate);
-
-  {
-    v8::Isolate::Scope isolate_scope(v8_isolate);
-    LocalContext env(v8_isolate);
-    v8::HandleScope scope(v8_isolate);
-
-    FLAG_csa_verify = true;
-
-    // Recompile some stubs here.
-    Recompile<LoadGlobalICStub>(isolate, LoadGlobalICState(NOT_INSIDE_TYPEOF));
-    Recompile<LoadGlobalICTrampolineStub>(isolate,
-                                          LoadGlobalICState(NOT_INSIDE_TYPEOF));
-    Recompile<LoadICStub>(isolate);
-    Recompile<LoadICTrampolineStub>(isolate);
-    Recompile<KeyedLoadICTFStub>(isolate);
-    Recompile<KeyedLoadICTrampolineTFStub>(isolate);
-    Recompile<StoreICStub>(isolate, StoreICState(STRICT));
-    Recompile<StoreICTrampolineStub>(isolate, StoreICState(STRICT));
-    Recompile<KeyedStoreICTFStub>(isolate, StoreICState(STRICT));
-    Recompile<KeyedStoreICTrampolineTFStub>(isolate, StoreICState(STRICT));
-  }
-  v8_isolate->Dispose();
-}
-
 void CustomPromiseHook(v8::PromiseHookType type, v8::Local<v8::Promise> promise,
                        v8::Local<v8::Value> parentPromise) {}
 
@@ -1832,6 +1798,7 @@ TEST(AllocateJSPromise) {
 
   Node* const context = m.Parameter(kNumParams + 2);
   Node* const promise = m.AllocateJSPromise(context);
+  m.PromiseInit(promise);
   m.Return(promise);
 
   Handle<Code> code = data.GenerateCode();
@@ -1902,13 +1869,15 @@ TEST(AllocatePromiseReactionJobInfo) {
 
   Node* const context = m.Parameter(kNumParams + 2);
   Node* const promise = m.AllocateJSPromise(context);
+  m.PromiseInit(promise);
   Node* const tasks = m.AllocateFixedArray(FAST_ELEMENTS, m.IntPtrConstant(1));
   m.StoreFixedArrayElement(tasks, 0, m.UndefinedConstant());
-  Node* const deferred =
+  Node* const deferred_promise =
       m.AllocateFixedArray(FAST_ELEMENTS, m.IntPtrConstant(1));
-  m.StoreFixedArrayElement(deferred, 0, m.UndefinedConstant());
-  Node* const info = m.AllocatePromiseReactionJobInfo(m.SmiConstant(1), promise,
-                                                      tasks, deferred, context);
+  m.StoreFixedArrayElement(deferred_promise, 0, m.UndefinedConstant());
+  Node* const info = m.AllocatePromiseReactionJobInfo(
+      promise, m.SmiConstant(1), tasks, deferred_promise, m.UndefinedConstant(),
+      m.UndefinedConstant(), context);
   m.Return(info);
 
   Handle<Code> code = data.GenerateCode();
@@ -1923,7 +1892,9 @@ TEST(AllocatePromiseReactionJobInfo) {
   CHECK_EQ(Smi::FromInt(1), promise_info->value());
   CHECK(promise_info->promise()->IsJSPromise());
   CHECK(promise_info->tasks()->IsFixedArray());
-  CHECK(promise_info->deferred()->IsFixedArray());
+  CHECK(promise_info->deferred_promise()->IsFixedArray());
+  CHECK(promise_info->deferred_on_resolve()->IsUndefined(isolate));
+  CHECK(promise_info->deferred_on_reject()->IsUndefined(isolate));
   CHECK(promise_info->context()->IsContext());
   CHECK(promise_info->debug_id()->IsUndefined(isolate));
   CHECK(promise_info->debug_name()->IsUndefined(isolate));
@@ -2097,6 +2068,155 @@ TEST(AllocateFunctionWithMapAndContext) {
   CHECK_EQ(*isolate->promise_resolve_shared_fun(), fun->shared());
   CHECK_EQ(isolate->promise_resolve_shared_fun()->code(), fun->code());
   CHECK_EQ(isolate->heap()->undefined_value(), fun->next_function_link());
+}
+
+TEST(CreatePromiseGetCapabilitiesExecutorContext) {
+  Isolate* isolate(CcTest::InitIsolateOnce());
+
+  const int kNumParams = 1;
+  CodeAssemblerTester data(isolate, kNumParams);
+  PromiseBuiltinsAssembler m(data.state());
+
+  Node* const context = m.Parameter(kNumParams + 2);
+  Node* const native_context = m.LoadNativeContext(context);
+
+  Node* const map = m.LoadRoot(Heap::kJSPromiseCapabilityMapRootIndex);
+  Node* const capability = m.AllocateJSObjectFromMap(map);
+  m.StoreObjectFieldNoWriteBarrier(
+      capability, JSPromiseCapability::kPromiseOffset, m.UndefinedConstant());
+  m.StoreObjectFieldNoWriteBarrier(
+      capability, JSPromiseCapability::kResolveOffset, m.UndefinedConstant());
+  m.StoreObjectFieldNoWriteBarrier(
+      capability, JSPromiseCapability::kRejectOffset, m.UndefinedConstant());
+  Node* const executor_context =
+      m.CreatePromiseGetCapabilitiesExecutorContext(capability, native_context);
+  m.Return(executor_context);
+
+  Handle<Code> code = data.GenerateCode();
+  CHECK(!code.is_null());
+
+  FunctionTester ft(code, kNumParams);
+  Handle<Object> result_obj =
+      ft.Call(isolate->factory()->undefined_value()).ToHandleChecked();
+  CHECK(result_obj->IsContext());
+  Handle<Context> context_js = Handle<Context>::cast(result_obj);
+  CHECK_EQ(GetPromiseCapabilityExecutor::kContextLength, context_js->length());
+  CHECK_EQ(isolate->native_context()->closure(), context_js->closure());
+  CHECK_EQ(isolate->heap()->the_hole_value(), context_js->extension());
+  CHECK_EQ(*isolate->native_context(), context_js->native_context());
+  CHECK(context_js->get(GetPromiseCapabilityExecutor::kCapabilitySlot)
+            ->IsJSPromiseCapability());
+}
+
+TEST(NewPromiseCapability) {
+  Isolate* isolate(CcTest::InitIsolateOnce());
+
+  {  // Builtin Promise
+    const int kNumParams = 1;
+    CodeAssemblerTester data(isolate, kNumParams);
+    PromiseBuiltinsAssembler m(data.state());
+
+    Node* const context = m.Parameter(kNumParams + 2);
+    Node* const native_context = m.LoadNativeContext(context);
+    Node* const promise_constructor =
+        m.LoadContextElement(native_context, Context::PROMISE_FUNCTION_INDEX);
+
+    Node* const capability =
+        m.NewPromiseCapability(context, promise_constructor);
+    m.Return(capability);
+
+    Handle<Code> code = data.GenerateCode();
+    FunctionTester ft(code, kNumParams);
+
+    Handle<Object> result_obj =
+        ft.Call(isolate->factory()->undefined_value()).ToHandleChecked();
+    CHECK(result_obj->IsJSPromiseCapability());
+    Handle<JSPromiseCapability> result =
+        Handle<JSPromiseCapability>::cast(result_obj);
+
+    CHECK(result->promise()->IsJSPromise());
+    CHECK(result->resolve()->IsJSFunction());
+    CHECK(result->reject()->IsJSFunction());
+    CHECK_EQ(isolate->native_context()->promise_resolve_shared_fun(),
+             JSFunction::cast(result->resolve())->shared());
+    CHECK_EQ(isolate->native_context()->promise_reject_shared_fun(),
+             JSFunction::cast(result->reject())->shared());
+
+    Handle<JSFunction> callbacks[] = {
+        handle(JSFunction::cast(result->resolve())),
+        handle(JSFunction::cast(result->reject()))};
+
+    for (auto&& callback : callbacks) {
+      Handle<Context> context(Context::cast(callback->context()));
+      CHECK_EQ(isolate->native_context()->closure(), context->closure());
+      CHECK_EQ(isolate->heap()->the_hole_value(), context->extension());
+      CHECK_EQ(*isolate->native_context(), context->native_context());
+      CHECK_EQ(PromiseUtils::kPromiseContextLength, context->length());
+      CHECK_EQ(context->get(PromiseUtils::kPromiseSlot), result->promise());
+    }
+  }
+
+  {  // Custom Promise
+    const int kNumParams = 2;
+    CodeAssemblerTester data(isolate, kNumParams);
+    PromiseBuiltinsAssembler m(data.state());
+
+    Node* const context = m.Parameter(kNumParams + 2);
+
+    Node* const constructor = m.Parameter(1);
+    Node* const capability = m.NewPromiseCapability(context, constructor);
+    m.Return(capability);
+
+    Handle<Code> code = data.GenerateCode();
+    FunctionTester ft(code, kNumParams);
+
+    Handle<JSFunction> constructor_fn =
+        Handle<JSFunction>::cast(v8::Utils::OpenHandle(*CompileRun(
+            "(function FakePromise(executor) {"
+            "  var self = this;"
+            "  function resolve(value) { self.resolvedValue = value; }"
+            "  function reject(reason) { self.rejectedReason = reason; }"
+            "  executor(resolve, reject);"
+            "})")));
+
+    Handle<Object> result_obj =
+        ft.Call(isolate->factory()->undefined_value(), constructor_fn)
+            .ToHandleChecked();
+    CHECK(result_obj->IsJSPromiseCapability());
+    Handle<JSPromiseCapability> result =
+        Handle<JSPromiseCapability>::cast(result_obj);
+
+    CHECK(result->promise()->IsJSObject());
+    Handle<JSObject> promise(JSObject::cast(result->promise()));
+    CHECK_EQ(constructor_fn->prototype_or_initial_map(), promise->map());
+    CHECK(result->resolve()->IsJSFunction());
+    CHECK(result->reject()->IsJSFunction());
+
+    Handle<String> resolved_str =
+        isolate->factory()->NewStringFromAsciiChecked("resolvedStr");
+    Handle<String> rejected_str =
+        isolate->factory()->NewStringFromAsciiChecked("rejectedStr");
+
+    Handle<Object> argv1[] = {resolved_str};
+    Handle<Object> ret =
+        Execution::Call(isolate, handle(result->resolve(), isolate),
+                        isolate->factory()->undefined_value(), 1, argv1)
+            .ToHandleChecked();
+
+    Handle<Object> prop1 =
+        JSReceiver::GetProperty(isolate, promise, "resolvedValue")
+            .ToHandleChecked();
+    CHECK_EQ(*resolved_str, *prop1);
+
+    Handle<Object> argv2[] = {rejected_str};
+    ret = Execution::Call(isolate, handle(result->reject(), isolate),
+                          isolate->factory()->undefined_value(), 1, argv2)
+              .ToHandleChecked();
+    Handle<Object> prop2 =
+        JSReceiver::GetProperty(isolate, promise, "rejectedReason")
+            .ToHandleChecked();
+    CHECK_EQ(*rejected_str, *prop2);
+  }
 }
 
 }  // namespace internal

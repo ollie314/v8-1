@@ -867,8 +867,8 @@ class V8_EXPORT HandleScope {
 
   HandleScope(const HandleScope&) = delete;
   void operator=(const HandleScope&) = delete;
-  void* operator new(size_t size) = delete;
-  void operator delete(void*, size_t) = delete;
+  void* operator new(size_t size);
+  void operator delete(void*, size_t);
 
  protected:
   V8_INLINE HandleScope() {}
@@ -919,8 +919,8 @@ class V8_EXPORT EscapableHandleScope : public HandleScope {
 
   EscapableHandleScope(const EscapableHandleScope&) = delete;
   void operator=(const EscapableHandleScope&) = delete;
-  void* operator new(size_t size) = delete;
-  void operator delete(void*, size_t) = delete;
+  void* operator new(size_t size);
+  void operator delete(void*, size_t);
 
  private:
   internal::Object** Escape(internal::Object** escape_value);
@@ -934,8 +934,8 @@ class V8_EXPORT SealHandleScope {
 
   SealHandleScope(const SealHandleScope&) = delete;
   void operator=(const SealHandleScope&) = delete;
-  void* operator new(size_t size) = delete;
-  void operator delete(void*, size_t) = delete;
+  void* operator new(size_t size);
+  void operator delete(void*, size_t);
 
  private:
   internal::Isolate* const isolate_;
@@ -6488,6 +6488,8 @@ class V8_EXPORT Isolate {
     kLegacyDateParser = 33,
     kDefineGetterOrSetterWouldThrow = 34,
     kFunctionConstructorReturnedUndefined = 35,
+    kAssigmentExpressionLHSIsCallInSloppy = 36,
+    kAssigmentExpressionLHSIsCallInStrict = 37,
 
     // If you add new values here, you'll also need to update Chromium's:
     // UseCounter.h, V8PerIsolateData.cpp, histograms.xml
@@ -7042,6 +7044,17 @@ class V8_EXPORT Isolate {
    * may change frequently.
    */
   void SetRAILMode(RAILMode rail_mode);
+
+  /**
+   * Optional notification to tell V8 the current isolate is used for debugging
+   * and requires higher heap limit.
+   */
+  void IncreaseHeapLimitForDebugging();
+
+  /**
+   * Restores the original heap limit after IncreaseHeapLimitForDebugging().
+   */
+  void RestoreOriginalHeapLimit();
 
   /**
    * Allows the host application to provide the address of a function that is
@@ -7879,8 +7892,8 @@ class V8_EXPORT TryCatch {
 
   TryCatch(const TryCatch&) = delete;
   void operator=(const TryCatch&) = delete;
-  void* operator new(size_t size) = delete;
-  void operator delete(void*, size_t) = delete;
+  void* operator new(size_t size);
+  void operator delete(void*, size_t);
 
  private:
   void ResetInternal();

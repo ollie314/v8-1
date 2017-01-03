@@ -883,9 +883,9 @@ void IC::PatchCache(Handle<Name> name, Handle<Object> handler) {
   }
 }
 
-Handle<Object> LoadIC::SimpleFieldLoad(FieldIndex index) {
-  TRACE_HANDLER_STATS(isolate(), LoadIC_LoadFieldDH);
-  return LoadHandler::LoadField(isolate(), index);
+Handle<Object> LoadIC::SimpleFieldLoad(Isolate* isolate, FieldIndex index) {
+  TRACE_HANDLER_STATS(isolate, LoadIC_LoadFieldDH);
+  return LoadHandler::LoadField(isolate, index);
 }
 
 namespace {
@@ -1310,7 +1310,7 @@ Handle<Object> LoadIC::GetMapIndependentHandler(LookupIterator* lookup) {
   if (receiver->IsString() &&
       Name::Equals(isolate()->factory()->length_string(), lookup->name())) {
     FieldIndex index = FieldIndex::ForInObjectOffset(String::kLengthOffset);
-    return SimpleFieldLoad(index);
+    return SimpleFieldLoad(isolate(), index);
   }
 
   if (receiver->IsStringWrapper() &&
@@ -1348,7 +1348,7 @@ Handle<Object> LoadIC::GetMapIndependentHandler(LookupIterator* lookup) {
       if (Accessors::IsJSObjectFieldAccessor(map, lookup->name(),
                                              &object_offset)) {
         FieldIndex index = FieldIndex::ForInObjectOffset(object_offset, *map);
-        return SimpleFieldLoad(index);
+        return SimpleFieldLoad(isolate(), index);
       }
 
       if (IsCompatibleReceiver(lookup, map)) {
@@ -1419,7 +1419,7 @@ Handle<Object> LoadIC::GetMapIndependentHandler(LookupIterator* lookup) {
       // -------------- Fields --------------
       if (lookup->property_details().type() == DATA) {
         FieldIndex field = lookup->GetFieldIndex();
-        Handle<Object> smi_handler = SimpleFieldLoad(field);
+        Handle<Object> smi_handler = SimpleFieldLoad(isolate(), field);
         if (receiver_is_holder) {
           return smi_handler;
         }
@@ -2422,17 +2422,14 @@ MaybeHandle<Object> KeyedStoreIC::Store(Handle<Object> object,
   }
 
   Handle<Map> old_receiver_map;
-  bool sloppy_arguments_elements = false;
+  bool is_arguments = false;
   bool key_is_valid_index = false;
   KeyedAccessStoreMode store_mode = STANDARD_STORE;
   if (use_ic && object->IsJSObject()) {
     Handle<JSObject> receiver = Handle<JSObject>::cast(object);
     old_receiver_map = handle(receiver->map(), isolate());
-    sloppy_arguments_elements =
-        !is_sloppy(language_mode()) &&
-        receiver->elements()->map() ==
-            isolate()->heap()->sloppy_arguments_elements_map();
-    if (!sloppy_arguments_elements) {
+    is_arguments = receiver->IsJSArgumentsObject();
+    if (!is_arguments) {
       key_is_valid_index = key->IsSmi() && Smi::cast(*key)->value() >= 0;
       if (key_is_valid_index) {
         uint32_t index = static_cast<uint32_t>(Smi::cast(*key)->value());
@@ -2449,7 +2446,7 @@ MaybeHandle<Object> KeyedStoreIC::Store(Handle<Object> object,
 
   if (use_ic) {
     if (!old_receiver_map.is_null()) {
-      if (sloppy_arguments_elements) {
+      if (is_arguments) {
         TRACE_GENERIC_IC(isolate(), "KeyedStoreIC", "arguments receiver");
       } else if (key_is_valid_index) {
         // We should go generic if receiver isn't a dictionary, but our

@@ -70,8 +70,19 @@ class JSBinopReduction final {
         case CompareOperationHint::kAny:
         case CompareOperationHint::kNone:
         case CompareOperationHint::kString:
+        case CompareOperationHint::kInternalizedString:
           break;
       }
+    }
+    return false;
+  }
+
+  bool IsInternalizedStringCompareOperation() {
+    if (lowering_->flags() & JSTypedLowering::kDeoptimizationEnabled) {
+      DCHECK_EQ(1, node_->op()->EffectOutputCount());
+      return (CompareOperationHintOf(node_->op()) ==
+              CompareOperationHint::kInternalizedString) &&
+             BothInputsMaybe(Type::InternalizedString());
     }
     return false;
   }
@@ -102,6 +113,25 @@ class JSBinopReduction final {
       }
     }
     return false;
+  }
+
+  // Checks that both inputs are InternalizedString, and if we don't know
+  // statically that one side is already an InternalizedString, insert a
+  // CheckInternalizedString node.
+  void CheckInputsToInternalizedString() {
+    if (!left_type()->Is(Type::UniqueName())) {
+      Node* left_input = graph()->NewNode(
+          simplified()->CheckInternalizedString(), left(), effect(), control());
+      node_->ReplaceInput(0, left_input);
+      update_effect(left_input);
+    }
+    if (!right_type()->Is(Type::UniqueName())) {
+      Node* right_input =
+          graph()->NewNode(simplified()->CheckInternalizedString(), right(),
+                           effect(), control());
+      node_->ReplaceInput(1, right_input);
+      update_effect(right_input);
+    }
   }
 
   void ConvertInputsToNumber() {
@@ -316,6 +346,10 @@ class JSBinopReduction final {
   bool OneInputIs(Type* t) { return LeftInputIs(t) || RightInputIs(t); }
 
   bool BothInputsAre(Type* t) { return LeftInputIs(t) && RightInputIs(t); }
+
+  bool BothInputsMaybe(Type* t) {
+    return left_type()->Maybe(t) && right_type()->Maybe(t);
+  }
 
   bool OneInputCannotBe(Type* t) {
     return !left_type()->Maybe(t) || !right_type()->Maybe(t);
@@ -851,6 +885,13 @@ Reduction JSTypedLowering::ReduceJSEqual(Node* node, bool invert) {
 
   JSBinopReduction r(this, node);
 
+  if (r.BothInputsAre(Type::UniqueName())) {
+    return r.ChangeToPureOperator(simplified()->ReferenceEqual(), invert);
+  }
+  if (r.IsInternalizedStringCompareOperation()) {
+    r.CheckInputsToInternalizedString();
+    return r.ChangeToPureOperator(simplified()->ReferenceEqual(), invert);
+  }
   if (r.BothInputsAre(Type::String())) {
     return r.ChangeToPureOperator(simplified()->StringEqual(), invert);
   }
@@ -932,6 +973,10 @@ Reduction JSTypedLowering::ReduceJSStrictEqual(Node* node, bool invert) {
     return r.ChangeToPureOperator(simplified()->ReferenceEqual(), invert);
   }
   if (r.BothInputsAre(Type::Unique())) {
+    return r.ChangeToPureOperator(simplified()->ReferenceEqual(), invert);
+  }
+  if (r.IsInternalizedStringCompareOperation()) {
+    r.CheckInputsToInternalizedString();
     return r.ChangeToPureOperator(simplified()->ReferenceEqual(), invert);
   }
   if (r.BothInputsAre(Type::String())) {
@@ -1254,6 +1299,9 @@ Reduction JSTypedLowering::ReduceJSStoreProperty(Node* node) {
   Node* value = NodeProperties::GetValueInput(node, 2);
   Type* key_type = NodeProperties::GetType(key);
   Type* value_type = NodeProperties::GetType(value);
+
+  if (!value_type->Is(Type::PlainPrimitive())) return NoChange();
+
   HeapObjectMatcher mbase(base);
   if (mbase.HasValue() && mbase.Value()->IsJSTypedArray()) {
     Handle<JSTypedArray> const array =
@@ -1272,7 +1320,6 @@ Reduction JSTypedLowering::ReduceJSStoreProperty(Node* node) {
             Handle<FixedTypedArrayBase>::cast(handle(array->elements()));
         Node* buffer = jsgraph()->PointerConstant(elements->external_pointer());
         Node* length = jsgraph()->Constant(byte_length);
-        Node* context = NodeProperties::GetContextInput(node);
         Node* effect = NodeProperties::GetEffectInput(node);
         Node* control = NodeProperties::GetControlInput(node);
         // Convert to a number first.
@@ -1281,12 +1328,8 @@ Reduction JSTypedLowering::ReduceJSStoreProperty(Node* node) {
           if (number_reduction.Changed()) {
             value = number_reduction.replacement();
           } else {
-            Node* frame_state_for_to_number =
-                NodeProperties::FindFrameStateBefore(node);
-            value = effect =
-                graph()->NewNode(javascript()->ToNumber(), value, context,
-                                 frame_state_for_to_number, effect, control);
-            control = graph()->NewNode(common()->IfSuccess(), value);
+            value =
+                graph()->NewNode(simplified()->PlainPrimitiveToNumber(), value);
           }
         }
         // Check if we can avoid the bounds check.

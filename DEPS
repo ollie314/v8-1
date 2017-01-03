@@ -8,7 +8,7 @@ vars = {
 
 deps = {
   "v8/build":
-    Var("chromium_url") + "/chromium/src/build.git" + "@" + "5c10e066772b65b557d47479e1414b48c5eabe91",
+    Var("chromium_url") + "/chromium/src/build.git" + "@" + "bdc04ca095549fc9f1e27210d8e36c58a7b40600",
   "v8/tools/gyp":
     Var("chromium_url") + "/external/gyp.git" + "@" + "e7079f0e0e14108ab0dba58728ff219637458563",
   "v8/third_party/icu":
@@ -35,11 +35,11 @@ deps = {
     Var("chromium_url") + "/v8/deps/third_party/mozilla-tests.git" + "@" + "f6c578a10ea707b1a8ab0b88943fe5115ce2b9be",
   "v8/test/simdjs/data": Var("chromium_url") + "/external/github.com/tc39/ecmascript_simd.git" + "@" + "baf493985cb9ea7cdbd0d68704860a8156de9556",
   "v8/test/test262/data":
-    Var("chromium_url") + "/external/github.com/tc39/test262.git" + "@" + "fb61ab44eb1bbc2699d714fc00e33af2a19411ce",
+    Var("chromium_url") + "/external/github.com/tc39/test262.git" + "@" + "6a0f1189eb00d38ef9760cb65cbc41c066876cde",
   "v8/test/test262/harness":
-    Var("chromium_url") + "/external/github.com/test262-utils/test262-harness-py.git" + "@" + "cbd968f54f7a95c6556d53ba852292a4c49d11d8",
+    Var("chromium_url") + "/external/github.com/test262-utils/test262-harness-py.git" + "@" + "0f2acdd882c84cff43b9d60df7574a1901e2cdcd",
   "v8/tools/clang":
-    Var("chromium_url") + "/chromium/src/tools/clang.git" + "@" + "f6f94f44a69aef15f893e2d84d9817db9f44d63a",
+    Var("chromium_url") + "/chromium/src/tools/clang.git" + "@" + "432074b38e424439f11347fea74a0606aae008fb",
 }
 
 deps_os = {
@@ -47,7 +47,7 @@ deps_os = {
     "v8/third_party/android_tools":
       Var("chromium_url") + "/android_tools.git" + "@" + "b43a6a289a7588b1769814f04dd6c7d7176974cc",
     "v8/third_party/catapult":
-      Var('chromium_url') + "/external/github.com/catapult-project/catapult.git" + "@" + "489a5bc40e983273304af2375580900819b1389d",
+      Var('chromium_url') + "/external/github.com/catapult-project/catapult.git" + "@" + "9ddf24882ea3083cf0f9d02df57318baf035f75c",
   },
   "win": {
     "v8/third_party/cygwin":

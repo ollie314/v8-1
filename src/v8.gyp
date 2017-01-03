@@ -484,6 +484,8 @@
         'builtins/builtins-call.cc',
         'builtins/builtins-callsite.cc',
         'builtins/builtins-conversion.cc',
+        'builtins/builtins-constructor.cc',
+        'builtins/builtins-constructor.h',
         'builtins/builtins-dataview.cc',
         'builtins/builtins-date.cc',
         'builtins/builtins-debug.cc',
@@ -492,6 +494,7 @@
         'builtins/builtins-generator.cc',
         'builtins/builtins-global.cc',
         'builtins/builtins-handler.cc',
+        'builtins/builtins-ic.cc',
         'builtins/builtins-internal.cc',
         'builtins/builtins-interpreter.cc',
         'builtins/builtins-json.cc',
@@ -594,6 +597,8 @@
         'compiler/frame-states.h',
         'compiler/gap-resolver.cc',
         'compiler/gap-resolver.h',
+        'compiler/graph-assembler.cc',
+        'compiler/graph-assembler.h',
         'compiler/graph-reducer.cc',
         'compiler/graph-reducer.h',
         'compiler/graph-replay.cc',
@@ -1324,6 +1329,7 @@
         'zone/zone-segment.h',
         'zone/zone-allocator.h',
         'zone/zone-containers.h',
+        'zone/zone-handle-set.h',
       ],
       'conditions': [
         ['want_separate_host_toolset==1', {

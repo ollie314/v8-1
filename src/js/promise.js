@@ -18,8 +18,6 @@ var promiseHandledBySymbol =
     utils.ImportNow("promise_handled_by_symbol");
 var promiseForwardingHandlerSymbol =
     utils.ImportNow("promise_forwarding_handler_symbol");
-var promiseHandledHintSymbol =
-    utils.ImportNow("promise_handled_hint_symbol");
 var ObjectHasOwnProperty; // Used by HAS_PRIVATE.
 var GlobalPromise = global.Promise;
 
@@ -31,7 +29,7 @@ utils.Import(function(from) {
 
 // Core functionality.
 
-function PromiseDebugGetInfo(deferreds, status) {
+function PromiseDebugGetInfo(deferred_promise, status) {
   var id, name, instrumenting = DEBUG_IS_ACTIVE;
 
   if (instrumenting) {
@@ -41,11 +39,11 @@ function PromiseDebugGetInfo(deferreds, status) {
     // functions will not get a good stack trace, as async functions require
     // different stacks from direct Promise use, but we save and restore a
     // stack once for all reactions. TODO(littledan): Improve this case.
-    if (!IS_UNDEFINED(deferreds) &&
-        HAS_PRIVATE(deferreds.promise, promiseHandledBySymbol) &&
-        HAS_PRIVATE(GET_PRIVATE(deferreds.promise, promiseHandledBySymbol),
+    if (!IS_UNDEFINED(deferred_promise) &&
+        HAS_PRIVATE(deferred_promise, promiseHandledBySymbol) &&
+        HAS_PRIVATE(GET_PRIVATE(deferred_promise, promiseHandledBySymbol),
                     promiseAsyncStackIDSymbol)) {
-      id = GET_PRIVATE(GET_PRIVATE(deferreds.promise, promiseHandledBySymbol),
+      id = GET_PRIVATE(GET_PRIVATE(deferred_promise, promiseHandledBySymbol),
                        promiseAsyncStackIDSymbol);
       name = "async function";
     } else {
@@ -67,8 +65,8 @@ SET_PRIVATE(PromiseIdRejectHandler, promiseForwardingHandlerSymbol, true);
 // For bootstrapper.
 
 // This is used by utils and v8-extras.
-function PromiseCreate() {
-  return %promise_internal_constructor(UNDEFINED);
+function PromiseCreate(parent) {
+  return %promise_internal_constructor(parent);
 }
 
 // Only used by async-await.js
@@ -79,47 +77,6 @@ function RejectPromise(promise, reason, debugEvent) {
 // Export to bindings
 function DoRejectPromise(promise, reason) {
   %PromiseReject(promise, reason, true);
-}
-
-// The resultCapability.promise is only ever fulfilled internally,
-// so we don't need the closures to protect against accidentally
-// calling them multiple times.
-function CreateInternalPromiseCapability(parent) {
-  return {
-    promise: %promise_internal_constructor(parent),
-    resolve: UNDEFINED,
-    reject: UNDEFINED
-  };
-}
-
-// ES#sec-newpromisecapability
-// NewPromiseCapability ( C )
-function NewPromiseCapability(C, debugEvent) {
-  if (C === GlobalPromise) {
-    // Optimized case, avoid extra closure.
-    var promise = %promise_internal_constructor(UNDEFINED);
-    // TODO(gsathya): Remove container for callbacks when this is
-    // moved to CPP/TF.
-    var callbacks = %create_resolving_functions(promise, debugEvent);
-    return {
-      promise: promise,
-      resolve: callbacks[kResolveCallback],
-      reject: callbacks[kRejectCallback]
-    };
-  }
-
-  var result = {promise: UNDEFINED, resolve: UNDEFINED, reject: UNDEFINED };
-  result.promise = new C((resolve, reject) => {
-    if (!IS_UNDEFINED(result.resolve) || !IS_UNDEFINED(result.reject))
-        throw %make_type_error(kPromiseExecutorAlreadyInvoked);
-    result.resolve = resolve;
-    result.reject = reject;
-  });
-
-  if (!IS_CALLABLE(result.resolve) || !IS_CALLABLE(result.reject))
-      throw %make_type_error(kPromiseNonCallable);
-
-  return result;
 }
 
 // ES#sec-promise.reject
@@ -136,7 +93,7 @@ function PromiseReject(r) {
     %PromiseRejectEventFromStack(promise, r);
     return promise;
   } else {
-    var promiseCapability = NewPromiseCapability(this, true);
+    var promiseCapability = %new_promise_capability(this, true);
     %_Call(promiseCapability.reject, UNDEFINED, r);
     return promiseCapability.promise;
   }
@@ -160,7 +117,7 @@ function PromiseResolve(x) {
   }
 
   // debugEvent is not so meaningful here as it will be resolved
-  var promiseCapability = NewPromiseCapability(this, true);
+  var promiseCapability = %new_promise_capability(this, true);
   %_Call(promiseCapability.resolve, UNDEFINED, x);
   return promiseCapability.promise;
 }
@@ -174,7 +131,7 @@ function PromiseAll(iterable) {
 
   // false debugEvent so that forwarding the rejection through all does not
   // trigger redundant ExceptionEvents
-  var deferred = NewPromiseCapability(this, false);
+  var deferred = %new_promise_capability(this, false);
   var resolutions = new InternalArray();
   var count;
 
@@ -238,7 +195,7 @@ function PromiseRace(iterable) {
 
   // false debugEvent so that forwarding the rejection through race does not
   // trigger redundant ExceptionEvents
-  var deferred = NewPromiseCapability(this, false);
+  var deferred = %new_promise_capability(this, false);
 
   // For catch prediction, don't treat the .then calls as handling it;
   // instead, recurse outwards.
@@ -263,68 +220,6 @@ function PromiseRace(iterable) {
   return deferred.promise;
 }
 
-
-// Utility for debugger
-
-function PromiseHasUserDefinedRejectHandlerCheck(handler, deferred) {
-  // Recurse to the forwarding Promise, if any. This may be due to
-  //  - await reaction forwarding to the throwaway Promise, which has
-  //    a dependency edge to the outer Promise.
-  //  - PromiseIdResolveHandler forwarding to the output of .then
-  //  - Promise.all/Promise.race forwarding to a throwaway Promise, which
-  //    has a dependency edge to the generated outer Promise.
-  if (GET_PRIVATE(handler, promiseForwardingHandlerSymbol)) {
-    return PromiseHasUserDefinedRejectHandlerRecursive(deferred.promise);
-  }
-
-  // Otherwise, this is a real reject handler for the Promise
-  return true;
-}
-
-function PromiseHasUserDefinedRejectHandlerRecursive(promise) {
-  // If this promise was marked as being handled by a catch block
-  // in an async function, then it has a user-defined reject handler.
-  if (GET_PRIVATE(promise, promiseHandledHintSymbol)) return true;
-
-  // If this Promise is subsumed by another Promise (a Promise resolved
-  // with another Promise, or an intermediate, hidden, throwaway Promise
-  // within async/await), then recurse on the outer Promise.
-  // In this case, the dependency is one possible way that the Promise
-  // could be resolved, so it does not subsume the other following cases.
-  var outerPromise = GET_PRIVATE(promise, promiseHandledBySymbol);
-  if (outerPromise &&
-      PromiseHasUserDefinedRejectHandlerRecursive(outerPromise)) {
-    return true;
-  }
-
-  if (!%is_promise(promise)) return false;
-
-  var queue = %PromiseRejectReactions(promise);
-  var deferred = %PromiseDeferred(promise);
-
-  if (IS_UNDEFINED(queue)) return false;
-
-  if (!IS_ARRAY(queue)) {
-    return PromiseHasUserDefinedRejectHandlerCheck(queue, deferred);
-  }
-
-  for (var i = 0; i < queue.length; i++) {
-    if (PromiseHasUserDefinedRejectHandlerCheck(queue[i], deferred[i])) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Return whether the promise will be handled by a user-defined reject
-// handler somewhere down the promise chain. For this, we do a depth-first
-// search for a reject handler that's not the default PromiseIdRejectHandler.
-// This function also traverses dependencies of one Promise on another,
-// set up through async/await and Promises resolved with Promises.
-function PromiseHasUserDefinedRejectHandler() {
-  return PromiseHasUserDefinedRejectHandlerRecursive(this);
-};
-
 function MarkPromiseAsHandled(promise) {
   %PromiseMarkAsHandled(promise);
 }
@@ -341,13 +236,10 @@ utils.InstallFunctions(GlobalPromise, DONT_ENUM, [
 
 %InstallToContext([
   "promise_create", PromiseCreate,
-  "promise_has_user_defined_reject_handler", PromiseHasUserDefinedRejectHandler,
   "promise_reject", DoRejectPromise,
   // TODO(gsathya): Remove this once we update the promise builtin.
   "promise_internal_reject", RejectPromise,
   "promise_debug_get_info", PromiseDebugGetInfo,
-  "new_promise_capability", NewPromiseCapability,
-  "internal_promise_capability", CreateInternalPromiseCapability,
   "promise_id_resolve_handler", PromiseIdResolveHandler,
   "promise_id_reject_handler", PromiseIdRejectHandler
 ]);
@@ -363,8 +255,6 @@ utils.InstallFunctions(extrasUtils, 0, [
 
 utils.Export(function(to) {
   to.PromiseCreate = PromiseCreate;
-
-  to.CreateInternalPromiseCapability = CreateInternalPromiseCapability;
   to.RejectPromise = RejectPromise;
 });
 

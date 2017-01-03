@@ -2136,6 +2136,7 @@ void MarkCompactCollector::ProcessEphemeralMarking(
     if (!only_process_harmony_weak_collections) {
       if (heap_->local_embedder_heap_tracer()->InUse()) {
         TRACE_GC(heap()->tracer(), GCTracer::Scope::MC_MARK_WRAPPER_TRACING);
+        heap_->local_embedder_heap_tracer()->RegisterWrappersWithRemoteTracer();
         heap_->local_embedder_heap_tracer()->Trace(
             0,
             EmbedderHeapTracer::AdvanceTracingActions(
@@ -2157,7 +2158,8 @@ void MarkCompactCollector::ProcessEphemeralMarking(
     work_to_do = !marking_deque()->IsEmpty();
     ProcessMarkingDeque<MarkCompactMode::FULL>();
   }
-  CHECK(heap_->MarkingDequesAreEmpty());
+  CHECK(marking_deque()->IsEmpty());
+  CHECK_EQ(0, heap()->local_embedder_heap_tracer()->NumberOfWrappersToTrace());
 }
 
 void MarkCompactCollector::ProcessTopOptimizedFrame(ObjectVisitor* visitor) {

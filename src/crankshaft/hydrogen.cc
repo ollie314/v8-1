@@ -5052,11 +5052,10 @@ void HOptimizedGraphBuilder::VisitFunctionLiteral(FunctionLiteral* expr) {
   HConstant* shared_info_value = Add<HConstant>(shared_info);
   HInstruction* instr;
   if (!expr->pretenure()) {
-    FastNewClosureStub stub(isolate());
-    FastNewClosureDescriptor descriptor(isolate());
+    Callable callable = CodeFactory::FastNewClosure(isolate());
     HValue* values[] = {shared_info_value};
-    HConstant* stub_value = Add<HConstant>(stub.GetCode());
-    instr = New<HCallWithDescriptor>(stub_value, 0, descriptor,
+    HConstant* stub_value = Add<HConstant>(callable.code());
+    instr = New<HCallWithDescriptor>(stub_value, 0, callable.descriptor(),
                                      ArrayVector(values));
   } else {
     Add<HPushArguments>(shared_info_value);
@@ -7400,7 +7399,7 @@ bool HOptimizedGraphBuilder::TryArgumentsAccess(Property* expr) {
   } else {
     // We need to take into account the KEYED_LOAD_IC feedback to guard the
     // HBoundsCheck instructions below.
-    if (!expr->IsMonomorphic()) return false;
+    if (!expr->IsMonomorphic() && !expr->IsUninitialized()) return false;
     if (IsAnyParameterContextAllocated()) return false;
     CHECK_ALIVE_OR_RETURN(VisitForValue(expr->obj(), ARGUMENTS_ALLOWED), true);
     CHECK_ALIVE_OR_RETURN(VisitForValue(expr->key()), true);
@@ -12098,19 +12097,6 @@ void HOptimizedGraphBuilder::GenerateSubString(CallRuntime* call) {
   HInstruction* result = New<HCallWithDescriptor>(
       stub, 0, callable.descriptor(), ArrayVector(values));
   result->set_type(HType::String());
-  return ast_context()->ReturnInstruction(result, call->id());
-}
-
-// Support for direct creation of new objects.
-void HOptimizedGraphBuilder::GenerateNewObject(CallRuntime* call) {
-  DCHECK_EQ(2, call->arguments()->length());
-  CHECK_ALIVE(VisitExpressions(call->arguments()));
-  FastNewObjectStub stub(isolate());
-  FastNewObjectDescriptor descriptor(isolate());
-  HValue* values[] = {Pop(), Pop()};
-  HConstant* stub_value = Add<HConstant>(stub.GetCode());
-  HInstruction* result =
-      New<HCallWithDescriptor>(stub_value, 0, descriptor, ArrayVector(values));
   return ast_context()->ReturnInstruction(result, call->id());
 }
 

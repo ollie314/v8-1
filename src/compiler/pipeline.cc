@@ -763,9 +763,6 @@ struct InliningPhase {
     CommonOperatorReducer common_reducer(&graph_reducer, data->graph(),
                                          data->common(), data->machine());
     JSCallReducer::Flags call_reducer_flags = JSCallReducer::kNoFlags;
-    if (data->info()->is_bailout_on_uninitialized()) {
-      call_reducer_flags |= JSCallReducer::kBailoutOnUninitialized;
-    }
     if (data->info()->is_deoptimization_enabled()) {
       call_reducer_flags |= JSCallReducer::kDeoptimizationEnabled;
     }
@@ -948,8 +945,8 @@ struct EscapeAnalysisPhase {
   }
 };
 
-struct RepresentationSelectionPhase {
-  static const char* phase_name() { return "representation selection"; }
+struct SimplifiedLoweringPhase {
+  static const char* phase_name() { return "simplified lowering"; }
 
   void Run(PipelineData* data, Zone* temp_zone) {
     SimplifiedLowering lowering(data->jsgraph(), temp_zone,
@@ -979,6 +976,17 @@ struct LoopExitEliminationPhase {
 
   void Run(PipelineData* data, Zone* temp_zone) {
     LoopPeeler::EliminateLoopExits(data->graph(), temp_zone);
+  }
+};
+
+struct GenericLoweringPrepPhase {
+  static const char* phase_name() { return "generic lowering prep"; }
+
+  void Run(PipelineData* data, Zone* temp_zone) {
+    // Make sure we cache these code stubs.
+    data->jsgraph()->CEntryStubConstant(1);
+    data->jsgraph()->CEntryStubConstant(2);
+    data->jsgraph()->CEntryStubConstant(3);
   }
 };
 
@@ -1545,11 +1553,22 @@ bool PipelineImpl::CreateGraph() {
     }
   }
 
-  // Select representations. This has to run w/o the Typer decorator, because
-  // we cannot compute meaningful types anyways, and the computed types might
-  // even conflict with the representation/truncation logic.
-  Run<RepresentationSelectionPhase>();
-  RunPrintAndVerify("Representations selected", true);
+  // Do some hacky things to prepare generic lowering.
+  Run<GenericLoweringPrepPhase>();
+
+  data->EndPhaseKind();
+
+  return true;
+}
+
+bool PipelineImpl::OptimizeGraph(Linkage* linkage) {
+  PipelineData* data = this->data_;
+
+  // Perform simplified lowering. This has to run w/o the Typer decorator,
+  // because we cannot compute meaningful types anyways, and the computed types
+  // might even conflict with the representation/truncation logic.
+  Run<SimplifiedLoweringPhase>();
+  RunPrintAndVerify("Simplified lowering", true);
 
 #ifdef DEBUG
   // From now on it is invalid to look at types on the nodes, because:
@@ -1571,14 +1590,6 @@ bool PipelineImpl::CreateGraph() {
   // Run generic lowering pass.
   Run<GenericLoweringPhase>();
   RunPrintAndVerify("Generic lowering", true);
-
-  data->EndPhaseKind();
-
-  return true;
-}
-
-bool PipelineImpl::OptimizeGraph(Linkage* linkage) {
-  PipelineData* data = this->data_;
 
   data->BeginPhaseKind("block building");
 

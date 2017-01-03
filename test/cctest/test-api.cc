@@ -18225,15 +18225,27 @@ TEST(PromiseHook) {
   v8::Local<v8::Context> context = CcTest::isolate()->GetCurrentContext();
 
   promise_hook_data = new PromiseHookData();
+  isolate->SetPromiseHook(CustomPromiseHook);
+
+  // Test that an initialized promise is passed to init. Other hooks
+  // can not have un initialized promise.
+  promise_hook_data->check_value = false;
+  CompileRun("var p = new Promise(() => {});");
+
+  auto init_promise = global->Get(context, v8_str("init")).ToLocalChecked();
+  CHECK(GetPromise("p")->Equals(env.local(), init_promise).FromJust());
+  auto init_promise_obj = v8::Local<v8::Promise>::Cast(init_promise);
+  CHECK(init_promise_obj->State() == v8::Promise::PromiseState::kPending);
+  CHECK_EQ(false, init_promise_obj->HasHandler());
+
+  promise_hook_data->Reset();
   promise_hook_data->promise_hook_value = "fulfilled";
   const char* source =
       "var resolve, value = ''; \n"
       "var p = new Promise(r => resolve = r); \n";
 
-  isolate->SetPromiseHook(CustomPromiseHook);
-
   CompileRun(source);
-  auto init_promise = global->Get(context, v8_str("init")).ToLocalChecked();
+  init_promise = global->Get(context, v8_str("init")).ToLocalChecked();
   CHECK(GetPromise("p")->Equals(env.local(), init_promise).FromJust());
   CHECK_EQ(1, promise_hook_data->promise_hook_count);
   CHECK_EQ(0, promise_hook_data->parent_promise_count);
@@ -18426,7 +18438,40 @@ TEST(PromiseHook) {
                      v8_str(promise_hook_data->promise_hook_value.c_str()))
             .FromJust());
 
+  promise_hook_data->Reset();
+  promise_hook_data->promise_hook_value = "subclass";
+  source =
+      "var resolve, value = '';\n"
+      "class MyPromise extends Promise { \n"
+      "  then(onFulfilled, onRejected) { \n"
+      "      return super.then(onFulfilled, onRejected); \n"
+      "  };\n"
+      "};\n"
+      "var p = new MyPromise(r => resolve = r);\n";
+
+  CompileRun(source);
+  // 1) init hook (p)
+  CHECK_EQ(1, promise_hook_data->promise_hook_count);
+
+  CompileRun("var p1 = p.then(() => value = 'subclass');\n");
+  // 2) init hook (p1)
+  CHECK_EQ(2, promise_hook_data->promise_hook_count);
+
+  CompileRun("resolve();\n");
+  resolve_promise = global->Get(context, v8_str("resolve")).ToLocalChecked();
+  before_promise = global->Get(context, v8_str("before")).ToLocalChecked();
+  after_promise = global->Get(context, v8_str("after")).ToLocalChecked();
+  CHECK(GetPromise("p")->Equals(env.local(), before_promise).FromJust());
+  CHECK(GetPromise("p")->Equals(env.local(), after_promise).FromJust());
+  CHECK(GetPromise("p1")->Equals(env.local(), resolve_promise).FromJust());
+  // 3) resolve hook (p)
+  // 4) before hook (p)
+  // 5) after hook (p)
+  // 6) resolve hook (p1)
+  CHECK_EQ(6, promise_hook_data->promise_hook_count);
+
   delete promise_hook_data;
+  isolate->SetPromiseHook(nullptr);
 }
 
 void AnalyzeStackOfDynamicScriptWithSourceURL(
@@ -22116,29 +22161,9 @@ void Recompile(Args... args) {
 }
 
 void RecompileICStubs(i::Isolate* isolate) {
-  using namespace i;
-  Recompile<LoadGlobalICStub>(isolate, LoadGlobalICState(NOT_INSIDE_TYPEOF));
-  Recompile<LoadGlobalICStub>(isolate, LoadGlobalICState(INSIDE_TYPEOF));
-  Recompile<LoadGlobalICTrampolineStub>(isolate,
-                                        LoadGlobalICState(NOT_INSIDE_TYPEOF));
-  Recompile<LoadGlobalICTrampolineStub>(isolate,
-                                        LoadGlobalICState(INSIDE_TYPEOF));
-
-  Recompile<LoadICStub>(isolate);
-  Recompile<LoadICTrampolineStub>(isolate);
-
-  Recompile<KeyedLoadICTFStub>(isolate);
-  Recompile<KeyedLoadICTrampolineTFStub>(isolate);
-
-  Recompile<StoreICStub>(isolate, StoreICState(SLOPPY));
-  Recompile<StoreICTrampolineStub>(isolate, StoreICState(SLOPPY));
-  Recompile<StoreICStub>(isolate, StoreICState(STRICT));
-  Recompile<StoreICTrampolineStub>(isolate, StoreICState(STRICT));
-
-  Recompile<KeyedStoreICTFStub>(isolate, StoreICState(SLOPPY));
-  Recompile<KeyedStoreICTrampolineTFStub>(isolate, StoreICState(SLOPPY));
-  Recompile<KeyedStoreICTFStub>(isolate, StoreICState(STRICT));
-  Recompile<KeyedStoreICTrampolineTFStub>(isolate, StoreICState(STRICT));
+  // BUG(5784): We had a list of IC stubs here to recompile. These are now
+  // builtins and we can't compile them again (easily). Bug 5784 tracks
+  // our progress in finding another way to do this.
 }
 
 }  // namespace
@@ -26591,4 +26616,23 @@ TEST(SetPrototypeTemplate) {
   CHECK(env->Global()->Set(env.local(), v8_str("Image"), Image).FromJust());
 
   ExpectTrue("Image.prototype === HTMLImageElement.prototype");
+}
+
+UNINITIALIZED_TEST(IncreaseHeapLimitForDebugging) {
+  using namespace i;
+  v8::Isolate::CreateParams create_params;
+  create_params.constraints.set_max_old_space_size(16);
+  create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
+  v8::Isolate* isolate = v8::Isolate::New(create_params);
+  Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
+  {
+    size_t limit_before = i_isolate->heap()->MaxOldGenerationSize();
+    CHECK_EQ(16 * MB, limit_before);
+    isolate->IncreaseHeapLimitForDebugging();
+    size_t limit_after = i_isolate->heap()->MaxOldGenerationSize();
+    CHECK_EQ(4 * 16 * MB, limit_after);
+    isolate->RestoreOriginalHeapLimit();
+    CHECK_EQ(limit_before, i_isolate->heap()->MaxOldGenerationSize());
+  }
+  isolate->Dispose();
 }

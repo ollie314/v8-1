@@ -1614,7 +1614,7 @@ void AccessorAssemblerImpl::KeyedStoreIC(const StoreICParameters* p,
 //////////////////// Public methods.
 
 void AccessorAssemblerImpl::GenerateLoadIC() {
-  typedef LoadICStub::Descriptor Descriptor;
+  typedef LoadWithVectorDescriptor Descriptor;
 
   Node* receiver = Parameter(Descriptor::kReceiver);
   Node* name = Parameter(Descriptor::kName);
@@ -1627,7 +1627,7 @@ void AccessorAssemblerImpl::GenerateLoadIC() {
 }
 
 void AccessorAssemblerImpl::GenerateLoadICTrampoline() {
-  typedef LoadICTrampolineStub::Descriptor Descriptor;
+  typedef LoadDescriptor Descriptor;
 
   Node* receiver = Parameter(Descriptor::kReceiver);
   Node* name = Parameter(Descriptor::kName);
@@ -1654,8 +1654,22 @@ void AccessorAssemblerImpl::GenerateLoadICProtoArray(
   LoadICProtoArray(&p, handler, throw_reference_error_if_nonexistent);
 }
 
+void AccessorAssemblerImpl::GenerateLoadField() {
+  typedef LoadFieldStub::Descriptor Descriptor;
+
+  Node* receiver = Parameter(Descriptor::kReceiver);
+  Node* name = nullptr;
+  Node* slot = nullptr;
+  Node* vector = nullptr;
+  Node* context = Parameter(Descriptor::kContext);
+  LoadICParameters p(context, receiver, name, slot, vector);
+
+  HandleLoadICSmiHandlerCase(&p, receiver, Parameter(Descriptor::kSmiHandler),
+                             nullptr, kOnlyProperties);
+}
+
 void AccessorAssemblerImpl::GenerateLoadGlobalIC(TypeofMode typeof_mode) {
-  typedef LoadGlobalICStub::Descriptor Descriptor;
+  typedef LoadGlobalWithVectorDescriptor Descriptor;
 
   Node* name = Parameter(Descriptor::kName);
   Node* slot = Parameter(Descriptor::kSlot);
@@ -1668,7 +1682,7 @@ void AccessorAssemblerImpl::GenerateLoadGlobalIC(TypeofMode typeof_mode) {
 
 void AccessorAssemblerImpl::GenerateLoadGlobalICTrampoline(
     TypeofMode typeof_mode) {
-  typedef LoadGlobalICTrampolineStub::Descriptor Descriptor;
+  typedef LoadGlobalDescriptor Descriptor;
 
   Node* name = Parameter(Descriptor::kName);
   Node* slot = Parameter(Descriptor::kSlot);
@@ -1680,7 +1694,7 @@ void AccessorAssemblerImpl::GenerateLoadGlobalICTrampoline(
 }
 
 void AccessorAssemblerImpl::GenerateKeyedLoadICTF() {
-  typedef KeyedLoadICTFStub::Descriptor Descriptor;
+  typedef LoadWithVectorDescriptor Descriptor;
 
   Node* receiver = Parameter(Descriptor::kReceiver);
   Node* name = Parameter(Descriptor::kName);
@@ -1693,7 +1707,7 @@ void AccessorAssemblerImpl::GenerateKeyedLoadICTF() {
 }
 
 void AccessorAssemblerImpl::GenerateKeyedLoadICTrampolineTF() {
-  typedef KeyedLoadICTrampolineTFStub::Descriptor Descriptor;
+  typedef LoadDescriptor Descriptor;
 
   Node* receiver = Parameter(Descriptor::kReceiver);
   Node* name = Parameter(Descriptor::kName);
@@ -1719,7 +1733,7 @@ void AccessorAssemblerImpl::GenerateKeyedLoadICMegamorphic() {
 }
 
 void AccessorAssemblerImpl::GenerateStoreIC() {
-  typedef StoreICStub::Descriptor Descriptor;
+  typedef StoreWithVectorDescriptor Descriptor;
 
   Node* receiver = Parameter(Descriptor::kReceiver);
   Node* name = Parameter(Descriptor::kName);
@@ -1733,7 +1747,7 @@ void AccessorAssemblerImpl::GenerateStoreIC() {
 }
 
 void AccessorAssemblerImpl::GenerateStoreICTrampoline() {
-  typedef StoreICTrampolineStub::Descriptor Descriptor;
+  typedef StoreDescriptor Descriptor;
 
   Node* receiver = Parameter(Descriptor::kReceiver);
   Node* name = Parameter(Descriptor::kName);
@@ -1747,7 +1761,7 @@ void AccessorAssemblerImpl::GenerateStoreICTrampoline() {
 }
 
 void AccessorAssemblerImpl::GenerateKeyedStoreICTF(LanguageMode language_mode) {
-  typedef KeyedStoreICTFStub::Descriptor Descriptor;
+  typedef StoreWithVectorDescriptor Descriptor;
 
   Node* receiver = Parameter(Descriptor::kReceiver);
   Node* name = Parameter(Descriptor::kName);
@@ -1762,7 +1776,7 @@ void AccessorAssemblerImpl::GenerateKeyedStoreICTF(LanguageMode language_mode) {
 
 void AccessorAssemblerImpl::GenerateKeyedStoreICTrampolineTF(
     LanguageMode language_mode) {
-  typedef KeyedStoreICTrampolineTFStub::Descriptor Descriptor;
+  typedef StoreDescriptor Descriptor;
 
   Node* receiver = Parameter(Descriptor::kReceiver);
   Node* name = Parameter(Descriptor::kName);

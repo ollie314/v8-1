@@ -168,7 +168,7 @@ class VirtualObject : public ZoneObject {
 
   void SetField(size_t offset, Node* node, bool created_phi = false) {
     fields_[offset] = node;
-    phi_[offset] = created_phi;
+    phi_[offset] = phi_[offset] || created_phi;
   }
   bool IsTracked() const { return status_ & kTracked; }
   bool IsInitialized() const { return status_ & kInitialized; }
@@ -441,15 +441,6 @@ bool VirtualObject::MergeFields(size_t i, Node* at, MergeCache* cache,
   Node* rep = GetField(i);
   if (!rep || !IsCreatedPhi(i)) {
     Node* control = NodeProperties::GetControlInput(at);
-
-    // Check to debug canary.
-    CHECK_NOT_NULL(control);
-    CHECK(!control->IsDead());
-    for (Node* input : cache->fields()) {
-      CHECK_NOT_NULL(input);
-      CHECK(!input->IsDead());
-    }
-
     cache->fields().push_back(control);
     Node* phi = graph->NewNode(
         common->Phi(MachineRepresentation::kTagged, value_input_count),
@@ -494,7 +485,8 @@ bool VirtualObject::MergeFrom(MergeCache* cache, Node* at, Graph* graph,
       size_t arity = at->opcode() == IrOpcode::kEffectPhi
                          ? at->op()->EffectInputCount()
                          : at->op()->ValueInputCount();
-      if (cache->fields().size() == arity) {
+      if (cache->fields().size() == arity &&
+          (GetField(i) || !IsCreatedPhi(i))) {
         changed = MergeFields(i, at, cache, graph, common) || changed;
       } else {
         if (GetField(i) != nullptr) {

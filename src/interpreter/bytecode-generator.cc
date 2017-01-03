@@ -6,6 +6,7 @@
 
 #include "src/ast/compile-time-value.h"
 #include "src/ast/scopes.h"
+#include "src/builtins/builtins-constructor.h"
 #include "src/code-stubs.h"
 #include "src/compilation-info.h"
 #include "src/compiler.h"
@@ -1602,7 +1603,8 @@ void BytecodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
   // Deep-copy the literal boilerplate.
   uint8_t flags = CreateObjectLiteralFlags::Encode(
       expr->IsFastCloningSupported(),
-      FastCloneShallowObjectStub::PropertiesCount(expr->properties_count()),
+      ConstructorBuiltinsAssembler::FastCloneShallowObjectPropertiesCount(
+          expr->properties_count()),
       expr->ComputeFlags());
   // If constant properties is an empty fixed array, use our cached
   // empty_fixed_array to ensure it's only added to the constant pool once.
@@ -3014,7 +3016,8 @@ void BytecodeGenerator::BuildNewLocalActivationContext() {
   } else {
     DCHECK(scope->is_function_scope() || scope->is_eval_scope());
     int slot_count = scope->num_heap_slots() - Context::MIN_CONTEXT_SLOTS;
-    if (slot_count <= FastNewFunctionContextStub::MaximumSlots()) {
+    if (slot_count <=
+        ConstructorBuiltinsAssembler::MaximumFunctionContextSlots()) {
       switch (scope->scope_type()) {
         case EVAL_SCOPE:
           builder()->CreateEvalContext(slot_count);

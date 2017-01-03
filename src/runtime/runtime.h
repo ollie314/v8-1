@@ -292,7 +292,7 @@ namespace internal {
   F(CreateListFromArrayLike, 1, 1)                  \
   F(CreateResolvingFunctions, 1, 1)                 \
   F(EnqueueMicrotask, 1, 1)                         \
-  F(EnqueuePromiseReactionJob, 5, 1)                \
+  F(EnqueuePromiseReactionJob, 2, 1)                \
   F(EnqueuePromiseResolveThenableJob, 3, 1)         \
   F(GetAndResetRuntimeCallStats, -1 /* <= 2 */, 1)  \
   F(ExportExperimentalFromRuntime, 1, 1)            \
@@ -313,6 +313,7 @@ namespace internal {
   F(PromiseHookBefore, 1, 1)                        \
   F(PromiseHookAfter, 1, 1)                         \
   F(PromiseMarkAsHandled, 1, 1)                     \
+  F(PromiseMarkHandledHint, 1, 1)                   \
   F(PromiseRejectEventFromStack, 2, 1)              \
   F(PromiseRejectReactions, 1, 1)                   \
   F(PromiseRevokeReject, 1, 1)                      \
